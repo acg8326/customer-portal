@@ -3,34 +3,38 @@
 Things we've intentionally deferred. Captured here so they're not forgotten.
 Newest ideas at the top; move items into [changelog.md](changelog.md) once built.
 
-## Chat — persistence & memory (parked 2026-06-20)
+## Toward Claude-style Projects
 
-Today the chat is **stateless**: the conversation lives only in the page, is sent
-to Claude in full each turn, and is **not stored anywhere**. A refresh wipes it,
-and there's no memory across sessions. See [features.md](features.md) §7.
+The goal is a Projects feature like Claude.ai: a named workspace with
+**Instructions**, **Memory**, **Files**, and chats scoped to it.
 
-Planned, in suggested build order:
+1. ✅ **Save conversations to the database** *(done 2026-06-23)*
+   - `conversations` + `messages` tables, per-user history, sidebar, resume on
+     reload. This is the foundation Projects build on. See [features.md](features.md) §7.
 
-1. **Save conversations to the database** *(foundational)*
-   - New tables: `conversations` (id, user_id, title, timestamps) and `messages`
-     (id, conversation_id, role, content, model, timestamps).
-   - Persist each user/assistant turn; load past chats on page open.
-   - A conversation list/sidebar so users can switch between and resume chats.
-   - Title conversations automatically (e.g. from the first user message).
+2. **Projects** *(next)*
+   - `projects` table (name, **instructions**, **memory** as editable notes).
+   - Conversations optionally belong to a project; the project's instructions +
+     memory are injected into the system prompt for every chat in it.
+   - Projects list + detail UI (instructions/memory panels, chats list).
 
-2. **Streaming responses**
+3. **Project files**
+   - Upload + store files, **extract text** from PDF/DOCX/XLSX (needs PHP parsing
+     libraries), and feed it to Claude as context. Central to the RMA-report
+     workflow.
+
+4. **Streaming responses**
    - Stream tokens from Claude to the browser (SSE) so replies appear
      progressively instead of all at once after a wait.
    - Backend: `client.messages.createStream(...)`; frontend reads the stream.
 
-3. **Long-term / cross-conversation memory**
-   - Let the assistant recall facts from earlier conversations (e.g. a per-user
-     "memory" store summarized into the system prompt, or retrieval over past
-     messages).
-   - Decide what's remembered and give the user control to view/clear it.
+5. **Long-term / cross-conversation memory** *(advanced)*
+   - Auto-updating memory the assistant maintains across chats (vs the editable
+     project memory in step 2). Decide what's remembered and let the user
+     view/clear it.
 
 ### Notes / decisions to revisit
-- **Privacy:** messages are sent to Anthropic's API. Before persisting, decide on
-  a retention policy and whether to let users delete their history.
-- **Model per conversation:** we may want to store which model was used per
-  message (the `messages.model` column above already allows this).
+- **Privacy:** messages are sent to Anthropic's API and now stored in our DB.
+  Decide on a retention policy and surfacing history deletion to end users.
+- **Memory style:** project memory will start as **editable notes** (chosen
+  2026-06-23); auto-updating memory is the later, advanced step (5).

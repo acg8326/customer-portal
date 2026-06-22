@@ -98,10 +98,17 @@ the **Claude API**.
   multi-line default lives in `config/services.php`). The model **allowlist** is
   also in `config/services.php` (`anthropic.models`). Without a key the chat
   shows a friendly "not configured yet" message instead of erroring.
-- **Layout:** the chat is a self-contained bordered card panel.
+- **Layout:** a two-pane bordered card — a **conversation sidebar** (new chat,
+  history list, delete) plus the chat. Responsive: the sidebar becomes a drawer
+  on mobile.
+- **Saved chats (persistence):** conversations and messages are stored in the
+  database **per user** (`conversations` + `messages` tables). Chats survive a
+  refresh, appear in the sidebar (most-recent first), and reopen with their full
+  history. The server is the source of truth — each turn sends only the new
+  message + conversation id, and history is loaded from the DB. All endpoints
+  are scoped to the authenticated user.
 - **Current limits (simple-first):** non-streaming (a "Thinking…" indicator
-  shows while waiting); conversation is **not persisted** — a page refresh
-  clears it.
+  shows while waiting). No projects/memory yet — see [roadmap.md](roadmap.md).
 
 ## 6. Theming
 

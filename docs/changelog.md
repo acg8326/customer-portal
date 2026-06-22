@@ -3,6 +3,16 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Chat persistence (Projects foundation)
+- **Chats are now saved to the database per user.** New `conversations` +
+  `messages` tables/models; the chat gained a **conversation sidebar** (new chat,
+  history, delete) and chats survive refreshes and reopen with full history.
+- The server is now the source of truth: `send` takes a conversation id + the new
+  message and loads history from the DB; added `GET/DELETE` conversation
+  endpoints, all scoped to the authenticated user.
+- This is the **foundation for Projects** (next: projects with instructions +
+  editable memory, then files). See [roadmap.md](roadmap.md).
+
 ## Tooling / CI
 - Made the codebase pass CI checks: fixed PHPStan type errors in
   `ChatController` (typed model list, narrow Claude reply blocks to `TextBlock`),
