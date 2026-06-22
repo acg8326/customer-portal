@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { Head, Link, useForm } from '@inertiajs/vue3';
-import { FolderOpen, Plus } from '@lucide/vue';
+import { Head, Link, router, useForm } from '@inertiajs/vue3';
+import { FolderOpen, Plus, Trash2 } from '@lucide/vue';
 import { ref } from 'vue';
 import { Button } from '@/components/ui/button';
 import {
@@ -26,6 +26,7 @@ defineProps<{
 
 const open = ref(false);
 const form = useForm({ name: '' });
+const confirmId = ref<number | null>(null);
 
 function create() {
     form.post('/projects', {
@@ -34,6 +35,17 @@ function create() {
             form.reset();
         },
     });
+}
+
+function confirmDelete(id: number) {
+    if (confirmId.value !== id) {
+        confirmId.value = id;
+
+        return;
+    }
+
+    router.delete(`/projects/${id}`, { preserveScroll: true });
+    confirmId.value = null;
 }
 </script>
 
@@ -110,22 +122,40 @@ function create() {
 
         <!-- Grid -->
         <div v-else class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <Link
-                v-for="p in projects"
-                :key="p.id"
-                :href="`/projects/${p.id}`"
-                class="group rounded-xl border bg-card p-5 transition-colors hover:border-ring hover:bg-accent/40"
-            >
-                <div
-                    class="mb-3 flex size-10 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-400 to-indigo-500 text-white"
+            <div v-for="p in projects" :key="p.id" class="group relative">
+                <Link
+                    :href="`/projects/${p.id}`"
+                    class="block rounded-xl border bg-card p-5 transition-colors hover:border-ring hover:bg-accent/40"
                 >
-                    <FolderOpen class="size-5" />
-                </div>
-                <p class="truncate font-medium group-hover:text-foreground">
-                    {{ p.name }}
-                </p>
-                <p class="mt-1 text-xs text-muted-foreground">Open workspace</p>
-            </Link>
+                    <div
+                        class="mb-3 flex size-10 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-400 to-indigo-500 text-white"
+                    >
+                        <FolderOpen class="size-5" />
+                    </div>
+                    <p class="truncate pr-6 font-medium">{{ p.name }}</p>
+                    <p class="mt-1 text-xs text-muted-foreground">
+                        Open workspace
+                    </p>
+                </Link>
+
+                <button
+                    type="button"
+                    class="absolute top-3 right-3 rounded-md p-1.5 transition hover:bg-destructive/10"
+                    :class="
+                        confirmId === p.id
+                            ? 'text-destructive opacity-100'
+                            : 'text-muted-foreground opacity-0 group-hover:opacity-100'
+                    "
+                    :title="
+                        confirmId === p.id
+                            ? 'Click again to delete'
+                            : 'Delete project'
+                    "
+                    @click="confirmDelete(p.id)"
+                >
+                    <Trash2 class="size-4" />
+                </button>
+            </div>
         </div>
     </div>
 </template>

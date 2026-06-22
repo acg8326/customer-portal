@@ -4,6 +4,10 @@ This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
 ## Projects (Claude-style workspaces)
+- Surfaced project **Instructions** and **Memory** as a **visible right-hand
+  panel** (`ProjectKnowledge.vue`) in the workspace (was previously hidden behind
+  a gear dialog), with a **Delete project** button — and added **delete** on the
+  Projects list cards. Much more discoverable.
 - Added **Projects**: named workspaces with their own **Instructions**, editable
   **Memory**, and project-scoped chats. New `projects` table/model + `project_id`
   on `conversations`; `ProjectController` (CRUD) + routes; pages

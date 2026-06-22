@@ -116,10 +116,13 @@ the **Claude API**.
 Named workspaces that give the assistant lasting context for a specific job —
 modeled on Claude.ai Projects.
 
-- **Projects list** (`/projects`) — create projects and open them.
-- **Project workspace** (`/projects/{id}`) — the same chat experience, scoped to
-  the project: its own conversation history, plus a **Settings** dialog (gear
-  icon) to edit the project's **Name**, **Instructions**, and **Memory**.
+- **Projects list** (`/projects`) — create projects, open them, and **delete**
+  them (hover a card → trash → click again to confirm).
+- **Project workspace** (`/projects/{id}`) — the chat experience scoped to the
+  project (its own conversation history) with a **visible right-hand panel**
+  ([`ProjectKnowledge.vue`](../resources/js/components/ProjectKnowledge.vue))
+  to edit the project's **Name**, **Instructions**, and **Memory**, plus a
+  **Delete project** button. On small screens the panel opens as a drawer.
 - **Instructions + Memory are injected** into the system prompt for every chat in
   the project (appended to the base guardrails), so the assistant behaves
   consistently and "remembers" the notes you give it. Memory is **editable
