@@ -85,12 +85,13 @@ the **Claude API**.
   Sonnet 4.6, Haiku 4.5). Defaults to `ANTHROPIC_MODEL`; the choice is remembered
   in the browser (`localStorage`). The allowlist lives in
   `config/services.php` (`anthropic.models`) and is validated server-side.
-- **How it works:** the Vue page ([`Chat.vue`](../resources/js/pages/Chat.vue))
-  keeps the conversation in-page and POSTs the full history to
-  `POST /chat/message`. The server-side
-  [`ChatController`](../app/Http/Controllers/ChatController.php) calls Claude via
-  the official `anthropic-ai/sdk` and returns the reply as JSON. **The API key
-  never reaches the browser.**
+- **How it works:** the reusable
+  [`ChatPanel.vue`](../resources/js/components/ChatPanel.vue) sends the new
+  message + conversation id to `POST /chat/message`. The server-side
+  [`ChatController`](../app/Http/Controllers/ChatController.php) loads history
+  from the DB, calls Claude via the official `anthropic-ai/sdk`, persists both
+  sides, and returns the reply as JSON. **The API key never reaches the
+  browser.**
 - **Auth:** the endpoint is behind `auth` + `verified` middleware.
 - **Config (all in `.env`):** `ANTHROPIC_API_KEY` (required),
   `ANTHROPIC_MODEL` (default model), `ANTHROPIC_MAX_TOKENS` (reply length), and
@@ -108,17 +109,41 @@ the **Claude API**.
   message + conversation id, and history is loaded from the DB. All endpoints
   are scoped to the authenticated user.
 - **Current limits (simple-first):** non-streaming (a "Thinking…" indicator
-  shows while waiting). No projects/memory yet — see [roadmap.md](roadmap.md).
+  shows while waiting). See [roadmap.md](roadmap.md) for what's next.
 
-## 6. Theming
+## 6. Projects (Claude-style workspaces)
+
+Named workspaces that give the assistant lasting context for a specific job —
+modeled on Claude.ai Projects.
+
+- **Projects list** (`/projects`) — create projects and open them.
+- **Project workspace** (`/projects/{id}`) — the same chat experience, scoped to
+  the project: its own conversation history, plus a **Settings** dialog (gear
+  icon) to edit the project's **Name**, **Instructions**, and **Memory**.
+- **Instructions + Memory are injected** into the system prompt for every chat in
+  the project (appended to the base guardrails), so the assistant behaves
+  consistently and "remembers" the notes you give it. Memory is **editable
+  notes** for now (not auto-updating).
+- **Scoping:** a conversation optionally belongs to a project (`conversations.
+  project_id`). Project chats appear only in that project; standalone `/chat`
+  shows only non-project chats. All endpoints are owner-checked.
+- Backend: [`ProjectController`](../app/Http/Controllers/ProjectController.php),
+  `Project` model, `projects` table. UI:
+  [`projects/Index.vue`](../resources/js/pages/projects/Index.vue),
+  [`projects/Show.vue`](../resources/js/pages/projects/Show.vue).
+- **Not yet:** file uploads/attachments and auto-updating memory — see
+  [roadmap.md](roadmap.md).
+
+## 7. Theming
 
 - Light / dark / system mode, with the preference remembered across sessions.
 - Built on Tailwind CSS v4 + shadcn-vue design tokens.
 
 ## What's NOT built yet
 
-- **Chat** persistence (history is in-page only) and streaming responses.
+- **Project files** (upload + use documents as context) and **auto-updating
+  memory** — see [roadmap.md](roadmap.md).
+- **Streaming** chat responses (replies arrive all at once after a wait).
 - Real **Dashboard** content — only placeholder cards.
-- Any customer-specific domain models (the only model is `User`).
 - A custom brand **logo icon** — still the default Laravel mark; only the text
   was rebranded.

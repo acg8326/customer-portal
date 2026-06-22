@@ -10,12 +10,12 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 /**
  * @property int $id
  * @property int $user_id
- * @property int|null $project_id
- * @property string $title
- * @property string $model
+ * @property string $name
+ * @property string|null $instructions
+ * @property string|null $memory
  */
-#[Fillable(['title', 'model', 'project_id'])]
-class Conversation extends Model
+#[Fillable(['name', 'instructions', 'memory'])]
+class Project extends Model
 {
     /**
      * @return BelongsTo<User, $this>
@@ -26,18 +26,10 @@ class Conversation extends Model
     }
 
     /**
-     * @return BelongsTo<Project, $this>
+     * @return HasMany<Conversation, $this>
      */
-    public function project(): BelongsTo
+    public function conversations(): HasMany
     {
-        return $this->belongsTo(Project::class);
-    }
-
-    /**
-     * @return HasMany<Message, $this>
-     */
-    public function messages(): HasMany
-    {
-        return $this->hasMany(Message::class);
+        return $this->hasMany(Conversation::class);
     }
 }

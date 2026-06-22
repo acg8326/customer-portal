@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Anthropic\Client;
 use Anthropic\Messages\TextBlock;
 use App\Models\Conversation;
+use App\Models\Project;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Config;
@@ -58,6 +59,7 @@ class ChatController extends Controller
     {
         $request->validate([
             'conversation_id' => ['nullable', 'integer'],
+            'project_id' => ['nullable', 'integer'],
             'content' => ['required', 'string', 'max:8000'],
             'model' => ['required', 'string', Rule::in(array_keys(Config::array('services.anthropic.models')))],
         ]);
@@ -80,8 +82,16 @@ class ChatController extends Controller
                 ->where('user_id', $userId)
                 ->findOrFail($conversationId);
         } else {
+            $projectId = $request->integer('project_id');
+
+            if ($projectId > 0) {
+                // Ensure the project belongs to this user before linking.
+                Project::query()->where('user_id', $userId)->findOrFail($projectId);
+            }
+
             $conversation = new Conversation;
             $conversation->user_id = $userId;
+            $conversation->project_id = $projectId > 0 ? $projectId : null;
             $conversation->title = Str::limit($content, 48, '…');
             $conversation->model = $selectedModel;
             $conversation->save();
@@ -108,7 +118,7 @@ class ChatController extends Controller
                 maxTokens: config('services.anthropic.max_tokens', 4096),
                 messages: $history,
                 model: $selectedModel,
-                system: config('services.anthropic.system_prompt'),
+                system: $this->buildSystemPrompt($conversation),
             );
 
             $reply = '';
@@ -150,27 +160,58 @@ class ChatController extends Controller
     {
         $this->ensureOwner($request, $conversation);
 
+        $projectId = $conversation->project_id;
         $conversation->delete();
 
-        return response()->json(['conversations' => $this->conversationList($request)]);
+        return response()->json([
+            'conversations' => $this->conversationList($request, $projectId),
+        ]);
     }
 
     /**
      * The current user's conversations, most recently updated first.
+     * Scoped to a project, or to standalone chats when $projectId is null.
      *
      * @return array<int, array{id: int, title: string, updated_at: string|null}>
      */
-    private function conversationList(Request $request): array
+    private function conversationList(Request $request, ?int $projectId = null): array
     {
-        return $request->user()->conversations()
-            ->latest('updated_at')
-            ->get(['id', 'title', 'updated_at'])
+        $query = $request->user()->conversations()->latest('updated_at');
+
+        if ($projectId === null) {
+            $query->whereNull('project_id');
+        } else {
+            $query->where('project_id', $projectId);
+        }
+
+        return $query->get(['id', 'title', 'updated_at'])
             ->map(fn (Conversation $c): array => [
                 'id' => $c->id,
                 'title' => $c->title,
                 'updated_at' => $c->updated_at?->toIso8601String(),
             ])
             ->all();
+    }
+
+    /**
+     * Base guardrails, plus the conversation's project instructions and memory.
+     */
+    private function buildSystemPrompt(Conversation $conversation): string
+    {
+        $system = (string) config('services.anthropic.system_prompt');
+        $project = $conversation->project;
+
+        if ($project) {
+            if (filled($project->instructions)) {
+                $system .= "\n\n## Project instructions\n".$project->instructions;
+            }
+
+            if (filled($project->memory)) {
+                $system .= "\n\n## Project memory (notes to remember)\n".$project->memory;
+            }
+        }
+
+        return $system;
     }
 
     private function ensureOwner(Request $request, Conversation $conversation): void

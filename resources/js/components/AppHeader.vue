@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { Link, usePage } from '@inertiajs/vue3';
-import { LayoutGrid, Menu, MessageSquare, Search } from '@lucide/vue';
+import {
+    FolderOpen,
+    LayoutGrid,
+    Menu,
+    MessageSquare,
+    Search,
+} from '@lucide/vue';
 import { computed } from 'vue';
 import AppLogo from '@/components/AppLogo.vue';
 import AppLogoIcon from '@/components/AppLogoIcon.vue';
@@ -63,6 +69,11 @@ const mainNavItems: NavItem[] = [
         title: 'Chat',
         href: chat(),
         icon: MessageSquare,
+    },
+    {
+        title: 'Projects',
+        href: '/projects',
+        icon: FolderOpen,
     },
 ];
 

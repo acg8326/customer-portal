@@ -12,13 +12,13 @@ The goal is a Projects feature like Claude.ai: a named workspace with
    - `conversations` + `messages` tables, per-user history, sidebar, resume on
      reload. This is the foundation Projects build on. See [features.md](features.md) §7.
 
-2. **Projects** *(next)*
+2. ✅ **Projects** *(done 2026-06-23)*
    - `projects` table (name, **instructions**, **memory** as editable notes).
-   - Conversations optionally belong to a project; the project's instructions +
-     memory are injected into the system prompt for every chat in it.
-   - Projects list + detail UI (instructions/memory panels, chats list).
+   - Conversations belong to a project; the project's instructions + memory are
+     injected into the system prompt for every chat in it. Projects list +
+     workspace UI with a settings dialog. See [features.md](features.md) §6.
 
-3. **Project files**
+3. **Project files** *(next)*
    - Upload + store files, **extract text** from PDF/DOCX/XLSX (needs PHP parsing
      libraries), and feed it to Claude as context. Central to the RMA-report
      workflow.

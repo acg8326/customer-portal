@@ -56,4 +56,12 @@ class User extends Authenticatable implements PasskeyUser
     {
         return $this->hasMany(Conversation::class);
     }
+
+    /**
+     * @return HasMany<Project, $this>
+     */
+    public function projects(): HasMany
+    {
+        return $this->hasMany(Project::class);
+    }
 }

@@ -3,6 +3,18 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Projects (Claude-style workspaces)
+- Added **Projects**: named workspaces with their own **Instructions**, editable
+  **Memory**, and project-scoped chats. New `projects` table/model + `project_id`
+  on `conversations`; `ProjectController` (CRUD) + routes; pages
+  `projects/Index.vue` (list/create) and `projects/Show.vue` (workspace + a
+  settings dialog for name/instructions/memory).
+- A project's instructions + memory are **injected into the system prompt** for
+  every chat in it. Conversations are scoped (project chats stay out of the
+  standalone `/chat`). Added a **Projects** nav item.
+- Refactored the chat into a reusable **`ChatPanel.vue`** used by both `/chat`
+  and the project workspace (with `brand`/`empty` slots).
+
 ## Chat persistence (Projects foundation)
 - **Chats are now saved to the database per user.** New `conversations` +
   `messages` tables/models; the chat gained a **conversation sidebar** (new chat,
