@@ -11,21 +11,33 @@ const SIGNAL = '59, 130, 246'; // #3B82F6
 
 function draw(now: number) {
     const el = canvas.value;
-    if (!el) return;
+
+    if (!el) {
+        return;
+    }
+
     const ctx = el.getContext('2d');
-    if (!ctx) return;
+
+    if (!ctx) {
+        return;
+    }
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = el.clientWidth;
     const h = el.clientHeight;
+
     if (el.width !== w * dpr || el.height !== h * dpr) {
         el.width = w * dpr;
         el.height = h * dpr;
     }
+
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    if (!start) start = now;
+    if (!start) {
+        start = now;
+    }
+
     const t = (now - start) / 1000;
 
     // The ping originates from depth, low and slightly off-centre.
@@ -35,6 +47,7 @@ function draw(now: number) {
 
     // Faint polar range arcs — the instrument's static grid.
     ctx.lineWidth = 1;
+
     for (let i = 1; i <= 7; i++) {
         const r = (maxR / 7) * i;
         ctx.beginPath();
@@ -56,12 +69,16 @@ function draw(now: number) {
     // Expanding ping rings — the one moving element.
     const RINGS = 4;
     const PERIOD = 6; // seconds for a ring to travel full range
+
     for (let i = 0; i < RINGS; i++) {
-        const phase = ((t / PERIOD + i / RINGS) % 1 + 1) % 1;
+        const phase = (((t / PERIOD + i / RINGS) % 1) + 1) % 1;
         const r = phase * maxR;
         const fade = Math.sin(phase * Math.PI); // in then out
         const alpha = fade * 0.7;
-        if (alpha <= 0.01) continue;
+
+        if (alpha <= 0.01) {
+            continue;
+        }
 
         ctx.beginPath();
         ctx.arc(ox, oy, r, Math.PI, Math.PI * 2);
@@ -90,6 +107,7 @@ onMounted(() => {
     const reduced = window.matchMedia(
         '(prefers-reduced-motion: reduce)',
     ).matches;
+
     if (reduced) {
         drawStatic();
         window.addEventListener('resize', drawStatic);

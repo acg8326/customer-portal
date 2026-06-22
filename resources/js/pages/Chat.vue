@@ -41,8 +41,15 @@ const userInitials = computed(() => getInitials(page.props.auth?.user?.name));
 // Time-of-day greeting for the empty state.
 const greeting = computed(() => {
     const hour = new Date().getHours();
-    if (hour < 12) return 'Good morning';
-    if (hour < 18) return 'Good afternoon';
+
+    if (hour < 12) {
+        return 'Good morning';
+    }
+
+    if (hour < 18) {
+        return 'Good afternoon';
+    }
+
     return 'Good evening';
 });
 
@@ -50,7 +57,11 @@ const MODEL_STORAGE_KEY = 'chat:model';
 
 function initialModel(): string {
     const saved = localStorage.getItem(MODEL_STORAGE_KEY);
-    if (saved && props.models.some((m) => m.value === saved)) return saved;
+
+    if (saved && props.models.some((m) => m.value === saved)) {
+        return saved;
+    }
+
     return props.defaultModel;
 }
 
@@ -61,7 +72,11 @@ const error = ref<string | null>(null);
 const scrollRegion = ref<HTMLElement | null>(null);
 const model = ref(initialModel());
 
-function onModelChange(value: string) {
+function onModelChange(value: unknown) {
+    if (typeof value !== 'string') {
+        return;
+    }
+
     model.value = value;
     localStorage.setItem(MODEL_STORAGE_KEY, value);
 }
@@ -70,18 +85,25 @@ function readCookie(name: string): string {
     const match = document.cookie.match(
         new RegExp('(^|; )' + name + '=([^;]*)'),
     );
+
     return match ? decodeURIComponent(match[2]) : '';
 }
 
 async function scrollToBottom() {
     await nextTick();
     const el = scrollRegion.value;
-    if (el) el.scrollTop = el.scrollHeight;
+
+    if (el) {
+        el.scrollTop = el.scrollHeight;
+    }
 }
 
 async function send() {
     const text = draft.value.trim();
-    if (!text || loading.value) return;
+
+    if (!text || loading.value) {
+        return;
+    }
 
     error.value = null;
     messages.value.push({ role: 'user', content: text });
@@ -107,15 +129,12 @@ async function send() {
         const data = await res.json();
 
         if (!res.ok) {
-            throw new Error(
-                data.message ?? 'The assistant could not respond.',
-            );
+            throw new Error(data.message ?? 'The assistant could not respond.');
         }
 
         messages.value.push({ role: 'assistant', content: data.reply });
     } catch (e) {
-        error.value =
-            e instanceof Error ? e.message : 'Something went wrong.';
+        error.value = e instanceof Error ? e.message : 'Something went wrong.';
     } finally {
         loading.value = false;
         await scrollToBottom();
@@ -137,9 +156,7 @@ function onKeydown(e: KeyboardEvent) {
         class="mx-auto my-4 flex h-[calc(100svh-6rem)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border bg-card shadow-sm"
     >
         <!-- Header -->
-        <div
-            class="flex items-center justify-between gap-2 border-b px-4 py-3"
-        >
+        <div class="flex items-center justify-between gap-2 border-b px-4 py-3">
             <div class="flex items-center gap-3">
                 <div
                     class="flex size-9 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-indigo-500 text-white shadow-sm"

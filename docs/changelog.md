@@ -3,6 +3,16 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Tooling / CI
+- Made the codebase pass CI checks: fixed PHPStan type errors in
+  `ChatController` (typed model list, narrow Claude reply blocks to `TextBlock`),
+  gave `composer types:check` a 512M memory limit, made the chat model handler
+  type-safe, and updated tests for the new behavior (`/` redirects guests to
+  login; removed the obsolete login-rate-limit test since rate limiting was
+  disabled).
+- Note: GitHub Actions itself was blocked by an **account billing lock** (jobs
+  never start) — that's a GitHub-account issue, separate from the code.
+
 ## Chat (Claude AI)
 - Made chat tunables **configurable via `.env`** instead of hardcoded: the
   system prompt/guardrails (`ANTHROPIC_SYSTEM_PROMPT`, multi-line default in

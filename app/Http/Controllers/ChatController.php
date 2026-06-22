@@ -3,8 +3,10 @@
 namespace App\Http\Controllers;
 
 use Anthropic\Client;
+use Anthropic\Messages\TextBlock;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -17,9 +19,11 @@ class ChatController extends Controller
      */
     public function index(): Response
     {
-        $models = collect(config('services.anthropic.models'))
-            ->map(fn (string $label, string $value) => ['value' => $value, 'label' => $label])
-            ->values();
+        $models = [];
+
+        foreach (Config::array('services.anthropic.models') as $value => $label) {
+            $models[] = ['value' => $value, 'label' => $label];
+        }
 
         return Inertia::render('Chat', [
             'models' => $models,
@@ -57,10 +61,13 @@ class ChatController extends Controller
                 system: config('services.anthropic.system_prompt'),
             );
 
-            $reply = collect($message->content)
-                ->filter(fn ($block) => $block->type === 'text')
-                ->map(fn ($block) => $block->text)
-                ->implode('');
+            $reply = '';
+
+            foreach ($message->content as $block) {
+                if ($block instanceof TextBlock) {
+                    $reply .= $block->text;
+                }
+            }
 
             return response()->json([
                 'reply' => trim($reply),
