@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Head } from '@inertiajs/vue3';
 import {
+    Boxes,
     Building2,
     Calendar,
     Cloud,
@@ -12,6 +13,7 @@ import {
     Table,
     Users,
     Webhook,
+    Workflow,
     Zap,
 } from '@lucide/vue';
 import type { Component } from 'vue';
@@ -106,6 +108,24 @@ const categories: Category[] = [
                 name: 'Zapier',
                 description: 'Connect AiMe BOT to 6,000+ apps, no code.',
                 icon: Zap,
+            },
+            {
+                name: 'n8n',
+                description:
+                    'Trigger self-hosted n8n workflows from chats and projects.',
+                icon: Workflow,
+            },
+        ],
+    },
+    {
+        label: 'ERP & business systems',
+        blurb: 'Connect the systems that run your operations and finance.',
+        items: [
+            {
+                name: 'NetSuite',
+                description:
+                    'Read and update ERP records — orders, inventory, and finance.',
+                icon: Boxes,
             },
         ],
     },

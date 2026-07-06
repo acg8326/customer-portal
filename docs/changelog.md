@@ -3,6 +3,13 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## More integrations
+
+- **Added NetSuite and n8n** to the Integrations page (still placeholder cards).
+  n8n joins **Automation** (self-hosted workflow triggers, beside Zapier/Webhooks);
+  **NetSuite** gets a new **ERP & business systems** category for reading/updating
+  orders, inventory, and finance records.
+
 ## Skills/Projects tweaks
 
 - **Removed the per-project Memory field** (not needed for now): dropped from the
