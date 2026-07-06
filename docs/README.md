@@ -14,13 +14,13 @@ for CW Global People.
 
 ## Documentation index
 
-| Doc | What's in it |
-| --- | --- |
-| [getting-started.md](getting-started.md) | How to set up, run, and log in |
-| [features.md](features.md) | Every feature currently in the app |
-| [tech-stack.md](tech-stack.md) | Frameworks, libraries, and project layout |
-| [changelog.md](changelog.md) | What we've changed from the base starter kit |
-| [roadmap.md](roadmap.md) | Parked features & future plans (chat persistence, memory, streaming) |
+| Doc                                      | What's in it                                                         |
+| ---------------------------------------- | -------------------------------------------------------------------- |
+| [getting-started.md](getting-started.md) | How to set up, run, and log in                                       |
+| [features.md](features.md)               | Every feature currently in the app                                   |
+| [tech-stack.md](tech-stack.md)           | Frameworks, libraries, and project layout                            |
+| [changelog.md](changelog.md)             | What we've changed from the base starter kit                         |
+| [roadmap.md](roadmap.md)                 | Parked features & future plans (chat persistence, memory, streaming) |
 
 ## TL;DR — current state
 

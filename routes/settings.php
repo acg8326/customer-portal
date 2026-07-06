@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Settings\ProfileController;
 use App\Http\Controllers\Settings\SecurityController;
+use App\Http\Controllers\Settings\SkillController;
 use Illuminate\Auth\Middleware\RequirePassword;
 use Illuminate\Support\Facades\Route;
 
@@ -24,6 +25,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('user-password.update');
 
     Route::inertia('settings/appearance', 'settings/Appearance')->name('appearance.edit');
+
+    Route::get('settings/skills', [SkillController::class, 'index'])->name('skills.index');
+    Route::post('settings/skills', [SkillController::class, 'store'])->name('skills.store');
+    Route::post('settings/skills/import', [SkillController::class, 'import'])->name('skills.import');
+    Route::patch('settings/skills/{skill}', [SkillController::class, 'update'])->name('skills.update');
+    Route::delete('settings/skills/{skill}', [SkillController::class, 'destroy'])->name('skills.destroy');
 });
 
 Route::get('.well-known/passkey-endpoints', function () {

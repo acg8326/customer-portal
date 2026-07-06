@@ -5,9 +5,9 @@ const canvas = ref<HTMLCanvasElement | null>(null);
 let raf = 0;
 let start = 0;
 
-// Sonar palette — derived from the committed tokens.
-const ACCENT = '45, 226, 200'; // #2DE2C8
-const SIGNAL = '59, 130, 246'; // #3B82F6
+// Sonar palette — CW Global People brand (gold + navy).
+const ACCENT = '212, 165, 55'; // #D4A537 gold
+const SIGNAL = '37, 78, 140'; // #254E8C navy
 
 function draw(now: number) {
     const el = canvas.value;

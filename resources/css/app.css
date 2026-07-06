@@ -59,6 +59,13 @@
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-ring: var(--sidebar-ring);
+
+    /* CW Global People brand — navy + gold */
+    --color-brand-gold: var(--brand-gold);
+    --color-brand-gold-light: var(--brand-gold-light);
+    --color-brand-gold-dark: var(--brand-gold-dark);
+    --color-brand-navy: var(--brand-navy);
+    --color-brand-navy-dark: var(--brand-navy-dark);
 }
 
 /*
@@ -96,70 +103,84 @@
     --card-foreground: hsl(0 0% 3.9%);
     --popover: hsl(0 0% 100%);
     --popover-foreground: hsl(0 0% 3.9%);
-    --primary: hsl(0 0% 9%);
-    --primary-foreground: hsl(0 0% 98%);
+    --primary: hsl(216 55% 16%);
+    --primary-foreground: hsl(43 65% 92%);
     --secondary: hsl(0 0% 92.1%);
     --secondary-foreground: hsl(0 0% 9%);
     --muted: hsl(0 0% 96.1%);
     --muted-foreground: hsl(0 0% 45.1%);
-    --accent: hsl(0 0% 96.1%);
-    --accent-foreground: hsl(0 0% 9%);
+    --accent: hsl(43 55% 92%);
+    --accent-foreground: hsl(216 55% 16%);
     --destructive: hsl(0 84.2% 60.2%);
     --destructive-foreground: hsl(0 0% 98%);
-    --border: hsl(0 0% 92.8%);
-    --input: hsl(0 0% 89.8%);
-    --ring: hsl(0 0% 3.9%);
-    --chart-1: hsl(12 76% 61%);
-    --chart-2: hsl(173 58% 39%);
-    --chart-3: hsl(197 37% 24%);
-    --chart-4: hsl(43 74% 66%);
-    --chart-5: hsl(27 87% 67%);
+    --border: hsl(216 18% 86%);
+    --input: hsl(216 18% 83%);
+    --ring: hsl(42 68% 45%);
+    --chart-1: hsl(42 68% 50%);
+    --chart-2: hsl(216 55% 30%);
+    --chart-3: hsl(38 66% 40%);
+    --chart-4: hsl(216 40% 55%);
+    --chart-5: hsl(45 80% 65%);
     --radius: 0.5rem;
     --sidebar-background: hsl(0 0% 98%);
     --sidebar-foreground: hsl(240 5.3% 26.1%);
-    --sidebar-primary: hsl(0 0% 10%);
-    --sidebar-primary-foreground: hsl(0 0% 98%);
-    --sidebar-accent: hsl(0 0% 94%);
-    --sidebar-accent-foreground: hsl(0 0% 30%);
+    --sidebar-primary: hsl(216 55% 16%);
+    --sidebar-primary-foreground: hsl(43 65% 92%);
+    --sidebar-accent: hsl(43 45% 93%);
+    --sidebar-accent-foreground: hsl(216 55% 16%);
     --sidebar-border: hsl(0 0% 91%);
-    --sidebar-ring: hsl(217.2 91.2% 59.8%);
+    --sidebar-ring: hsl(42 68% 45%);
     --sidebar: hsl(0 0% 98%);
+
+    /* Brand — navy + gold */
+    --brand-gold: hsl(42 70% 50%);
+    --brand-gold-light: hsl(45 78% 62%);
+    --brand-gold-dark: hsl(38 66% 40%);
+    --brand-navy: hsl(216 55% 20%);
+    --brand-navy-dark: hsl(216 60% 12%);
 }
 
 .dark {
-    --background: hsl(0 0% 3.9%);
-    --foreground: hsl(0 0% 98%);
-    --card: hsl(0 0% 3.9%);
-    --card-foreground: hsl(0 0% 98%);
-    --popover: hsl(0 0% 3.9%);
-    --popover-foreground: hsl(0 0% 98%);
-    --primary: hsl(0 0% 98%);
-    --primary-foreground: hsl(0 0% 9%);
-    --secondary: hsl(0 0% 14.9%);
-    --secondary-foreground: hsl(0 0% 98%);
-    --muted: hsl(0 0% 16.08%);
-    --muted-foreground: hsl(0 0% 63.9%);
-    --accent: hsl(0 0% 14.9%);
-    --accent-foreground: hsl(0 0% 98%);
+    --background: hsl(216 45% 7%);
+    --foreground: hsl(43 30% 94%);
+    --card: hsl(216 40% 10%);
+    --card-foreground: hsl(43 30% 94%);
+    --popover: hsl(216 42% 9%);
+    --popover-foreground: hsl(43 30% 94%);
+    --primary: hsl(43 74% 55%);
+    --primary-foreground: hsl(216 60% 10%);
+    --secondary: hsl(216 30% 17%);
+    --secondary-foreground: hsl(43 30% 94%);
+    --muted: hsl(216 28% 16%);
+    --muted-foreground: hsl(216 15% 68%);
+    --accent: hsl(216 30% 18%);
+    --accent-foreground: hsl(43 65% 70%);
     --destructive: hsl(0 84% 60%);
     --destructive-foreground: hsl(0 0% 98%);
-    --border: hsl(0 0% 14.9%);
-    --input: hsl(0 0% 14.9%);
-    --ring: hsl(0 0% 83.1%);
-    --chart-1: hsl(220 70% 50%);
-    --chart-2: hsl(160 60% 45%);
-    --chart-3: hsl(30 80% 55%);
-    --chart-4: hsl(280 65% 60%);
-    --chart-5: hsl(340 75% 55%);
-    --sidebar-background: hsl(0 0% 7%);
-    --sidebar-foreground: hsl(0 0% 95.9%);
-    --sidebar-primary: hsl(360, 100%, 100%);
-    --sidebar-primary-foreground: hsl(0 0% 100%);
-    --sidebar-accent: hsl(0 0% 15.9%);
-    --sidebar-accent-foreground: hsl(240 4.8% 95.9%);
-    --sidebar-border: hsl(0 0% 15.9%);
-    --sidebar-ring: hsl(217.2 91.2% 59.8%);
-    --sidebar: hsl(240 5.9% 10%);
+    --border: hsl(216 26% 26%);
+    --input: hsl(216 26% 26%);
+    --ring: hsl(43 74% 55%);
+    --chart-1: hsl(43 74% 55%);
+    --chart-2: hsl(216 50% 55%);
+    --chart-3: hsl(38 70% 48%);
+    --chart-4: hsl(216 35% 65%);
+    --chart-5: hsl(45 80% 68%);
+    --sidebar-background: hsl(216 48% 6%);
+    --sidebar-foreground: hsl(43 25% 92%);
+    --sidebar-primary: hsl(43 74% 55%);
+    --sidebar-primary-foreground: hsl(216 60% 10%);
+    --sidebar-accent: hsl(216 30% 15%);
+    --sidebar-accent-foreground: hsl(43 55% 80%);
+    --sidebar-border: hsl(216 28% 15%);
+    --sidebar-ring: hsl(43 74% 55%);
+    --sidebar: hsl(216 48% 6%);
+
+    /* Brand — navy + gold (brighter gold on dark) */
+    --brand-gold: hsl(43 74% 55%);
+    --brand-gold-light: hsl(45 80% 66%);
+    --brand-gold-dark: hsl(38 66% 44%);
+    --brand-navy: hsl(216 50% 24%);
+    --brand-navy-dark: hsl(216 55% 14%);
 }
 
 @layer base {

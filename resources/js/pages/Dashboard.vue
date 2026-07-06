@@ -11,6 +11,7 @@ defineOptions({
                 href: dashboard(),
             },
         ],
+        fullWidth: true,
     },
 });
 </script>

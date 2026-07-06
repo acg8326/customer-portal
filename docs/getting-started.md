@@ -65,8 +65,8 @@ npm run build
 
 The seeder creates one account:
 
-| Email | Password |
-| --- | --- |
+| Email               | Password   |
+| ------------------- | ---------- |
 | `admin@example.com` | `password` |
 
 Re-running `php artisan db:seed` is safe — it uses `updateOrCreate`, so it won't

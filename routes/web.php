@@ -10,8 +10,10 @@ Route::get('/', function () {
 
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::inertia('dashboard', 'Dashboard')->name('dashboard');
+    Route::inertia('integrations', 'Integrations')->name('integrations');
 
     Route::get('chat', [ChatController::class, 'index'])->name('chat');
+    Route::get('chat/search', [ChatController::class, 'search'])->name('chat.search');
     Route::post('chat/message', [ChatController::class, 'send'])->name('chat.message');
     Route::get('chat/conversations/{conversation}', [ChatController::class, 'show'])->name('chat.show');
     Route::delete('chat/conversations/{conversation}', [ChatController::class, 'destroy'])->name('chat.destroy');

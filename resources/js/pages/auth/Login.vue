@@ -26,7 +26,7 @@ defineProps<{
 
 // Field styling tuned for the dark glass card.
 const fieldClass =
-    'h-11 rounded-lg border-white/10 bg-white/[0.04] text-white placeholder:text-[#566377] focus-visible:border-[#2DE2C8] focus-visible:ring-[3px] focus-visible:ring-[#2DE2C8]/25';
+    'h-11 rounded-lg border-white/10 bg-white/[0.04] text-white placeholder:text-[#566377] focus-visible:border-[#D4A537] focus-visible:ring-[3px] focus-visible:ring-[#D4A537]/25';
 const labelClass = 'text-sm font-medium text-[#C7D2E0]';
 </script>
 
@@ -35,7 +35,7 @@ const labelClass = 'text-sm font-medium text-[#C7D2E0]';
 
     <div
         v-if="status"
-        class="mb-5 rounded-lg border border-[#2DE2C8]/30 bg-[#2DE2C8]/10 px-4 py-3 text-center text-sm font-medium text-[#7CEBD8]"
+        class="mb-5 rounded-lg border border-[#D4A537]/30 bg-[#D4A537]/10 px-4 py-3 text-center text-sm font-medium text-[#EAD08A]"
     >
         {{ status }}
     </div>
@@ -68,7 +68,7 @@ const labelClass = 'text-sm font-medium text-[#C7D2E0]';
                 <TextLink
                     v-if="canResetPassword"
                     :href="request()"
-                    class="text-sm !text-[#2DE2C8] !decoration-[#2DE2C8]/40 hover:!text-[#5BEAD6]"
+                    class="text-sm !text-[#D4A537] !decoration-[#D4A537]/40 hover:!text-[#E4C061]"
                     :tabindex="5"
                 >
                     Forgot password?
@@ -94,14 +94,14 @@ const labelClass = 'text-sm font-medium text-[#C7D2E0]';
                 id="remember"
                 name="remember"
                 :tabindex="3"
-                class="border-white/25 data-[state=checked]:border-[#2DE2C8] data-[state=checked]:bg-[#2DE2C8] data-[state=checked]:text-[#041014]"
+                class="border-white/25 data-[state=checked]:border-[#D4A537] data-[state=checked]:bg-[#D4A537] data-[state=checked]:text-[#0B1626]"
             />
             <span>Keep me signed in</span>
         </Label>
 
         <Button
             type="submit"
-            class="group mt-1 h-11 w-full rounded-lg bg-[#2DE2C8] font-semibold text-[#041014] shadow-[0_10px_34px_-10px_rgba(45,226,200,0.8)] transition-colors hover:bg-[#5BEAD6]"
+            class="group mt-1 h-11 w-full rounded-lg bg-[#D4A537] font-semibold text-[#0B1626] shadow-[0_10px_34px_-10px_rgba(212,165,55,0.8)] transition-colors hover:bg-[#E4C061]"
             :tabindex="4"
             :disabled="processing"
             data-test="login-button"

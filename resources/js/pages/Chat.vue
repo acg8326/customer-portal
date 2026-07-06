@@ -11,6 +11,7 @@ defineOptions({
                 href: chat(),
             },
         ],
+        fullWidth: true,
     },
 });
 
@@ -18,17 +19,27 @@ defineProps<{
     models: { value: string; label: string }[];
     defaultModel: string;
     conversations: { id: number; title: string }[];
+    uploads: {
+        enabled: boolean;
+        maxFiles: number;
+        maxSizeKb: number;
+        mimes: string;
+    };
+    skills: { id: number; name: string; icon: string | null }[];
 }>();
 </script>
 
 <template>
     <Head title="Chat" />
 
-    <div class="mx-auto h-[calc(100svh-4rem)] w-full max-w-5xl p-4">
+    <div class="h-[calc(100svh-4rem)] w-full">
         <ChatPanel
             :models="models"
             :default-model="defaultModel"
             :conversations="conversations"
+            :uploads="uploads"
+            :skills="skills"
+            full-bleed
         />
     </div>
 </template>

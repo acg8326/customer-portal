@@ -27,7 +27,7 @@ defineProps<{
                 background:
                     radial-gradient(
                         120% 80% at 50% 18%,
-                        rgba(45, 226, 200, 0.08),
+                        rgba(212, 165, 55, 0.08),
                         transparent 55%
                     ),
                     radial-gradient(
@@ -45,14 +45,14 @@ defineProps<{
                 class="group mb-8 flex flex-col items-center gap-3"
             >
                 <span
-                    class="relative flex size-12 items-center justify-center rounded-2xl border border-[#2DE2C8]/30 bg-[#2DE2C8]/10 shadow-[0_0_40px_-8px_rgba(45,226,200,0.6)] transition-transform group-hover:scale-105"
+                    class="relative flex size-12 items-center justify-center rounded-2xl border border-[#D4A537]/30 bg-[#D4A537]/10 shadow-[0_0_40px_-8px_rgba(212,165,55,0.6)] transition-transform group-hover:scale-105"
                 >
-                    <AppLogoIcon class="size-6 fill-current text-[#2DE2C8]" />
+                    <AppLogoIcon class="size-6 fill-current text-[#D4A537]" />
                 </span>
                 <span
                     class="font-mono text-[11px] tracking-[0.35em] text-[#7E8CA0] uppercase"
                 >
-                    {{ name }} · Customer Portal
+                    {{ name }} · CWGP-AIMe
                 </span>
             </Link>
 
@@ -62,7 +62,7 @@ defineProps<{
             >
                 <!-- accent hairline along the top edge -->
                 <div
-                    class="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-[#2DE2C8]/70 to-transparent"
+                    class="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-[#D4A537]/70 to-transparent"
                 />
 
                 <div class="mb-7 space-y-1.5">
@@ -84,7 +84,7 @@ defineProps<{
             <p
                 class="mt-6 text-center font-mono text-[11px] tracking-[0.25em] text-[#46556B] uppercase"
             >
-                <span class="text-[#2DE2C8]">●</span> Secure connection
+                <span class="text-[#D4A537]">●</span> Secure connection
             </p>
         </main>
     </div>

@@ -17,6 +17,7 @@ import { Label } from '@/components/ui/label';
 defineOptions({
     layout: {
         breadcrumbs: [{ title: 'Projects', href: '/projects' }],
+        fullWidth: true,
     },
 });
 
@@ -52,12 +53,12 @@ function confirmDelete(id: number) {
 <template>
     <Head title="Projects" />
 
-    <div class="mx-auto w-full max-w-5xl p-6">
+    <div class="w-full p-6">
         <div class="mb-6 flex items-center justify-between">
             <div>
                 <h1 class="text-2xl font-semibold tracking-tight">Projects</h1>
                 <p class="text-sm text-muted-foreground">
-                    Workspaces with their own instructions, memory, and chats.
+                    Workspaces with their own instructions and chats.
                 </p>
             </div>
 
@@ -115,20 +116,23 @@ function confirmDelete(id: number) {
             </div>
             <p class="font-medium">No projects yet</p>
             <p class="mt-1 max-w-sm text-sm text-muted-foreground">
-                Create a project to give the assistant lasting instructions and
-                memory for a specific job.
+                Create a project to give the assistant lasting instructions for
+                a specific job.
             </p>
         </div>
 
         <!-- Grid -->
-        <div v-else class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div
+            v-else
+            class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+        >
             <div v-for="p in projects" :key="p.id" class="group relative">
                 <Link
                     :href="`/projects/${p.id}`"
                     class="block rounded-xl border bg-card p-5 transition-colors hover:border-ring hover:bg-accent/40"
                 >
                     <div
-                        class="mb-3 flex size-10 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-400 to-indigo-500 text-white"
+                        class="mb-3 flex size-10 items-center justify-center rounded-lg bg-gradient-to-br from-brand-navy to-brand-gold text-white"
                     >
                         <FolderOpen class="size-5" />
                     </div>

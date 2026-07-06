@@ -6,10 +6,12 @@ import type { AppVariant } from '@/types';
 type Props = {
     variant?: AppVariant;
     class?: string;
+    fullWidth?: boolean;
 };
 
 const props = withDefaults(defineProps<Props>(), {
     variant: 'sidebar',
+    fullWidth: false,
 });
 const className = computed(() => props.class);
 </script>
@@ -20,8 +22,8 @@ const className = computed(() => props.class);
     </SidebarInset>
     <main
         v-else
-        class="mx-auto flex h-full w-full max-w-7xl flex-1 flex-col gap-4 rounded-xl"
-        :class="className"
+        class="flex h-full w-full flex-1 flex-col gap-4 rounded-xl"
+        :class="[fullWidth ? '' : 'mx-auto max-w-7xl', className]"
     >
         <slot />
     </main>

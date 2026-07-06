@@ -20,13 +20,13 @@ defineProps<{
             class="relative hidden h-full flex-col overflow-hidden p-10 text-white lg:flex dark:border-r"
         >
             <div
-                class="absolute inset-0 bg-gradient-to-br from-zinc-900 via-zinc-900 to-indigo-950"
+                class="absolute inset-0 bg-gradient-to-br from-brand-navy-dark via-brand-navy-dark to-brand-navy"
             />
             <div
-                class="absolute -top-24 -right-24 size-[28rem] rounded-full bg-indigo-500/20 blur-3xl"
+                class="absolute -top-24 -right-24 size-[28rem] rounded-full bg-brand-gold/20 blur-3xl"
             />
             <div
-                class="absolute -bottom-32 -left-16 size-[24rem] rounded-full bg-blue-500/10 blur-3xl"
+                class="absolute -bottom-32 -left-16 size-[24rem] rounded-full bg-brand-gold/10 blur-3xl"
             />
 
             <Link
@@ -39,7 +39,7 @@ defineProps<{
 
             <div class="relative z-20 mt-auto">
                 <h2 class="text-3xl font-semibold tracking-tight">
-                    Welcome to the Customer Portal
+                    Welcome to CWGP-AIMe
                 </h2>
                 <p class="mt-3 max-w-md text-sm text-white/70">
                     Sign in to access your dashboard, manage your account, and

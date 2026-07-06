@@ -49,11 +49,28 @@ return [
             say so plainly rather than guessing. If asked your name, you are AiMe BOT.
             PROMPT),
 
-        // Models a user may pick in the chat UI (id => label).
+        // Models a user may pick in the chat UI (id => label). Add/remove freely;
+        // ids are validated server-side against this list.
         'models' => [
             'claude-opus-4-8' => 'Claude Opus 4.8 — most capable',
-            'claude-sonnet-4-6' => 'Claude Sonnet 4.6 — balanced',
+            'claude-opus-4-7' => 'Claude Opus 4.7',
+            'claude-opus-4-1' => 'Claude Opus 4.1',
+            'claude-sonnet-5' => 'Claude Sonnet 5 — balanced',
+            'claude-sonnet-4-6' => 'Claude Sonnet 4.6',
+            'claude-sonnet-4-5' => 'Claude Sonnet 4.5',
             'claude-haiku-4-5' => 'Claude Haiku 4.5 — fastest',
+            'claude-fable-5' => 'Claude Fable 5 — creative writing',
+        ],
+
+        // Chat file uploads (images + PDFs). Claude reads these natively; each
+        // attachment is re-sent with every turn so follow-up questions keep the
+        // file in view. All tunables here are .env-overridable.
+        'uploads' => [
+            'enabled' => (bool) env('ANTHROPIC_UPLOADS_ENABLED', true),
+            'max_files' => (int) env('ANTHROPIC_UPLOADS_MAX_FILES', 5),
+            'max_size_kb' => (int) env('ANTHROPIC_UPLOADS_MAX_SIZE_KB', 10240),
+            // Comma-separated file extensions accepted by the picker + validator.
+            'mimes' => env('ANTHROPIC_UPLOADS_MIMES', 'jpg,jpeg,png,gif,webp,pdf'),
         ],
     ],
 

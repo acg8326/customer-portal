@@ -10,7 +10,6 @@ const props = defineProps<{
         id: number;
         name: string;
         instructions: string | null;
-        memory: string | null;
     };
 }>();
 
@@ -21,7 +20,6 @@ const confirmingDelete = ref(false);
 const form = useForm({
     name: props.project.name,
     instructions: props.project.instructions ?? '',
-    memory: props.project.memory ?? '',
 });
 
 function save() {
@@ -71,20 +69,6 @@ function destroy() {
                 />
                 <p class="text-xs text-muted-foreground">
                     Tells the assistant how to behave here.
-                </p>
-            </div>
-
-            <div class="space-y-1.5">
-                <Label for="k-memory">Memory</Label>
-                <textarea
-                    id="k-memory"
-                    v-model="form.memory"
-                    rows="5"
-                    placeholder="Facts and context to remember across chats."
-                    class="w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
-                />
-                <p class="text-xs text-muted-foreground">
-                    Facts the assistant should remember across chats.
                 </p>
             </div>
 

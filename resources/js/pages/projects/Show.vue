@@ -8,6 +8,7 @@ import ProjectKnowledge from '@/components/ProjectKnowledge.vue';
 defineOptions({
     layout: {
         breadcrumbs: [{ title: 'Projects', href: '/projects' }],
+        fullWidth: true,
     },
 });
 
@@ -16,11 +17,17 @@ defineProps<{
         id: number;
         name: string;
         instructions: string | null;
-        memory: string | null;
     };
     models: { value: string; label: string }[];
     defaultModel: string;
     conversations: { id: number; title: string }[];
+    uploads: {
+        enabled: boolean;
+        maxFiles: number;
+        maxSizeKb: number;
+        mimes: string;
+    };
+    skills: { id: number; name: string; icon: string | null }[];
 }>();
 
 const panelOpen = ref(false);
@@ -35,7 +42,7 @@ const railClass = computed(() =>
 <template>
     <Head :title="project.name" />
 
-    <div class="mx-auto h-[calc(100svh-4rem)] w-full max-w-7xl p-4">
+    <div class="h-[calc(100svh-4rem)] w-full p-4">
         <div class="flex h-full gap-4">
             <!-- Chat -->
             <div class="min-w-0 flex-1">
@@ -43,6 +50,8 @@ const railClass = computed(() =>
                     :models="models"
                     :default-model="defaultModel"
                     :conversations="conversations"
+                    :uploads="uploads"
+                    :skills="skills"
                     :project-id="project.id"
                 >
                     <template #brand>
@@ -54,7 +63,7 @@ const railClass = computed(() =>
                             <ArrowLeft class="size-4" />
                         </Link>
                         <div
-                            class="flex size-9 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-indigo-500 text-white shadow-sm"
+                            class="flex size-9 items-center justify-center rounded-full bg-gradient-to-br from-brand-navy to-brand-gold text-white shadow-sm"
                         >
                             <FolderOpen class="size-4" />
                         </div>
@@ -76,7 +85,7 @@ const railClass = computed(() =>
 
                     <template #empty>
                         Ask anything about {{ project.name }}. I'll use this
-                        project's instructions and memory.
+                        project's instructions.
                     </template>
                 </ChatPanel>
             </div>

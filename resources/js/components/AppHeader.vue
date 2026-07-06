@@ -5,12 +5,14 @@ import {
     LayoutGrid,
     Menu,
     MessageSquare,
+    Plug,
     Search,
 } from '@lucide/vue';
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import AppLogo from '@/components/AppLogo.vue';
 import AppLogoIcon from '@/components/AppLogoIcon.vue';
 import Breadcrumbs from '@/components/Breadcrumbs.vue';
+import ChatSearchDialog from '@/components/ChatSearchDialog.vue';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import {
@@ -75,15 +77,32 @@ const mainNavItems: NavItem[] = [
         href: '/projects',
         icon: FolderOpen,
     },
+    {
+        title: 'Integrations',
+        href: '/integrations',
+        icon: Plug,
+    },
 ];
 
 const rightNavItems: NavItem[] = [];
+
+const searchOpen = ref(false);
+
+function onKeydown(e: KeyboardEvent) {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchOpen.value = true;
+    }
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown));
+onUnmounted(() => window.removeEventListener('keydown', onKeydown));
 </script>
 
 <template>
     <div>
-        <div class="border-b border-sidebar-border/80">
-            <div class="mx-auto flex h-16 items-center px-4 md:max-w-7xl">
+        <div class="border-b border-sidebar-border">
+            <div class="flex h-16 items-center px-4 lg:px-6">
                 <!-- Mobile Menu -->
                 <div class="lg:hidden">
                     <Sheet>
@@ -186,7 +205,7 @@ const rightNavItems: NavItem[] = [];
                                 </Link>
                                 <div
                                     v-if="isCurrentUrl(item.href)"
-                                    class="absolute bottom-0 left-0 h-0.5 w-full translate-y-px bg-black dark:bg-white"
+                                    class="absolute bottom-0 left-0 h-0.5 w-full translate-y-px bg-brand-gold"
                                 ></div>
                             </NavigationMenuItem>
                         </NavigationMenuList>
@@ -199,6 +218,9 @@ const rightNavItems: NavItem[] = [];
                             variant="ghost"
                             size="icon"
                             class="group h-9 w-9 cursor-pointer"
+                            aria-label="Search chats"
+                            title="Search chats (⌘K)"
+                            @click="searchOpen = true"
                         >
                             <Search
                                 class="size-5 opacity-80 group-hover:opacity-100"
@@ -276,13 +298,15 @@ const rightNavItems: NavItem[] = [];
 
         <div
             v-if="props.breadcrumbs.length > 1"
-            class="flex w-full border-b border-sidebar-border/70"
+            class="flex w-full border-b border-sidebar-border"
         >
             <div
-                class="mx-auto flex h-12 w-full items-center justify-start px-4 text-neutral-500 md:max-w-7xl"
+                class="flex h-12 w-full items-center justify-start px-4 text-neutral-500 lg:px-6"
             >
                 <Breadcrumbs :breadcrumbs="breadcrumbs" />
             </div>
         </div>
+
+        <ChatSearchDialog v-model:open="searchOpen" />
     </div>
 </template>

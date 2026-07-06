@@ -65,10 +65,11 @@ class ProjectController extends Controller
                 'id' => $project->id,
                 'name' => $project->name,
                 'instructions' => $project->instructions,
-                'memory' => $project->memory,
             ],
             'models' => $models,
             'defaultModel' => config('services.anthropic.model'),
+            'uploads' => ChatController::uploadsProps(),
+            'skills' => ChatController::skillOptions($request),
             'conversations' => $project->conversations()
                 ->latest('updated_at')
                 ->get(['id', 'title', 'updated_at'])
@@ -91,7 +92,6 @@ class ProjectController extends Controller
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:120'],
             'instructions' => ['nullable', 'string', 'max:20000'],
-            'memory' => ['nullable', 'string', 'max:20000'],
         ]);
 
         $project->update($validated);

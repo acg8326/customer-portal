@@ -2,22 +2,22 @@
 
 ## Stack
 
-| Layer | Technology | Version |
-| --- | --- | --- |
-| Backend framework | Laravel | 13.x |
-| Language (backend) | PHP | 8.3+ |
-| Auth | Laravel Fortify | — |
-| Frontend framework | Vue | 3.5 |
-| SPA bridge | Inertia.js (Vue 3 adapter) | 3.x |
-| Language (frontend) | TypeScript | 5.x |
-| Styling | Tailwind CSS | 4.x |
-| UI components | shadcn-vue (Reka UI) | — |
-| Icons | lucide (`@lucide/vue`) | — |
-| Typed routes | Laravel Wayfinder | — |
-| Build tool | Vite (Rolldown) | — |
-| Database | MySQL / MariaDB | — |
-| AI chat | Claude API (`anthropic-ai/sdk`) | 0.30.x |
-| Tests | Pest | 4.x |
+| Layer               | Technology                      | Version |
+| ------------------- | ------------------------------- | ------- |
+| Backend framework   | Laravel                         | 13.x    |
+| Language (backend)  | PHP                             | 8.3+    |
+| Auth                | Laravel Fortify                 | —       |
+| Frontend framework  | Vue                             | 3.5     |
+| SPA bridge          | Inertia.js (Vue 3 adapter)      | 3.x     |
+| Language (frontend) | TypeScript                      | 5.x     |
+| Styling             | Tailwind CSS                    | 4.x     |
+| UI components       | shadcn-vue (Reka UI)            | —       |
+| Icons               | lucide (`@lucide/vue`)          | —       |
+| Typed routes        | Laravel Wayfinder               | —       |
+| Build tool          | Vite (Rolldown)                 | —       |
+| Database            | MySQL / MariaDB                 | —       |
+| AI chat             | Claude API (`anthropic-ai/sdk`) | 0.30.x  |
+| Tests               | Pest                            | 4.x     |
 
 ## How the pieces fit
 
@@ -56,9 +56,9 @@ docs/                     # you are here
 ## Layout system
 
 - `resources/js/app.ts` maps page names to layouts:
-  - `auth/*` → `AuthLayout` (the custom login scene)
-  - `settings/*` → `AppLayout` + settings sub-layout
-  - everything else → `AppLayout` (**top header** navigation)
+    - `auth/*` → `AuthLayout` (the custom login scene)
+    - `settings/*` → `AppLayout` + settings sub-layout
+    - everything else → `AppLayout` (**top header** navigation)
 - `AppLayout` currently uses the **header** layout
   ([`AppHeaderLayout.vue`](../resources/js/layouts/app/AppHeaderLayout.vue)).
   A sidebar layout also exists in the codebase but is not used.
