@@ -1,48 +1,167 @@
 <script setup lang="ts">
 import { Head } from '@inertiajs/vue3';
-import PlaceholderPattern from '@/components/PlaceholderPattern.vue';
+import { FolderOpen, MessagesSquare, Sparkles, Zap } from '@lucide/vue';
+import { computed } from 'vue';
 import { dashboard } from '@/routes';
 
 defineOptions({
     layout: {
-        breadcrumbs: [
-            {
-                title: 'Dashboard',
-                href: dashboard(),
-            },
-        ],
+        breadcrumbs: [{ title: 'Dashboard', href: dashboard() }],
         fullWidth: true,
     },
 });
+
+const props = defineProps<{
+    usage: {
+        enabled: boolean;
+        used: number;
+        limit: number;
+        remaining: number;
+        percent: number;
+        resets_at: string | null;
+        period_days: number;
+    };
+    stats: {
+        conversations: number;
+        projects: number;
+        skills: number;
+    };
+}>();
+
+const nf = new Intl.NumberFormat();
+
+function compact(n: number): string {
+    return new Intl.NumberFormat(undefined, {
+        notation: 'compact',
+        maximumFractionDigits: 1,
+    }).format(n);
+}
+
+const resetsLabel = computed(() => {
+    if (!props.usage.resets_at) {
+        return null;
+    }
+
+    const d = new Date(props.usage.resets_at);
+
+    return d.toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+    });
+});
+
+const barColor = computed(() => {
+    if (props.usage.percent >= 90) {
+        return 'bg-destructive';
+    }
+
+    if (props.usage.percent >= 75) {
+        return 'bg-amber-500';
+    }
+
+    return 'bg-brand-gold';
+});
+
+const tiles = computed(() => [
+    {
+        label: 'Conversations',
+        value: props.stats.conversations,
+        icon: MessagesSquare,
+    },
+    { label: 'Projects', value: props.stats.projects, icon: FolderOpen },
+    { label: 'Skills', value: props.stats.skills, icon: Sparkles },
+]);
 </script>
 
 <template>
     <Head title="Dashboard" />
 
-    <div
-        class="flex h-full flex-1 flex-col gap-4 overflow-x-auto rounded-xl p-4"
-    >
-        <div class="grid auto-rows-min gap-4 md:grid-cols-3">
-            <div
-                class="relative aspect-video overflow-hidden rounded-xl border border-sidebar-border/70 dark:border-sidebar-border"
-            >
-                <PlaceholderPattern />
+    <div class="flex w-full flex-col gap-4 p-4">
+        <!-- Token usage -->
+        <section class="rounded-xl border bg-card p-5">
+            <div class="mb-4 flex items-center justify-between gap-4">
+                <div class="flex items-center gap-3">
+                    <div
+                        class="flex size-10 items-center justify-center rounded-lg bg-gradient-to-br from-brand-navy to-brand-gold text-white"
+                    >
+                        <Zap class="size-5" />
+                    </div>
+                    <div>
+                        <h2 class="font-semibold tracking-tight">
+                            Token usage
+                        </h2>
+                        <p class="text-xs text-muted-foreground">
+                            <template v-if="usage.enabled">
+                                Your allowance for this
+                                {{ usage.period_days }}-day period
+                                <template v-if="resetsLabel">
+                                    · resets {{ resetsLabel }}
+                                </template>
+                            </template>
+                            <template v-else>
+                                Usage tracking (no limit configured)
+                            </template>
+                        </p>
+                    </div>
+                </div>
+                <div class="text-right">
+                    <p class="text-2xl font-semibold tabular-nums">
+                        {{ compact(usage.used) }}
+                        <span
+                            v-if="usage.enabled"
+                            class="text-sm font-normal text-muted-foreground"
+                        >
+                            / {{ compact(usage.limit) }}
+                        </span>
+                    </p>
+                    <p class="text-xs text-muted-foreground">tokens used</p>
+                </div>
             </div>
+
+            <template v-if="usage.enabled">
+                <div class="h-2.5 w-full overflow-hidden rounded-full bg-muted">
+                    <div
+                        class="h-full rounded-full transition-all"
+                        :class="barColor"
+                        :style="{ width: `${Math.min(100, usage.percent)}%` }"
+                    />
+                </div>
+                <div
+                    class="mt-2 flex items-center justify-between text-xs text-muted-foreground"
+                >
+                    <span>{{ usage.percent }}% used</span>
+                    <span>{{ nf.format(usage.remaining) }} tokens remaining</span>
+                </div>
+                <p
+                    v-if="usage.percent >= 90"
+                    class="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+                >
+                    You're almost out of tokens for this period. New messages
+                    will be blocked until your allowance resets.
+                </p>
+            </template>
+        </section>
+
+        <!-- Stat tiles -->
+        <section class="grid gap-4 sm:grid-cols-3">
             <div
-                class="relative aspect-video overflow-hidden rounded-xl border border-sidebar-border/70 dark:border-sidebar-border"
+                v-for="tile in tiles"
+                :key="tile.label"
+                class="flex items-center gap-4 rounded-xl border bg-card p-5"
             >
-                <PlaceholderPattern />
+                <div
+                    class="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground"
+                >
+                    <component :is="tile.icon" class="size-5" />
+                </div>
+                <div>
+                    <p class="text-2xl font-semibold tabular-nums">
+                        {{ nf.format(tile.value) }}
+                    </p>
+                    <p class="text-xs text-muted-foreground">{{ tile.label }}</p>
+                </div>
             </div>
-            <div
-                class="relative aspect-video overflow-hidden rounded-xl border border-sidebar-border/70 dark:border-sidebar-border"
-            >
-                <PlaceholderPattern />
-            </div>
-        </div>
-        <div
-            class="relative min-h-[100vh] flex-1 rounded-xl border border-sidebar-border/70 md:min-h-min dark:border-sidebar-border"
-        >
-            <PlaceholderPattern />
-        </div>
+        </section>
     </div>
 </template>

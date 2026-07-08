@@ -28,6 +28,7 @@ defineProps<{
         mimes: string;
     };
     skills: { id: number; name: string; icon: string | null }[];
+    mcpEnabled: boolean;
 }>();
 
 const panelOpen = ref(false);
@@ -52,6 +53,7 @@ const railClass = computed(() =>
                     :conversations="conversations"
                     :uploads="uploads"
                     :skills="skills"
+                    :mcp-enabled="mcpEnabled"
                     :project-id="project.id"
                 >
                     <template #brand>

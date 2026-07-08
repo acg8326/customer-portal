@@ -26,6 +26,7 @@ defineProps<{
         mimes: string;
     };
     skills: { id: number; name: string; icon: string | null }[];
+    mcpEnabled: boolean;
 }>();
 </script>
 
@@ -39,6 +40,7 @@ defineProps<{
             :conversations="conversations"
             :uploads="uploads"
             :skills="skills"
+            :mcp-enabled="mcpEnabled"
             full-bleed
         />
     </div>

@@ -70,6 +70,7 @@ class ProjectController extends Controller
             'defaultModel' => config('services.anthropic.model'),
             'uploads' => ChatController::uploadsProps(),
             'skills' => ChatController::skillOptions($request),
+            'mcpEnabled' => ChatController::mcpEnabled($request),
             'conversations' => $project->conversations()
                 ->latest('updated_at')
                 ->get(['id', 'title', 'updated_at'])

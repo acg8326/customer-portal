@@ -25,6 +25,8 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property string|null $two_factor_recovery_codes
  * @property Carbon|null $two_factor_confirmed_at
  * @property string|null $remember_token
+ * @property int $token_budget_used
+ * @property Carbon|null $token_budget_started_at
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  */
@@ -46,6 +48,7 @@ class User extends Authenticatable implements PasskeyUser
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
+            'token_budget_started_at' => 'datetime',
         ];
     }
 
@@ -71,5 +74,21 @@ class User extends Authenticatable implements PasskeyUser
     public function skills(): HasMany
     {
         return $this->hasMany(Skill::class);
+    }
+
+    /**
+     * @return HasMany<UserIntegration, $this>
+     */
+    public function integrations(): HasMany
+    {
+        return $this->hasMany(UserIntegration::class);
+    }
+
+    /**
+     * @return HasMany<McpServer, $this>
+     */
+    public function mcpServers(): HasMany
+    {
+        return $this->hasMany(McpServer::class);
     }
 }

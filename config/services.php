@@ -40,6 +40,13 @@ return [
         'model' => env('ANTHROPIC_MODEL', 'claude-opus-4-8'),
         'max_tokens' => (int) env('ANTHROPIC_MAX_TOKENS', 4096),
 
+        // Max past messages replayed to the API each turn (0 = no trim). Keeps
+        // long conversations from growing context (and cost) without bound.
+        'history_limit' => (int) env('ANTHROPIC_HISTORY_LIMIT', 40),
+
+        // Beta flag for the MCP connector (native tool use via MCP servers).
+        'mcp_beta' => env('ANTHROPIC_MCP_BETA', 'mcp-client-2025-04-04'),
+
         // The assistant's persona / guardrails. Override in .env with a single
         // line via ANTHROPIC_SYSTEM_PROMPT, or edit this multi-line default.
         'system_prompt' => env('ANTHROPIC_SYSTEM_PROMPT', <<<'PROMPT'

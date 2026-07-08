@@ -2,26 +2,46 @@
 
 namespace App\Http\Controllers;
 
+use Anthropic\Beta\Messages\BetaMCPToolUseBlock;
+use Anthropic\Beta\Messages\BetaRawContentBlockDeltaEvent;
+use Anthropic\Beta\Messages\BetaRawContentBlockStartEvent;
+use Anthropic\Beta\Messages\BetaRawMessageDeltaEvent;
+use Anthropic\Beta\Messages\BetaRawMessageStartEvent;
+use Anthropic\Beta\Messages\BetaRequestMCPServerURLDefinition;
+use Anthropic\Beta\Messages\BetaTextBlock;
+use Anthropic\Beta\Messages\BetaTextDelta;
 use Anthropic\Client;
 use Anthropic\Messages\Base64ImageSource;
 use Anthropic\Messages\Base64PDFSource;
+use Anthropic\Messages\CacheControlEphemeral;
 use Anthropic\Messages\DocumentBlockParam;
 use Anthropic\Messages\ImageBlockParam;
+use Anthropic\Messages\RawContentBlockDeltaEvent;
+use Anthropic\Messages\RawMessageDeltaEvent;
+use Anthropic\Messages\RawMessageStartEvent;
 use Anthropic\Messages\TextBlock;
 use Anthropic\Messages\TextBlockParam;
+use Anthropic\Messages\TextDelta;
+use App\Jobs\DispatchN8nEvent;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\Project;
 use App\Models\Skill;
+use App\Models\User;
+use App\Services\TokenBudget;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Throwable;
 
 class ChatController extends Controller
@@ -43,7 +63,17 @@ class ChatController extends Controller
             'conversations' => $this->conversationList($request),
             'uploads' => self::uploadsProps(),
             'skills' => self::skillOptions($request),
+            'mcpEnabled' => self::mcpEnabled($request),
         ]);
+    }
+
+    /**
+     * Whether the current user has at least one enabled MCP server (so the chat
+     * routes through the non-streaming, tool-capable path).
+     */
+    public static function mcpEnabled(Request $request): bool
+    {
+        return $request->user()->mcpServers()->where('enabled', true)->exists();
     }
 
     /**
@@ -133,6 +163,244 @@ class ChatController extends Controller
             ], 503);
         }
 
+        // Enforce the per-user token budget before doing any work.
+        $budget = app(TokenBudget::class);
+
+        if ($budget->exceeded($request->user())) {
+            $snapshot = $budget->snapshot($request->user());
+
+            return response()->json([
+                'message' => 'You have used your token allowance for this period. It resets on '
+                    .Carbon::parse($snapshot['resets_at'])->toDayDateTimeString().'.',
+                'usage_limit' => $snapshot,
+            ], 429);
+        }
+
+        [$conversation, $userId, $selectedModel] = $this->startTurn($request, $hasFiles);
+
+        try {
+            $client = new Client(apiKey: $apiKey);
+            $mcp = $this->mcpServerDefs($request->user());
+
+            if ($mcp !== []) {
+                // Native tool use via the user's MCP servers (server-side).
+                [$reply, $inputTokens, $outputTokens] =
+                    $this->completeWithMcp($client, $conversation, $selectedModel, $mcp);
+            } else {
+                $message = $client->messages->create(
+                    maxTokens: config('services.anthropic.max_tokens', 4096),
+                    messages: $this->buildHistory($conversation),
+                    model: $selectedModel,
+                    system: $this->systemBlocks($conversation),
+                );
+
+                $reply = '';
+
+                foreach ($message->content as $block) {
+                    if ($block instanceof TextBlock) {
+                        $reply .= $block->text;
+                    }
+                }
+
+                $reply = trim($reply);
+                $inputTokens = $message->usage->inputTokens;
+                $outputTokens = $message->usage->outputTokens;
+            }
+
+            $this->finalizeTurn(
+                $request,
+                $conversation,
+                $reply,
+                $selectedModel,
+                $inputTokens,
+                $outputTokens,
+                $userId,
+            );
+
+            return response()->json([
+                'conversation_id' => $conversation->id,
+                'title' => $conversation->title,
+                'reply' => $reply,
+                'usage' => [
+                    'prompt_tokens' => $conversation->prompt_tokens,
+                    'completion_tokens' => $conversation->completion_tokens,
+                ],
+            ]);
+        } catch (Throwable $e) {
+            Log::error('Claude chat request failed', [
+                'user_id' => $userId,
+                'conversation_id' => $conversation->id,
+                'model' => $selectedModel,
+                'exception' => $e::class,
+                'error' => $e->getMessage(),
+            ]);
+            report($e);
+
+            return response()->json([
+                'message' => 'Sorry — the assistant could not respond right now. Please try again.',
+            ], 502);
+        }
+    }
+
+    /**
+     * Same as send(), but streams Claude's reply token-by-token over SSE.
+     * Persists the message, records tokens, and fires the n8n event once the
+     * stream completes — identical bookkeeping to send().
+     */
+    public function stream(Request $request): JsonResponse|StreamedResponse
+    {
+        $uploads = self::uploadsProps();
+        $hasFiles = $uploads['enabled'] && $request->hasFile('files');
+
+        $request->validate([
+            'conversation_id' => ['nullable', 'integer'],
+            'project_id' => ['nullable', 'integer'],
+            'content' => [$hasFiles ? 'nullable' : 'required', 'string', 'max:8000'],
+            'model' => ['required', 'string', Rule::in(array_keys(Config::array('services.anthropic.models')))],
+            'skill_id' => ['nullable', 'integer'],
+            'files' => [$uploads['enabled'] ? 'nullable' : 'prohibited', 'array', 'max:'.$uploads['maxFiles']],
+            'files.*' => ['file', 'mimes:'.$uploads['mimes'], 'max:'.$uploads['maxSizeKb']],
+        ]);
+
+        $apiKey = config('services.anthropic.key');
+
+        if (blank($apiKey)) {
+            return response()->json([
+                'message' => 'The chat is not configured yet. Add ANTHROPIC_API_KEY to your .env file.',
+            ], 503);
+        }
+
+        if (app(TokenBudget::class)->exceeded($request->user())) {
+            $snapshot = app(TokenBudget::class)->snapshot($request->user());
+
+            return response()->json([
+                'message' => 'You have used your token allowance for this period. It resets on '
+                    .Carbon::parse($snapshot['resets_at'])->toDayDateTimeString().'.',
+                'usage_limit' => $snapshot,
+            ], 429);
+        }
+
+        [$conversation, $userId, $selectedModel] = $this->startTurn($request, $hasFiles);
+        $mcp = $this->mcpServerDefs($request->user());
+        $maxTokens = (int) config('services.anthropic.max_tokens', 4096);
+
+        return response()->stream(function () use ($request, $conversation, $mcp, $selectedModel, $maxTokens, $userId, $apiKey): void {
+            $this->emit('meta', [
+                'conversation_id' => $conversation->id,
+                'title' => $conversation->title,
+            ]);
+
+            try {
+                $client = new Client(apiKey: $apiKey);
+
+                if ($mcp !== []) {
+                    // Native tool use, streamed: Anthropic runs the MCP tools
+                    // server-side and streams the final text. Text-only history.
+                    $stream = $client->beta->messages->createStream(
+                        maxTokens: $maxTokens,
+                        messages: $this->textHistory($conversation),
+                        model: $selectedModel,
+                        system: $this->buildSystemPrompt($conversation),
+                        mcpServers: $mcp,
+                        betas: [(string) config('services.anthropic.mcp_beta', 'mcp-client-2025-04-04')],
+                    );
+                } else {
+                    $stream = $client->messages->createStream(
+                        maxTokens: $maxTokens,
+                        messages: $this->buildHistory($conversation),
+                        model: $selectedModel,
+                        system: $this->systemBlocks($conversation),
+                    );
+                }
+
+                $reply = '';
+                $inputTokens = 0;
+                $outputTokens = 0;
+
+                foreach ($stream as $event) {
+                    // Text deltas (plain + beta/MCP streams).
+                    if ($event instanceof RawContentBlockDeltaEvent && $event->delta instanceof TextDelta) {
+                        $reply .= $event->delta->text;
+                        $this->emit('delta', ['text' => $event->delta->text]);
+                    } elseif ($event instanceof BetaRawContentBlockDeltaEvent && $event->delta instanceof BetaTextDelta) {
+                        $reply .= $event->delta->text;
+                        $this->emit('delta', ['text' => $event->delta->text]);
+                    } elseif ($event instanceof BetaRawContentBlockStartEvent && $event->contentBlock instanceof BetaMCPToolUseBlock) {
+                        // Surface a tool call as it starts.
+                        $this->emit('tool', [
+                            'name' => $event->contentBlock->name,
+                            'server' => $event->contentBlock->serverName,
+                        ]);
+                    } elseif ($event instanceof RawMessageStartEvent) {
+                        $inputTokens = $event->message->usage->inputTokens;
+                    } elseif ($event instanceof BetaRawMessageStartEvent) {
+                        $inputTokens = $event->message->usage->inputTokens;
+                    } elseif ($event instanceof RawMessageDeltaEvent) {
+                        $outputTokens = $event->usage->outputTokens;
+                    } elseif ($event instanceof BetaRawMessageDeltaEvent) {
+                        $outputTokens = $event->usage->outputTokens;
+                    }
+                }
+
+                $reply = trim($reply);
+
+                $this->finalizeTurn($request, $conversation, $reply, $selectedModel, $inputTokens, $outputTokens, $userId);
+
+                $this->emit('done', [
+                    'reply' => $reply,
+                    'usage' => [
+                        'prompt_tokens' => $conversation->prompt_tokens,
+                        'completion_tokens' => $conversation->completion_tokens,
+                    ],
+                ]);
+            } catch (Throwable $e) {
+                Log::error('Claude chat stream failed', [
+                    'user_id' => $userId,
+                    'conversation_id' => $conversation->id,
+                    'model' => $selectedModel,
+                    'exception' => $e::class,
+                    'error' => $e->getMessage(),
+                ]);
+                report($e);
+
+                $this->emit('error', [
+                    'message' => 'Sorry — the assistant could not respond right now. Please try again.',
+                ]);
+            }
+        }, 200, [
+            'Content-Type' => 'text/event-stream',
+            'Cache-Control' => 'no-cache',
+            'Connection' => 'keep-alive',
+            'X-Accel-Buffering' => 'no', // don't let nginx buffer the stream
+        ]);
+    }
+
+    /**
+     * Send one SSE frame to the client and flush it immediately.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function emit(string $event, array $data): void
+    {
+        echo 'event: '.$event."\n";
+        echo 'data: '.json_encode($data)."\n\n";
+
+        if (ob_get_level() > 0) {
+            @ob_flush();
+        }
+
+        flush();
+    }
+
+    /**
+     * Resolve (or create) the conversation, apply the selected skill, store any
+     * uploaded files, title a new conversation, and persist the user's message.
+     * Shared by send() and stream().
+     *
+     * @return array{0: Conversation, 1: int, 2: string} [conversation, userId, model]
+     */
+    private function startTurn(Request $request, bool $hasFiles): array
+    {
         $userId = $request->user()->id;
         $content = (string) $request->input('content');
         $selectedModel = (string) $request->input('model');
@@ -182,61 +450,180 @@ class ChatController extends Controller
             'attachments' => $attachments !== [] ? $attachments : null,
         ]);
 
+        return [$conversation, $userId, $selectedModel];
+    }
+
+    /**
+     * Build the (trimmed) message history to send to Claude.
+     *
+     * @return list<array{role: 'assistant'|'user', content: string|list<ImageBlockParam|DocumentBlockParam|TextBlockParam>}>
+     */
+    private function buildHistory(Conversation $conversation): array
+    {
         $history = [];
 
-        foreach ($conversation->messages()->orderBy('id')->get() as $m) {
+        foreach ($this->recentMessages($conversation) as $m) {
             $history[] = [
                 'role' => $m->role === 'assistant' ? 'assistant' : 'user',
                 'content' => $this->messageContent($m),
             ];
         }
 
-        try {
-            $client = new Client(apiKey: $apiKey);
+        return $history;
+    }
 
-            $message = $client->messages->create(
-                maxTokens: config('services.anthropic.max_tokens', 4096),
-                messages: $history,
-                model: $selectedModel,
-                system: $this->buildSystemPrompt($conversation),
-            );
+    /**
+     * The conversation's messages, trimmed to the most recent N turns so
+     * context (and cost) stays bounded. Kept starting on a user turn.
+     *
+     * @return Collection<int, Message>
+     */
+    private function recentMessages(Conversation $conversation): Collection
+    {
+        $messages = $conversation->messages()->orderBy('id')->get();
+        $historyLimit = (int) config('services.anthropic.history_limit', 40);
 
-            $reply = '';
+        if ($historyLimit > 0 && $messages->count() > $historyLimit) {
+            $messages = $messages->slice($messages->count() - $historyLimit)->values();
 
-            foreach ($message->content as $block) {
-                if ($block instanceof TextBlock) {
-                    $reply .= $block->text;
-                }
+            while ($messages->isNotEmpty() && $messages->first()->role === 'assistant') {
+                $messages->shift();
             }
 
-            $reply = trim($reply);
-
-            $conversation->messages()->create([
-                'role' => 'assistant',
-                'content' => $reply,
-            ]);
-
-            $conversation->model = $selectedModel;
-            $conversation->prompt_tokens += $message->usage->inputTokens;
-            $conversation->completion_tokens += $message->usage->outputTokens;
-            $conversation->save();
-
-            return response()->json([
-                'conversation_id' => $conversation->id,
-                'title' => $conversation->title,
-                'reply' => $reply,
-                'usage' => [
-                    'prompt_tokens' => $conversation->prompt_tokens,
-                    'completion_tokens' => $conversation->completion_tokens,
-                ],
-            ]);
-        } catch (Throwable $e) {
-            report($e);
-
-            return response()->json([
-                'message' => 'Sorry — the assistant could not respond right now. Please try again.',
-            ], 502);
+            $messages = $messages->values();
         }
+
+        return $messages;
+    }
+
+    /**
+     * Text-only trimmed history (role + string content) for the beta/MCP path,
+     * which uses beta block types incompatible with the rich attachment
+     * history builder.
+     *
+     * @return list<array{role: 'assistant'|'user', content: string}>
+     */
+    private function textHistory(Conversation $conversation): array
+    {
+        $messages = [];
+
+        foreach ($this->recentMessages($conversation) as $m) {
+            $messages[] = [
+                'role' => $m->role === 'assistant' ? 'assistant' : 'user',
+                'content' => (string) $m->content,
+            ];
+        }
+
+        return $messages;
+    }
+
+    /**
+     * The system prompt as a cached content block (prompt caching).
+     *
+     * @return list<TextBlockParam>
+     */
+    private function systemBlocks(Conversation $conversation): array
+    {
+        return [
+            TextBlockParam::with(
+                text: $this->buildSystemPrompt($conversation),
+                cacheControl: CacheControlEphemeral::with(),
+            ),
+        ];
+    }
+
+    /**
+     * The user's enabled MCP servers as request definitions, or [] if none.
+     *
+     * @return list<BetaRequestMCPServerURLDefinition>
+     */
+    private function mcpServerDefs(User $user): array
+    {
+        $defs = [];
+
+        foreach ($user->mcpServers()->where('enabled', true)->orderBy('id')->get() as $s) {
+            $defs[] = BetaRequestMCPServerURLDefinition::with(
+                name: Str::slug($s->name) ?: 'mcp'.$s->id,
+                url: $s->url,
+                authorizationToken: filled($s->auth_token) ? $s->auth_token : null,
+            );
+        }
+
+        return $defs;
+    }
+
+    /**
+     * Complete a turn with the user's MCP servers attached. Anthropic runs the
+     * MCP tool calls server-side (looping internally) and returns the final
+     * text plus mcp_tool_use / mcp_tool_result blocks in one response.
+     *
+     * Note: the MCP path sends text-only history — per-message image/PDF
+     * re-sending is a chat-only feature for now.
+     *
+     * @param  list<BetaRequestMCPServerURLDefinition>  $mcp
+     * @return array{0: string, 1: int, 2: int} [reply, inputTokens, outputTokens]
+     */
+    private function completeWithMcp(Client $client, Conversation $conversation, string $model, array $mcp): array
+    {
+        $message = $client->beta->messages->create(
+            maxTokens: config('services.anthropic.max_tokens', 4096),
+            messages: $this->textHistory($conversation),
+            model: $model,
+            system: $this->buildSystemPrompt($conversation),
+            mcpServers: $mcp,
+            betas: [(string) config('services.anthropic.mcp_beta', 'mcp-client-2025-04-04')],
+        );
+
+        $reply = '';
+
+        foreach ($message->content as $block) {
+            if ($block instanceof BetaTextBlock) {
+                $reply .= $block->text;
+            }
+        }
+
+        return [trim($reply), $message->usage->inputTokens, $message->usage->outputTokens];
+    }
+
+    /**
+     * Persist the assistant reply, update token totals, charge the user's
+     * budget, and queue the n8n event. Shared by send() and stream().
+     */
+    private function finalizeTurn(
+        Request $request,
+        Conversation $conversation,
+        string $reply,
+        string $selectedModel,
+        int $inputTokens,
+        int $outputTokens,
+        int $userId,
+    ): void {
+        $conversation->messages()->create([
+            'role' => 'assistant',
+            'content' => $reply,
+        ]);
+
+        $conversation->model = $selectedModel;
+        $conversation->prompt_tokens += $inputTokens;
+        $conversation->completion_tokens += $outputTokens;
+        $conversation->save();
+
+        // Charge this turn's tokens against the user's rolling budget.
+        app(TokenBudget::class)->record($request->user(), $inputTokens + $outputTokens);
+
+        // Fire a chat.completed event to the user's connected tools (e.g. n8n)
+        // on the queue, so a slow webhook never delays the reply.
+        DispatchN8nEvent::dispatch($userId, 'chat.completed', [
+            'conversation_id' => $conversation->id,
+            'title' => $conversation->title,
+            'model' => $selectedModel,
+            'project_id' => $conversation->project_id,
+            'reply' => $reply,
+            'usage' => [
+                'prompt_tokens' => $conversation->prompt_tokens,
+                'completion_tokens' => $conversation->completion_tokens,
+            ],
+        ]);
     }
 
     /**

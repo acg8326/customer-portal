@@ -59,6 +59,7 @@ const props = withDefaults(
         fullBleed?: boolean;
         uploads?: UploadConfig;
         skills?: SkillOption[];
+        mcpEnabled?: boolean;
     }>(),
     {
         projectId: null,
@@ -70,6 +71,7 @@ const props = withDefaults(
             mimes: '',
         }),
         skills: () => [],
+        mcpEnabled: false,
     },
 );
 
@@ -108,6 +110,8 @@ const activeId = ref<number | null>(null);
 const messages = ref<ChatMessage[]>([]);
 const draft = ref('');
 const loading = ref(false);
+const streaming = ref(false);
+const streamingTool = ref<string | null>(null);
 const error = ref<string | null>(null);
 const scrollRegion = ref<HTMLElement | null>(null);
 const model = ref(initialModel());
@@ -297,7 +301,14 @@ async function send() {
     draft.value = '';
     pendingFiles.value = [];
     loading.value = true;
+    streaming.value = false;
     await scrollToBottom();
+
+    // Empty assistant bubble we stream tokens into.
+    const assistantIndex =
+        messages.value.push({ role: 'assistant', content: '' }) - 1;
+    let streamed = '';
+    streamingTool.value = null;
 
     try {
         let res: Response;
@@ -322,13 +333,13 @@ async function send() {
 
             files.forEach((f) => form.append('files[]', f));
 
-            res = await fetch('/chat/message', {
+            res = await fetch('/chat/stream', {
                 method: 'POST',
                 headers: baseHeaders(),
                 body: form,
             });
         } else {
-            res = await fetch('/chat/message', {
+            res = await fetch('/chat/stream', {
                 method: 'POST',
                 headers: jsonHeaders(),
                 body: JSON.stringify({
@@ -341,25 +352,110 @@ async function send() {
             });
         }
 
-        const data = await res.json();
+        // Errors (validation, budget, rate limit, not-configured) arrive as
+        // JSON, not a stream.
+        if (!res.ok || !res.body) {
+            const data = await res.json().catch(() => ({}));
 
-        if (!res.ok) {
             throw new Error(data.message ?? 'The assistant could not respond.');
         }
 
-        activeId.value = data.conversation_id;
-        messages.value.push({ role: 'assistant', content: data.reply });
-        bumpToTop(data.conversation_id, data.title);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-        if (data.usage) {
-            promptTokens.value = data.usage.prompt_tokens ?? promptTokens.value;
-            completionTokens.value =
-                data.usage.completion_tokens ?? completionTokens.value;
+        for (;;) {
+            const { done, value } = await reader.read();
+
+            if (done) {
+                break;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // SSE frames are separated by a blank line.
+            let sep = buffer.indexOf('\n\n');
+
+            while (sep !== -1) {
+                const frame = buffer.slice(0, sep).trim();
+                buffer = buffer.slice(sep + 2);
+                sep = buffer.indexOf('\n\n');
+
+                if (frame === '') {
+                    continue;
+                }
+
+                let evt = 'message';
+                let dataStr = '';
+
+                for (const line of frame.split('\n')) {
+                    if (line.startsWith('event:')) {
+                        evt = line.slice(6).trim();
+                    } else if (line.startsWith('data:')) {
+                        dataStr += line.slice(5).trim();
+                    }
+                }
+
+                let payload: {
+                    conversation_id?: number;
+                    title?: string;
+                    text?: string;
+                    message?: string;
+                    name?: string;
+                    server?: string;
+                    usage?: {
+                        prompt_tokens?: number;
+                        completion_tokens?: number;
+                    };
+                } = {};
+
+                try {
+                    payload = dataStr ? JSON.parse(dataStr) : {};
+                } catch {
+                    payload = {};
+                }
+
+                if (evt === 'meta') {
+                    if (payload.conversation_id != null) {
+                        activeId.value = payload.conversation_id;
+                        bumpToTop(payload.conversation_id, payload.title ?? '');
+                    }
+                } else if (evt === 'tool') {
+                    // An MCP tool is being called server-side.
+                    streamingTool.value =
+                        payload.server ?? payload.name ?? 'a tool';
+                } else if (evt === 'delta') {
+                    streaming.value = true;
+                    streamingTool.value = null;
+                    streamed += payload.text ?? '';
+                    messages.value[assistantIndex].content = streamed;
+                    await scrollToBottom();
+                } else if (evt === 'done') {
+                    if (payload.usage) {
+                        promptTokens.value =
+                            payload.usage.prompt_tokens ?? promptTokens.value;
+                        completionTokens.value =
+                            payload.usage.completion_tokens ??
+                            completionTokens.value;
+                    }
+                } else if (evt === 'error') {
+                    throw new Error(
+                        payload.message ?? 'The assistant could not respond.',
+                    );
+                }
+            }
         }
     } catch (e) {
         error.value = e instanceof Error ? e.message : 'Something went wrong.';
+
+        // Drop the empty assistant bubble if nothing streamed before failing.
+        if (streamed === '' && messages.value[assistantIndex]?.role === 'assistant') {
+            messages.value.splice(assistantIndex, 1);
+        }
     } finally {
         loading.value = false;
+        streaming.value = false;
+        streamingTool.value = null;
         await scrollToBottom();
     }
 }
@@ -597,7 +693,10 @@ onMounted(() => {
                     </div>
 
                     <!-- Typing indicator -->
-                    <div v-if="loading" class="flex items-start gap-3">
+                    <div
+                        v-if="loading && !streaming"
+                        class="flex items-start gap-3"
+                    >
                         <div
                             class="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-navy to-brand-gold text-white shadow-sm"
                         >
@@ -607,7 +706,10 @@ onMounted(() => {
                             class="flex items-center gap-2 rounded-2xl rounded-tl-sm bg-muted px-4 py-3 text-sm text-muted-foreground"
                         >
                             <Spinner class="size-4" />
-                            AiMe is thinking…
+                            <template v-if="streamingTool">
+                                Using {{ streamingTool }}…
+                            </template>
+                            <template v-else> AiMe is thinking… </template>
                         </div>
                     </div>
                 </div>
