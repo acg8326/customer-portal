@@ -3,12 +3,130 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
-## More integrations
+## Navigation moved to a collapsible left sidebar
 
-- **Added NetSuite and n8n** to the Integrations page (still placeholder cards).
-  n8n joins **Automation** (self-hosted workflow triggers, beside Zapier/Webhooks);
-  **NetSuite** gets a new **ERP & business systems** category for reading/updating
-  orders, inventory, and finance records.
+- **Left sidebar instead of a top header** (Claude-style). `AppLayout` now renders
+  [`AppSidebarLayout.vue`](../resources/js/layouts/app/AppSidebarLayout.vue); the
+  old header layout is retained but no longer wired up.
+- **Open/close:** toggle with the rail button or **⌘/Ctrl-B**. Collapses to an
+  icon-only rail (labels become tooltips) and remembers its state across page
+  loads via a `sidebar_state` cookie. On mobile it becomes an overlay drawer.
+- Rebuilt [`AppSidebar.vue`](../resources/js/components/AppSidebar.vue) with the
+  real nav (Dashboard, Chat, Projects, Integrations), carried the **⌘/Ctrl-K chat
+  search** over from the header, and dropped the stale starter-kit footer links.
+  The user menu is pinned to the bottom.
+
+## Docs: competitive comparison + PDF export
+
+- **[comparison.md](comparison.md)** — why building AiMe in-house beats renting a
+  per-seat AI SaaS (e.g. toppfive.net): no per-user fee (all staff use one
+  internal deployment), full ownership/customization, data stays on our infra,
+  native MCP + n8n integrations, plus an honest feature-by-feature table.
+- **`php artisan docs:pdf {source} {--output=}`** — renders any Markdown doc to a
+  styled, branded PDF (dompdf + `Str::markdown`). Generated
+  [features.pdf](features.pdf); run it on any doc (e.g. `docs/comparison.md`).
+
+## MCP Phase 2 — streaming tool turns
+
+- **MCP turns now stream** token-by-token like every other chat (via
+  `beta.messages` `createStream` with `mcpServers`), removing the Phase-1
+  non-streaming limitation. The chat routes everything through `/chat/stream`.
+- **Live tool indicator:** while a server-side MCP tool runs, the composer shows
+  **"Using &lt;server&gt;…"** (a new `tool` SSE frame). Verified live end-to-end
+  against a public MCP server (streamed deltas + tool call + final answer).
+- Still Phase 3: OAuth for marquee tools (Slack/GitHub one-click) and image/PDF
+  passthrough on MCP turns (they remain text-only).
+
+## MCP servers — native tool use (Phase 1)
+
+- **Connect MCP (Model Context Protocol) servers** and the assistant can call
+  their tools natively in chat. Add a server (name, URL, optional bearer token)
+  on the Integrations page → "MCP servers"; enable/disable and delete per server.
+  Per-user, **token encrypted at rest**, URL **SSRF-guarded** (public http(s)
+  only). New `mcp_servers` table, `McpServer` model, `McpServerController`.
+- **Server-side tool execution.** When any MCP server is enabled, chat routes to
+  the tool-capable path ([`ChatController::completeWithMcp`](../app/Http/Controllers/ChatController.php))
+  which calls `beta.messages` with `mcpServers` + the `mcp-client` beta; Anthropic
+  runs the tool calls server-side and returns the final answer. Verified live
+  end-to-end against a public MCP server (Claude called a tool and used the result).
+- **Tradeoff:** MCP turns are **non-streaming** (tool use pauses don't stream
+  cleanly yet) and send **text-only history** — streaming-with-tools and
+  attachment passthrough are Phase 2. Config: `ANTHROPIC_MCP_BETA`.
+- This is the foundation for native connectors to Slack, GitHub, Notion, etc.
+  (any tool with an MCP server); tools without one still use n8n/webhooks.
+
+## Streaming chat replies
+
+- **Replies now stream token-by-token** over Server-Sent Events. New
+  `POST /chat/stream` endpoint ([`ChatController::stream`](../app/Http/Controllers/ChatController.php))
+  uses the Anthropic SDK's `createStream`, emitting `meta` / `delta` / `done` /
+  `error` SSE frames; the Vue [`ChatPanel`](../resources/js/components/ChatPanel.vue)
+  reads the stream with `fetch` + `ReadableStream` and fills the assistant bubble
+  live. The "Thinking…" indicator now shows only until the first token arrives.
+- **Same bookkeeping as before.** Once the stream finishes, the assistant message
+  is persisted, conversation token totals updated, the user's budget charged, and
+  the n8n event queued — identical to the non-streaming path. The old
+  `POST /chat/message` endpoint stays as a fallback. Shared setup was extracted
+  into `startTurn` / `buildHistory` / `systemBlocks` / `finalizeTurn` so both
+  paths can't drift. File uploads stream too. Verified live against the API.
+
+## Hardening: rate limits, queued webhooks, error logging
+
+- **Request rate limiting.** Per-user throttles on the sensitive endpoints —
+  chat send (`30/min`), chat search (`60/min`), integration connect/disconnect
+  (`20/min`), and the n8n test event (`10/min`). Limits are **keyed per-user**
+  (so shared networks don't collide), set well above real usage (so customers
+  don't hit them in normal use), return a friendly *"you're doing that a bit
+  fast"* message with `Retry-After`, and are **`.env`-tunable** (`RATE_LIMIT_*`,
+  [`config/ratelimits.php`](../config/ratelimits.php)) — raise instantly, no
+  deploy. Complements the token budget (rate = burst/loop guard; budget = cost).
+- **n8n dispatch moved to a queued job.** The `chat.completed` webhook now fires
+  from [`DispatchN8nEvent`](../app/Jobs/DispatchN8nEvent.php) on the queue with
+  retries + backoff, so a slow or failing n8n never adds latency to the reply.
+  (The "Send test" button stays synchronous so you see the result immediately.)
+- **Structured error logging** around the Claude call — failures now log the
+  user, conversation, model, and exception class for debugging (still returns a
+  friendly 502 to the user).
+
+## Token budgets, SSRF guard, prompt caching + history trimming
+
+- **Per-user token budget (like Claude's usage limits).** Each user gets a
+  rolling allowance (default **1,000,000 tokens / 30 days**, configurable) counted
+  from the Claude API `usage`. When it's spent, new messages are blocked with a
+  friendly "resets on <date>" message until the window rolls over
+  ([`TokenBudget`](../app/Services/TokenBudget.php),
+  [`config/usage.php`](../config/usage.php)). The **Dashboard** now shows a live
+  usage bar (used / limit, % , reset date) plus conversation/project/skill tiles
+  ([`DashboardController`](../app/Http/Controllers/DashboardController.php)).
+- **SSRF guard on outbound webhooks.** The n8n webhook URL is validated to be a
+  **public http(s) address** — private, loopback, link-local, and cloud-metadata
+  ranges (e.g. `169.254.169.254`) are rejected, both when connecting and again at
+  send time (DNS-rebinding defense) ([`PublicUrl`](../app/Support/PublicUrl.php),
+  [`PublicHttpUrl`](../app/Rules/PublicHttpUrl.php)).
+- **Prompt caching + history trimming.** The system prompt is sent with
+  `cache_control` so repeat turns re-read it cheaply, and only the most recent
+  **N messages** (`ANTHROPIC_HISTORY_LIMIT`, default 40) are replayed to the API
+  each turn — bounding context growth and cost on long chats.
+- Config: `USAGE_TOKEN_LIMIT`, `USAGE_PERIOD_DAYS`, `USAGE_LIMIT_ENABLED`,
+  `ANTHROPIC_HISTORY_LIMIT`. 11 new tests (budget, SSRF, dashboard).
+
+## n8n is now a live connector + setup guides
+
+- **n8n actually connects.** The Integrations page is now controller-backed
+  ([`IntegrationController`](../app/Http/Controllers/IntegrationController.php)).
+  You paste your n8n **Webhook node Production URL** (+ optional shared secret),
+  and AiMe BOT **POSTs a `chat.completed` event** to it after every reply
+  ([`N8nDispatcher`](../app/Services/N8nDispatcher.php)). Includes **Send test**
+  (fires a `test.ping` and reports the HTTP status) and **Disconnect**.
+  Per-user, stored **encrypted** in a new `user_integrations` table. 12 tests.
+- **Step-by-step setup guides.** Every card has a **Setup guide** link that opens
+  a modal with numbered steps for that tool. Live providers get a **Connect now**
+  button in the guide; others stay "Coming soon".
+- **Added NetSuite and n8n** to the page — n8n under **Automation**, **NetSuite**
+  under a new **ERP & business systems** category (still placeholder).
+- Config: `INTEGRATIONS_LIVE` (which providers are wired up),
+  `INTEGRATION_N8N_TIMEOUT`, `INTEGRATION_N8N_SECRET_HEADER`
+  (`config/integrations.php`). Flash success/error is now shared to Inertia.
 
 ## Skills/Projects tweaks
 

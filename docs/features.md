@@ -20,7 +20,10 @@ are wired up and reachable but don't have real functionality yet.
 
 **Rate limiting:** The login / 2FA / passkey throttles were **removed** — you can
 attempt login as many times as you want. (The password-change endpoint under
-settings still has a `6/min` throttle, which we left in place.)
+settings still has a `6/min` throttle, which we left in place.) Separately, the
+**app endpoints** are throttled per-user to stop runaway loops and abuse — chat
+send, chat search, and the integration endpoints — with generous, `.env`-tunable
+limits (`RATE_LIMIT_*`, `config/ratelimits.php`) that normal use never reaches.
 
 ## 2. Login screen (custom design)
 
@@ -36,24 +39,30 @@ A bespoke, modern "AI product" login:
 
 ## 3. Navigation
 
-- **Top header bar** (not a sidebar). Layout:
-  [`AppHeaderLayout.vue`](../resources/js/layouts/app/AppHeaderLayout.vue).
-- Brand: **CW Global People** (logo text in
+- **Left sidebar** (Claude-style), not a top header. Layout:
+  [`AppSidebarLayout.vue`](../resources/js/layouts/app/AppSidebarLayout.vue),
+  sidebar in [`AppSidebar.vue`](../resources/js/components/AppSidebar.vue).
+- **Collapsible:** toggle open/closed with the rail button in the header or
+  **⌘/Ctrl-B**. Collapsed, it shrinks to an icon-only rail (labels become
+  hover tooltips); expanded, it shows full labels. The open/closed choice is
+  **remembered across page loads** (a `sidebar_state` cookie). On mobile it
+  slides in as an overlay drawer.
+- Brand: **CW Global People** (logo at the top of the sidebar, in
   [`AppLogo.vue`](../resources/js/components/AppLogo.vue)).
 - Nav items: **Dashboard**, **Chat**, **Projects**, **Integrations**.
-- Right side: a **chat search** (icon or ⌘/Ctrl-K, see §7) and a user menu
-  (settings, logout).
-- The header is **full-width** (logo flush-left, gold active-tab underline). All
-  main pages now use the full window width for a consistent, maximized layout.
+- Also in the sidebar: a **Search** action (or ⌘/Ctrl-K, see §7) and, pinned to
+  the bottom, the user menu (settings, logout).
+- Main pages still use the full window width; the sidebar sits beside the
+  content, which fills the rest of the window.
 - The old **Repository** and **Documentation** links were removed.
 
 ## 4. Pages
 
 | Page                  | Route                  | Status                                                   |
 | --------------------- | ---------------------- | -------------------------------------------------------- |
-| Dashboard             | `/dashboard`           | **(placeholder)** — empty card grid                      |
+| Dashboard             | `/dashboard`           | ✅ Token-usage meter + conversation/project/skill counts |
 | Chat                  | `/chat`                | ✅ Working — AI chat powered by the Claude API (see §7)  |
-| Integrations          | `/integrations`        | **(placeholder)** — connector cards grouped by category  |
+| Integrations          | `/integrations`        | ✅ **MCP servers + n8n live**; other cards placeholder    |
 | Settings → Profile    | `/settings/profile`    | ✅ Update name & email, delete account                   |
 | Settings → Security   | `/settings/security`   | ✅ Change password, manage 2FA & passkeys                |
 | Settings → Appearance | `/settings/appearance` | ✅ Light / dark / system theme                           |
@@ -142,8 +151,21 @@ the **Claude API**.
 - **Token usage:** each reply's input/output tokens (from the Claude API `usage`)
   accumulate on the conversation and show as a small **"N tokens"** pill in the
   composer footer (hover for the in/out breakdown). Resets on New chat.
-- **Current limits (simple-first):** non-streaming (a "Thinking…" indicator
-  shows while waiting). See [roadmap.md](roadmap.md) for what's next.
+- **Per-user token budget:** every user has a rolling allowance (default
+  **1,000,000 tokens / 30 days**, configurable via `USAGE_*`). Usage is charged
+  per reply; once spent, sending is blocked with a "resets on <date>" message
+  until the window rolls over. The **Dashboard** shows the live meter.
+  ([`TokenBudget`](../app/Services/TokenBudget.php).)
+- **Prompt caching + history trimming:** the system prompt is cached
+  (`cache_control`) so repeat turns are cheaper, and only the most recent
+  `ANTHROPIC_HISTORY_LIMIT` messages (default 40) are replayed each turn, keeping
+  long conversations' context and cost bounded.
+- **Streaming replies:** the assistant's reply **streams in token-by-token**
+  over Server-Sent Events (`POST /chat/stream`) — a "Thinking…" indicator shows
+  only until the first token, then the text fills in live. The message, token
+  totals, and n8n event are all persisted server-side once the stream finishes
+  (identical bookkeeping to the non-streaming path, which remains at
+  `POST /chat/message`). File uploads stream too.
 
 ## 6. Projects (Claude-style workspaces)
 
@@ -170,6 +192,40 @@ project_id`). Project chats appear only in that project; standalone `/chat`
   [`projects/Show.vue`](../resources/js/pages/projects/Show.vue).
 - **Not yet:** project-level file attachments (per-message uploads exist in chat,
   §7) — see [roadmap.md](roadmap.md).
+
+## 8. Integrations
+
+Connect AiMe BOT to outside tools. The page (`/integrations`) groups connectors
+by category (Communication, CRM, Files & documents, Automation, ERP & business
+systems, Productivity & data). Each card has a **Setup guide** modal with
+numbered steps.
+
+- **MCP servers (live — native tools).** Connect a **Model Context Protocol**
+  server (Slack, GitHub, Notion, … anything exposing MCP) with a name, URL, and
+  optional bearer token; the assistant can then **call that server's tools**
+  during chat. Anthropic runs the tool calls **server-side** via the MCP
+  connector. Per-user, token **encrypted at rest**, URL **SSRF-guarded**.
+  Enable/disable/delete each server. **Tool turns stream** like normal chat, and
+  the composer shows **"Using &lt;server&gt;…"** while a tool runs. (MCP turns
+  send text-only history — per-message image/PDF passthrough is still chat-only.)
+  Backend: [`McpServerController`](../app/Http/Controllers/McpServerController.php),
+  `McpServer` model; streamed via `beta.messages` in
+  [`ChatController::stream`](../app/Http/Controllers/ChatController.php).
+  Config: `ANTHROPIC_MCP_BETA`.
+- **n8n (live).** Paste the **Production URL** of an n8n **Webhook** node (plus an
+  optional shared secret, sent as a header). AiMe BOT **POSTs a `chat.completed`
+  event** to that URL after every reply, so your n8n workflow can react. Use
+  **Send test** to fire a `test.ping` and see the HTTP status, and **Disconnect**
+  to remove it. Connections are **per-user** and stored **encrypted**
+  (`user_integrations` table).
+- **Everything else** (Slack, Email, GHL, HubSpot, Salesforce, Google Drive/Sheets,
+  Webhooks, Zapier, NetSuite, Calendar, Database, Code repos) is a **placeholder**
+  with a working setup guide but a disabled Connect button.
+- Backend: [`IntegrationController`](../app/Http/Controllers/IntegrationController.php),
+  [`N8nDispatcher`](../app/Services/N8nDispatcher.php), `UserIntegration` model.
+- **Config (all in `.env`):** `INTEGRATIONS_LIVE` (comma-separated provider keys
+  whose Connect works), `INTEGRATION_N8N_TIMEOUT`, `INTEGRATION_N8N_SECRET_HEADER`
+  — defaults in `config/integrations.php`.
 
 ## 7. Theming
 
