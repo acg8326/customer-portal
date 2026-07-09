@@ -3,6 +3,13 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Pin Composer platform to PHP 8.3 (reproducible deploys)
+
+- Pinned `config.platform.php` to `8.3.31` in `composer.json` and regenerated
+  `composer.lock` so dependencies resolve for the production PHP version (Symfony
+  7.4 LTS + Laravel 13.x), regardless of the newer PHP on dev machines. This lets
+  the server run a plain `composer install` on deploy instead of `composer update`.
+
 ## Pre-deploy hardening: indexes + soft deletes
 
 - **Indexes** on the foreign-key columns we filter/join on — `messages.conversation_id`,
