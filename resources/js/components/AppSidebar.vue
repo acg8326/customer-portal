@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { Link } from '@inertiajs/vue3';
-import { FolderOpen, LayoutGrid, MessageSquare, Plug, Search } from '@lucide/vue';
+import {
+    FolderOpen,
+    LayoutGrid,
+    MessageSquare,
+    Plug,
+    Search,
+} from '@lucide/vue';
 import { onMounted, onUnmounted, ref } from 'vue';
 import AppLogo from '@/components/AppLogo.vue';
 import ChatSearchDialog from '@/components/ChatSearchDialog.vue';

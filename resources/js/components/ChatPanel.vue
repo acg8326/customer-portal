@@ -449,7 +449,10 @@ async function send() {
         error.value = e instanceof Error ? e.message : 'Something went wrong.';
 
         // Drop the empty assistant bubble if nothing streamed before failing.
-        if (streamed === '' && messages.value[assistantIndex]?.role === 'assistant') {
+        if (
+            streamed === '' &&
+            messages.value[assistantIndex]?.role === 'assistant'
+        ) {
             messages.value.splice(assistantIndex, 1);
         }
     } finally {
@@ -692,9 +695,11 @@ onMounted(() => {
                         </div>
                     </div>
 
-                    <!-- Typing indicator -->
+                    <!-- Typing / working indicator. Stays visible while a tool
+                         runs (streamingTool set), even after text has started,
+                         so a slow create/update doesn't look frozen. -->
                     <div
-                        v-if="loading && !streaming"
+                        v-if="loading && (!streaming || streamingTool)"
                         class="flex items-start gap-3"
                     >
                         <div

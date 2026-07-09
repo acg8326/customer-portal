@@ -28,6 +28,7 @@ use App\Models\Message;
 use App\Models\Project;
 use App\Models\Skill;
 use App\Models\User;
+use App\Services\Mcp\McpOAuthService;
 use App\Services\TokenBudget;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -182,11 +183,28 @@ class ChatController extends Controller
             $client = new Client(apiKey: $apiKey);
             $mcp = $this->mcpServerDefs($request->user());
 
+            $reply = null;
+            $inputTokens = 0;
+            $outputTokens = 0;
+
             if ($mcp !== []) {
-                // Native tool use via the user's MCP servers (server-side).
-                [$reply, $inputTokens, $outputTokens] =
-                    $this->completeWithMcp($client, $conversation, $selectedModel, $mcp);
-            } else {
+                // Native tool use via the user's MCP servers (server-side). If a
+                // server is unreachable/misconfigured, fall back to a plain reply
+                // rather than failing the whole turn.
+                try {
+                    [$reply, $inputTokens, $outputTokens] =
+                        $this->completeWithMcp($client, $conversation, $selectedModel, $mcp);
+                } catch (Throwable $e) {
+                    report($e);
+                    Log::warning('MCP request unavailable; answering without tools', [
+                        'user_id' => $userId,
+                        'error' => $e->getMessage(),
+                    ]);
+                    $reply = null;
+                }
+            }
+
+            if ($reply === null) {
                 $message = $client->messages->create(
                     maxTokens: config('services.anthropic.max_tokens', 4096),
                     messages: $this->buildHistory($conversation),
@@ -293,18 +311,38 @@ class ChatController extends Controller
             try {
                 $client = new Client(apiKey: $apiKey);
 
+                $reply = '';
+                $inputTokens = 0;
+                $outputTokens = 0;
+                $toolNote = '';
+                $stream = null;
+
                 if ($mcp !== []) {
                     // Native tool use, streamed: Anthropic runs the MCP tools
                     // server-side and streams the final text. Text-only history.
-                    $stream = $client->beta->messages->createStream(
-                        maxTokens: $maxTokens,
-                        messages: $this->textHistory($conversation),
-                        model: $selectedModel,
-                        system: $this->buildSystemPrompt($conversation),
-                        mcpServers: $mcp,
-                        betas: [(string) config('services.anthropic.mcp_beta', 'mcp-client-2025-04-04')],
-                    );
-                } else {
+                    try {
+                        $stream = $client->beta->messages->createStream(
+                            maxTokens: $maxTokens,
+                            messages: $this->textHistory($conversation),
+                            model: $selectedModel,
+                            system: $this->buildSystemPrompt($conversation),
+                            mcpServers: $mcp,
+                            betas: [(string) config('services.anthropic.mcp_beta', 'mcp-client-2025-04-04')],
+                        );
+                    } catch (Throwable $e) {
+                        // A connected MCP server is unreachable or misconfigured
+                        // (e.g. a wrong server URL). Don't fail the whole chat —
+                        // answer without tools and tell the user.
+                        report($e);
+                        Log::warning('MCP stream unavailable; answering without tools', [
+                            'user_id' => $userId,
+                            'error' => $e->getMessage(),
+                        ]);
+                        $toolNote = "_⚠️ Couldn't reach your connected tools just now — answering without them. Check the server URL under Integrations._\n\n";
+                    }
+                }
+
+                if ($stream === null) {
                     $stream = $client->messages->createStream(
                         maxTokens: $maxTokens,
                         messages: $this->buildHistory($conversation),
@@ -313,9 +351,10 @@ class ChatController extends Controller
                     );
                 }
 
-                $reply = '';
-                $inputTokens = 0;
-                $outputTokens = 0;
+                if ($toolNote !== '') {
+                    $reply .= $toolNote;
+                    $this->emit('delta', ['text' => $toolNote]);
+                }
 
                 foreach ($stream as $event) {
                     // Text deltas (plain + beta/MCP streams).
@@ -540,12 +579,23 @@ class ChatController extends Controller
     private function mcpServerDefs(User $user): array
     {
         $defs = [];
+        $oauth = app(McpOAuthService::class);
 
         foreach ($user->mcpServers()->where('enabled', true)->orderBy('id')->get() as $s) {
+            if ($s->usesOAuth()) {
+                // Refresh if needed; skip (rather than 401 mid-turn) if not connected.
+                $token = $oauth->accessToken($s);
+                if ($token === null) {
+                    continue;
+                }
+            } else {
+                $token = filled($s->auth_token) ? $s->auth_token : null;
+            }
+
             $defs[] = BetaRequestMCPServerURLDefinition::with(
                 name: Str::slug($s->name) ?: 'mcp'.$s->id,
                 url: $s->url,
-                authorizationToken: filled($s->auth_token) ? $s->auth_token : null,
+                authorizationToken: $token,
             );
         }
 
@@ -611,9 +661,10 @@ class ChatController extends Controller
         // Charge this turn's tokens against the user's rolling budget.
         app(TokenBudget::class)->record($request->user(), $inputTokens + $outputTokens);
 
-        // Fire a chat.completed event to the user's connected tools (e.g. n8n)
-        // on the queue, so a slow webhook never delays the reply.
-        DispatchN8nEvent::dispatch($userId, 'chat.completed', [
+        // Fire a chat.completed event to each connected webhook provider
+        // (n8n / Zapier / generic) on the queue, so a slow webhook never
+        // delays the reply. One job per provider → independent retries.
+        $payload = [
             'conversation_id' => $conversation->id,
             'title' => $conversation->title,
             'model' => $selectedModel,
@@ -623,7 +674,13 @@ class ChatController extends Controller
                 'prompt_tokens' => $conversation->prompt_tokens,
                 'completion_tokens' => $conversation->completion_tokens,
             ],
-        ]);
+        ];
+
+        $providers = (array) config('integrations.webhook_providers', ['n8n']);
+
+        foreach ($request->user()->integrations()->whereIn('provider', $providers)->pluck('provider') as $provider) {
+            DispatchN8nEvent::dispatch($userId, 'chat.completed', $payload, (string) $provider);
+        }
     }
 
     /**
@@ -837,6 +894,13 @@ class ChatController extends Controller
 
         if ($skill && filled($skill->instructions)) {
             $system .= "\n\n## Active skill: {$skill->name}\n".$skill->instructions;
+        }
+
+        // When the user has connected tools, require confirmation before any
+        // destructive tool action (create/update/delete/send/…).
+        if (config('services.anthropic.tool_safety', true)
+            && $conversation->user?->mcpServers()->where('enabled', true)->exists()) {
+            $system .= "\n\n".(string) config('services.anthropic.tool_safety_prompt');
         }
 
         return $system;

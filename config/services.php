@@ -56,6 +56,25 @@ return [
             say so plainly rather than guessing. If asked your name, you are AiMe BOT.
             PROMPT),
 
+        // Guardrail appended to the system prompt when the user has connected
+        // tools (MCP servers). Makes the assistant confirm before it changes
+        // external data. Set ANTHROPIC_TOOL_SAFETY=false to disable, or override
+        // the text with ANTHROPIC_TOOL_SAFETY_PROMPT.
+        'tool_safety' => (bool) env('ANTHROPIC_TOOL_SAFETY', true),
+
+        'tool_safety_prompt' => env('ANTHROPIC_TOOL_SAFETY_PROMPT', <<<'PROMPT'
+            ## Using connected tools safely
+            You may freely READ, search, list, or fetch data with connected tools.
+            But any action that CHANGES external data or state — creating, updating,
+            editing, deleting, sending, moving, or overwriting — is destructive.
+            Before performing a destructive action, you MUST first tell the user
+            exactly what you are about to do (which tool, which records, what change),
+            and ask them to confirm. Do NOT call the tool until the user has clearly
+            approved that specific action in their reply. If you are unsure whether an
+            action changes data, treat it as destructive and ask first. When a request
+            implies several destructive steps, list them and confirm before starting.
+            PROMPT),
+
         // Models a user may pick in the chat UI (id => label). Add/remove freely;
         // ids are validated server-side against this list.
         'models' => [

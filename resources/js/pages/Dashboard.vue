@@ -131,7 +131,9 @@ const tiles = computed(() => [
                     class="mt-2 flex items-center justify-between text-xs text-muted-foreground"
                 >
                     <span>{{ usage.percent }}% used</span>
-                    <span>{{ nf.format(usage.remaining) }} tokens remaining</span>
+                    <span
+                        >{{ nf.format(usage.remaining) }} tokens remaining</span
+                    >
                 </div>
                 <p
                     v-if="usage.percent >= 90"
@@ -159,7 +161,9 @@ const tiles = computed(() => [
                     <p class="text-2xl font-semibold tabular-nums">
                         {{ nf.format(tile.value) }}
                     </p>
-                    <p class="text-xs text-muted-foreground">{{ tile.label }}</p>
+                    <p class="text-xs text-muted-foreground">
+                        {{ tile.label }}
+                    </p>
                 </div>
             </div>
         </section>
