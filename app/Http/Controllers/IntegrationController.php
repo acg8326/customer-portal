@@ -20,23 +20,28 @@ class IntegrationController extends Controller
     {
         return Inertia::render('Integrations', [
             'live' => array_values(config('integrations.live', [])),
+            'webhookProviders' => array_values(config('integrations.webhook_providers', [])),
             'connections' => $this->connections($request),
             'mcpServers' => $this->mcpServers($request),
+            'mcpCatalog' => $this->mcpCatalog($request),
         ]);
     }
 
     /**
-     * Connect or update the user's n8n webhook.
+     * Connect or update a user's outbound webhook for a provider (n8n, zapier,
+     * or a generic webhook endpoint — they all work the same way).
      */
-    public function connectN8n(Request $request): RedirectResponse
+    public function connectWebhook(Request $request, string $provider): RedirectResponse
     {
+        $this->assertWebhookProvider($provider);
+
         $validated = $request->validate([
             'webhook_url' => ['required', 'url', 'max:2048', new PublicHttpUrl],
             'secret' => ['nullable', 'string', 'max:255'],
         ]);
 
         $request->user()->integrations()->updateOrCreate(
-            ['provider' => 'n8n'],
+            ['provider' => $provider],
             [
                 'config' => [
                     'webhook_url' => $validated['webhook_url'],
@@ -46,20 +51,22 @@ class IntegrationController extends Controller
             ],
         );
 
-        return back()->with('success', 'n8n connected.');
+        return back()->with('success', ucfirst($provider).' connected.');
     }
 
     /**
-     * Send a test event to the connected n8n webhook.
+     * Send a test event to a connected webhook provider.
      */
-    public function testN8n(Request $request, N8nDispatcher $dispatcher): RedirectResponse
+    public function testWebhook(Request $request, string $provider, N8nDispatcher $dispatcher): RedirectResponse
     {
+        $this->assertWebhookProvider($provider);
+
         $integration = $request->user()->integrations()
-            ->where('provider', 'n8n')
+            ->where('provider', $provider)
             ->first();
 
         if (! $integration instanceof UserIntegration) {
-            return back()->with('error', 'Connect n8n first, then send a test.');
+            return back()->with('error', 'Connect '.ucfirst($provider).' first, then send a test.');
         }
 
         try {
@@ -70,14 +77,22 @@ class IntegrationController extends Controller
         } catch (\Throwable $e) {
             report($e);
 
-            return back()->with('error', 'Could not reach your n8n webhook. Check the URL and that the workflow is active.');
+            return back()->with('error', 'Could not reach your '.ucfirst($provider).' webhook. Check the URL and that it is active.');
         }
 
         if ($status >= 200 && $status < 300) {
-            return back()->with('success', "Test event delivered (HTTP {$status}). Check your n8n execution log.");
+            return back()->with('success', "Test event delivered (HTTP {$status}). Check your {$provider} execution log.");
         }
 
-        return back()->with('error', "n8n responded with HTTP {$status}. Make sure the Webhook node is active and the URL is the Production URL.");
+        return back()->with('error', ucfirst($provider)." responded with HTTP {$status}. Make sure the webhook is active and the URL is the Production URL.");
+    }
+
+    private function assertWebhookProvider(string $provider): void
+    {
+        abort_unless(
+            in_array($provider, (array) config('integrations.webhook_providers', []), true),
+            404,
+        );
     }
 
     /**
@@ -115,13 +130,14 @@ class IntegrationController extends Controller
     }
 
     /**
-     * The current user's MCP servers (token never leaves the server).
+     * The current user's MCP servers (secrets never leave the server).
      *
-     * @return array<int, array{id: int, name: string, url: string, enabled: bool, has_token: bool}>
+     * @return array<int, array{id: int, name: string, url: string, enabled: bool, auth_type: string, has_token: bool, oauth_connected: bool}>
      */
     private function mcpServers(Request $request): array
     {
         return $request->user()->mcpServers()
+            ->whereNull('catalog_key') // catalog apps are shown as their own cards
             ->orderBy('name')
             ->get()
             ->map(fn (McpServer $s): array => [
@@ -129,9 +145,49 @@ class IntegrationController extends Controller
                 'name' => $s->name,
                 'url' => $s->url,
                 'enabled' => $s->enabled,
+                'auth_type' => $s->auth_type,
                 'has_token' => filled($s->auth_token),
+                'oauth_connected' => $s->oauthConnected(),
             ])
             ->all();
+    }
+
+    /**
+     * The one-click app catalog, each entry annotated with the current user's
+     * connection state (so a connected app shows "Connected", not "Connect").
+     *
+     * @return array<int, array{key: string, name: string, description: string, category: string, icon: string, connected: bool, enabled: bool, server_id: int|null}>
+     */
+    private function mcpCatalog(Request $request): array
+    {
+        $mine = $request->user()->mcpServers()
+            ->whereNotNull('catalog_key')
+            ->get()
+            ->keyBy('catalog_key');
+
+        $out = [];
+
+        foreach ((array) config('integrations.mcp_catalog', []) as $entry) {
+            if (! is_array($entry) || blank($entry['key'] ?? null)) {
+                continue;
+            }
+
+            $key = (string) $entry['key'];
+            $server = $mine->get($key);
+
+            $out[] = [
+                'key' => $key,
+                'name' => (string) ($entry['name'] ?? $key),
+                'description' => (string) ($entry['description'] ?? ''),
+                'category' => (string) ($entry['category'] ?? 'Apps'),
+                'icon' => (string) ($entry['icon'] ?? 'plug'),
+                'connected' => $server instanceof McpServer && $server->oauthConnected(),
+                'enabled' => $server instanceof McpServer ? $server->enabled : false,
+                'server_id' => $server instanceof McpServer ? $server->id : null,
+            ];
+        }
+
+        return $out;
     }
 
     /**

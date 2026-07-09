@@ -15,12 +15,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
     Route::get('integrations', [IntegrationController::class, 'index'])->name('integrations');
-    Route::post('integrations/n8n', [IntegrationController::class, 'connectN8n'])
+    Route::post('integrations/webhook/{provider}', [IntegrationController::class, 'connectWebhook'])
         ->middleware('throttle:integrations')
-        ->name('integrations.n8n.connect');
-    Route::post('integrations/n8n/test', [IntegrationController::class, 'testN8n'])
+        ->name('integrations.webhook.connect');
+    Route::post('integrations/webhook/{provider}/test', [IntegrationController::class, 'testWebhook'])
         ->middleware('throttle:integration-test')
-        ->name('integrations.n8n.test');
+        ->name('integrations.webhook.test');
     Route::delete('integrations/{provider}', [IntegrationController::class, 'disconnect'])
         ->middleware('throttle:integrations')
         ->name('integrations.disconnect');
@@ -35,6 +35,16 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::delete('integrations/mcp/{mcpServer}', [McpServerController::class, 'destroy'])
         ->middleware('throttle:integrations')
         ->name('integrations.mcp.destroy');
+
+    // MCP OAuth: one-click connect (redirects to the server's auth page) + callback.
+    Route::get('integrations/mcp/oauth/callback', [McpServerController::class, 'oauthCallback'])
+        ->name('integrations.mcp.oauth.callback');
+    Route::get('integrations/mcp/catalog/{key}/connect', [McpServerController::class, 'catalogConnect'])
+        ->middleware('throttle:integrations')
+        ->name('integrations.mcp.catalog.connect');
+    Route::get('integrations/mcp/{mcpServer}/oauth/connect', [McpServerController::class, 'oauthConnect'])
+        ->middleware('throttle:integrations')
+        ->name('integrations.mcp.oauth.connect');
 
     Route::get('chat', [ChatController::class, 'index'])->name('chat');
     Route::get('chat/search', [ChatController::class, 'search'])

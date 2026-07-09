@@ -10,9 +10,10 @@ use Illuminate\Foundation\Queue\Queueable;
 use RuntimeException;
 
 /**
- * Delivers a chat/project event to a user's connected n8n webhook off the
- * request path, so a slow or failing webhook never delays the user's reply.
- * Retries on transient failures (connection error or n8n 5xx).
+ * Delivers a chat/project event to a user's connected outbound webhook
+ * (n8n, Zapier, or a generic endpoint) off the request path, so a slow or
+ * failing webhook never delays the user's reply. Retries on transient failures
+ * (connection error or 5xx). One job is queued per connected provider.
  */
 class DispatchN8nEvent implements ShouldQueue
 {
@@ -31,6 +32,7 @@ class DispatchN8nEvent implements ShouldQueue
         public int $userId,
         public string $event,
         public array $payload,
+        public string $provider = 'n8n',
     ) {}
 
     public function handle(N8nDispatcher $dispatcher): void
@@ -42,7 +44,7 @@ class DispatchN8nEvent implements ShouldQueue
         }
 
         $integration = $user->integrations()
-            ->where('provider', 'n8n')
+            ->where('provider', $this->provider)
             ->first();
 
         if (! $integration instanceof UserIntegration) {
@@ -53,9 +55,9 @@ class DispatchN8nEvent implements ShouldQueue
         // public (SSRF guard) and throws if it no longer is.
         $status = $dispatcher->post($integration, $this->event, $this->payload);
 
-        // Retry server errors; a 4xx means n8n rejected it — don't hammer.
+        // Retry server errors; a 4xx means the endpoint rejected it — don't hammer.
         if ($status >= 500) {
-            throw new RuntimeException("n8n webhook returned HTTP {$status}");
+            throw new RuntimeException("{$this->provider} webhook returned HTTP {$status}");
         }
     }
 }

@@ -1,8 +1,12 @@
 <?php
 
 use App\Models\User;
+use Illuminate\Support\Facades\Http;
 
 test('a user can connect an MCP server', function () {
+    // The endpoint validator probes the URL — make it look like a real MCP server.
+    Http::fake(['*' => Http::response('', 401)]);
+
     $user = User::factory()->create();
 
     $this->actingAs($user)

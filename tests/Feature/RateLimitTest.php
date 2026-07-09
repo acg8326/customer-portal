@@ -32,11 +32,11 @@ test('the throttle is per-user, so one user cannot exhaust another', function ()
     $this->actingAs($b)->getJson('/chat/search?q=x')->assertOk();
 });
 
-test('the n8n test endpoint is throttled', function () {
+test('the webhook test endpoint is throttled', function () {
     config(['ratelimits.integration_test' => 1]);
 
     $user = User::factory()->create();
 
-    $this->actingAs($user)->post('/integrations/n8n/test')->assertRedirect();
-    $this->actingAs($user)->post('/integrations/n8n/test')->assertStatus(429);
+    $this->actingAs($user)->post('/integrations/webhook/n8n/test')->assertRedirect();
+    $this->actingAs($user)->post('/integrations/webhook/n8n/test')->assertStatus(429);
 });

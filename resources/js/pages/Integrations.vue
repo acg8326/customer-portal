@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Head, router, useForm, usePage } from '@inertiajs/vue3';
 import {
+    Blocks,
     Boxes,
     Building2,
     Calendar,
@@ -49,6 +50,12 @@ type Integration = {
     icon: Component;
     intro: string;
     steps: string[];
+    // How this card connects: 'webhook' (automation URL), 'soon' (no backend
+    // yet), or the default 'mcp' (connect as an MCP server — OAuth or token).
+    connect?: 'mcp' | 'webhook' | 'soon';
+    // A webhook provider that *also* exposes an MCP server, so it can be used
+    // two-way (the assistant runs its workflows) as well as one-way (events).
+    alsoMcp?: boolean;
 };
 
 type Category = {
@@ -68,23 +75,51 @@ type McpServer = {
     name: string;
     url: string;
     enabled: boolean;
+    auth_type: 'token' | 'oauth';
     has_token: boolean;
+    oauth_connected: boolean;
+};
+
+type CatalogApp = {
+    key: string;
+    name: string;
+    description: string;
+    category: string;
+    icon: string;
+    connected: boolean;
+    enabled: boolean;
+    server_id: number | null;
 };
 
 const props = defineProps<{
     live: string[];
+    webhookProviders: string[];
     connections: Record<string, Connection>;
     mcpServers: McpServer[];
+    mcpCatalog: CatalogApp[];
 }>();
+
+// Catalog icon name (from config) → Lucide component.
+const catalogIcons: Record<string, Component> = {
+    code: Code,
+    cloud: Cloud,
+    workflow: Workflow,
+    database: Database,
+    building: Building2,
+    contact: Contact,
+    table: Table,
+    plug: Plug,
+};
+
+function catIcon(name: string): Component {
+    return catalogIcons[name] ?? Plug;
+}
 
 const page = usePage();
 const flash = computed(
-    () => page.props.flash as { success?: string | null; error?: string | null },
+    () =>
+        page.props.flash as { success?: string | null; error?: string | null },
 );
-
-function isLive(key: string): boolean {
-    return props.live.includes(key);
-}
 
 function connection(key: string): Connection | undefined {
     return props.connections[key];
@@ -111,6 +146,7 @@ const categories: Category[] = [
             {
                 name: 'Email',
                 key: 'email',
+                connect: 'soon',
                 description:
                     'Forward emails to AiMe BOT and get drafted replies.',
                 icon: Mail,
@@ -137,18 +173,6 @@ const categories: Category[] = [
                     'In GoHighLevel, go to Settings → Private Integrations.',
                     'Create a token with contact and conversation scopes.',
                     'Click Connect here and paste the token (or your Location API key).',
-                ],
-            },
-            {
-                name: 'HubSpot',
-                key: 'hubspot',
-                description: 'Enrich chats with contact and deal context.',
-                icon: Contact,
-                intro: 'Pull HubSpot contact and deal context into your chats.',
-                steps: [
-                    'In HubSpot, go to Settings → Integrations → Private Apps.',
-                    'Create a private app and grant CRM read scopes.',
-                    'Copy the access token, click Connect here, and paste it.',
                 ],
             },
             {
@@ -203,6 +227,7 @@ const categories: Category[] = [
             {
                 name: 'Webhooks',
                 key: 'webhooks',
+                connect: 'webhook',
                 description:
                     'Trigger workflows when a chat or project changes.',
                 icon: Webhook,
@@ -216,6 +241,8 @@ const categories: Category[] = [
             {
                 name: 'Zapier',
                 key: 'zapier',
+                connect: 'webhook',
+                alsoMcp: true,
                 description: 'Connect AiMe BOT to 6,000+ apps, no code.',
                 icon: Zap,
                 intro: 'Trigger Zaps from chat and project events — no code.',
@@ -228,6 +255,8 @@ const categories: Category[] = [
             {
                 name: 'n8n',
                 key: 'n8n',
+                connect: 'webhook',
+                alsoMcp: true,
                 description:
                     'Trigger self-hosted n8n workflows from chats and projects.',
                 icon: Workflow,
@@ -238,6 +267,22 @@ const categories: Category[] = [
                     'Click Connect here, paste the URL, and optionally set a shared secret (sent as a header).',
                     'Activate the workflow in n8n, then use Send test to confirm delivery.',
                     'From now on, each finished chat POSTs a chat.completed event to your workflow.',
+                ],
+            },
+            {
+                name: 'Make',
+                key: 'make',
+                connect: 'webhook',
+                alsoMcp: true,
+                description: 'Trigger Make scenarios from chats and projects.',
+                icon: Blocks,
+                intro: 'AiMe BOT POSTs a chat.completed event to a Make Custom webhook after every reply. Outbound only — no data leaves until an event fires.',
+                steps: [
+                    'In Make, create a scenario and add a "Custom webhook" trigger module.',
+                    'Add the webhook and copy the URL Make generates.',
+                    'Click Connect here, paste the URL, and optionally set a shared secret (sent as a header).',
+                    'Turn the scenario on, then use Send test to confirm delivery.',
+                    'From now on, each finished chat POSTs a chat.completed event to your scenario.',
                 ],
             },
         ],
@@ -281,6 +326,7 @@ const categories: Category[] = [
             {
                 name: 'Database',
                 key: 'database',
+                connect: 'soon',
                 description: 'Query your own data sources securely.',
                 icon: Database,
                 intro: 'Query your own database read-only, in a sandbox.',
@@ -313,41 +359,108 @@ function openGuide(item: Integration) {
     guideFor.value = item;
 }
 
-// n8n connect modal
+// Webhook (automation) connect modal — shared by n8n, Zapier, and Webhooks.
 const connectOpen = ref(false);
-const n8nForm = useForm({ webhook_url: '', secret: '' });
+const connectProvider = ref('n8n');
+const webhookForm = useForm({ webhook_url: '', secret: '' });
 
-function openConnect() {
-    n8nForm.clearErrors();
+const connectProviderLabel = computed(
+    () =>
+        connectProvider.value.charAt(0).toUpperCase() +
+        connectProvider.value.slice(1),
+);
+
+function openConnect(provider: string) {
+    connectProvider.value = provider;
+    webhookForm.clearErrors();
+    webhookForm.reset();
     connectOpen.value = true;
 }
 
-function saveN8n() {
-    n8nForm.post('/integrations/n8n', {
+function saveWebhook() {
+    webhookForm.post(`/integrations/webhook/${connectProvider.value}`, {
         preserveScroll: true,
         onSuccess: () => {
             connectOpen.value = false;
-            n8nForm.reset();
+            webhookForm.reset();
         },
     });
 }
 
-function testN8n() {
-    router.post('/integrations/n8n/test', {}, { preserveScroll: true });
+function testWebhook(provider: string) {
+    router.post(
+        `/integrations/webhook/${provider}/test`,
+        {},
+        { preserveScroll: true },
+    );
 }
 
 function disconnect(key: string) {
     router.delete(`/integrations/${key}`, { preserveScroll: true });
 }
 
+// One-click app catalog (OAuth MCP servers).
+function connectCatalog(key: string) {
+    // Full-page nav: the route creates/finds the server then redirects to the
+    // provider's own approval page (an external redirect Inertia can't follow).
+    window.location.href = `/integrations/mcp/catalog/${key}/connect`;
+}
+
+function toggleCatalog(app: CatalogApp) {
+    if (app.server_id === null) {
+        return;
+    }
+
+    router.patch(
+        `/integrations/mcp/${app.server_id}`,
+        { enabled: !app.enabled },
+        { preserveScroll: true },
+    );
+}
+
+function removeCatalog(app: CatalogApp) {
+    if (app.server_id === null) {
+        return;
+    }
+
+    router.delete(`/integrations/mcp/${app.server_id}`, {
+        preserveScroll: true,
+    });
+}
+
 // MCP servers (native tool connections)
 const mcpOpen = ref(false);
-const mcpForm = useForm({ name: '', url: '', auth_token: '' });
+const mcpForm = useForm<{
+    name: string;
+    url: string;
+    auth_type: 'token' | 'oauth';
+    auth_token: string;
+}>({ name: '', url: '', auth_type: 'oauth', auth_token: '' });
 
 function openMcp() {
     mcpForm.clearErrors();
     mcpForm.reset();
     mcpOpen.value = true;
+}
+
+// How a catalog card connects (default: connect as an MCP server).
+function connectMode(item: Integration): 'mcp' | 'webhook' | 'soon' {
+    return item.connect ?? 'mcp';
+}
+
+// Open the "Add MCP server" modal prefilled for a specific tool.
+function connectViaMcp(item: Integration) {
+    mcpForm.clearErrors();
+    mcpForm.reset();
+    mcpForm.name = item.name;
+    mcpForm.auth_type = 'oauth';
+    mcpOpen.value = true;
+}
+
+function connectMcp(server: McpServer) {
+    // Full-page navigation: the connect route redirects to the provider's
+    // own authorization page (an external redirect Inertia's XHR can't follow).
+    window.location.href = `/integrations/mcp/${server.id}/oauth/connect`;
 }
 
 function saveMcp() {
@@ -415,7 +528,7 @@ function hostOf(url: string): string {
                         class="flex items-center gap-1.5 text-sm font-semibold tracking-tight"
                     >
                         <Plug class="size-4 text-brand-gold" />
-                        MCP servers
+                        Custom MCP servers
                         <span
                             class="rounded-full border border-brand-gold/40 bg-brand-gold/10 px-2 py-0.5 text-xs font-medium text-brand-gold"
                         >
@@ -423,10 +536,10 @@ function hostOf(url: string): string {
                         </span>
                     </h2>
                     <p class="max-w-2xl text-xs text-muted-foreground">
-                        Connect a Model Context Protocol server (Slack, GitHub,
-                        Notion, …) and AiMe BOT can use its tools natively in
-                        chat. While any server is enabled, replies run in
-                        tool-mode (non-streaming).
+                        Add any Model Context Protocol server by URL (one-click
+                        OAuth or a token) and AiMe BOT can use its tools
+                        natively in chat. For popular apps, use the one-click
+                        cards below.
                     </p>
                 </div>
                 <Button size="sm" class="shrink-0" @click="openMcp">
@@ -439,7 +552,8 @@ function hostOf(url: string): string {
                 v-if="mcpServers.length === 0"
                 class="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground"
             >
-                No MCP servers yet. Add one to give the assistant real tools.
+                No custom servers yet — add one above, or connect a popular app
+                in one click below.
             </div>
 
             <div v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -470,10 +584,37 @@ function hostOf(url: string): string {
                         class="mt-0.5 flex-1 truncate text-xs text-muted-foreground"
                         :title="server.url"
                     >
-                        {{ hostOf(server.url)
-                        }}{{ server.has_token ? ' · authenticated' : '' }}
+                        {{ hostOf(server.url) }}
+                        <template v-if="server.auth_type === 'oauth'">{{
+                            server.oauth_connected
+                                ? ' · OAuth connected'
+                                : ' · OAuth — not connected'
+                        }}</template>
+                        <template v-else-if="server.has_token">
+                            · authenticated</template
+                        >
                     </p>
                     <div class="mt-3 flex items-center gap-2">
+                        <Button
+                            v-if="
+                                server.auth_type === 'oauth' &&
+                                !server.oauth_connected
+                            "
+                            size="sm"
+                            @click="connectMcp(server)"
+                        >
+                            <Plug class="size-4" />
+                            Connect
+                        </Button>
+                        <Button
+                            v-else-if="server.auth_type === 'oauth'"
+                            variant="outline"
+                            size="sm"
+                            @click="connectMcp(server)"
+                        >
+                            <Plug class="size-4" />
+                            Reconnect
+                        </Button>
                         <Button
                             variant="outline"
                             size="sm"
@@ -489,6 +630,95 @@ function hostOf(url: string): string {
                             @click="removeMcp(server)"
                         >
                             <Trash2 class="size-4" />
+                        </Button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- One-click apps (OAuth MCP catalog) -->
+        <section v-if="mcpCatalog.length > 0" class="mb-8">
+            <div class="mb-3">
+                <h2 class="text-sm font-semibold tracking-tight">
+                    Apps — one-click connect
+                </h2>
+                <p class="text-xs text-muted-foreground">
+                    Connect a tool in one click: approve on its own page, and
+                    AiMe BOT can use its tools in chat. Data can move between
+                    any connected apps — e.g. compare HubSpot deals against
+                    Airtable.
+                </p>
+            </div>
+
+            <div
+                class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+            >
+                <div
+                    v-for="app in mcpCatalog"
+                    :key="app.key"
+                    class="flex flex-col rounded-xl border bg-card p-5"
+                >
+                    <div class="mb-3 flex items-center justify-between">
+                        <div
+                            class="flex size-10 items-center justify-center rounded-lg bg-gradient-to-br from-brand-navy to-brand-gold text-white"
+                        >
+                            <component :is="catIcon(app.icon)" class="size-5" />
+                        </div>
+                        <span
+                            v-if="app.connected"
+                            class="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300"
+                        >
+                            <CheckCircle2 class="size-3" />
+                            Connected
+                        </span>
+                        <span
+                            v-else
+                            class="rounded-full border border-brand-gold/40 bg-brand-gold/10 px-2 py-0.5 text-xs font-medium text-brand-gold"
+                        >
+                            OAuth
+                        </span>
+                    </div>
+
+                    <p class="font-medium">{{ app.name }}</p>
+                    <p class="mt-1 flex-1 text-sm text-muted-foreground">
+                        {{ app.description }}
+                    </p>
+
+                    <div class="mt-4 flex items-center gap-2">
+                        <template v-if="app.connected">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                @click="connectCatalog(app.key)"
+                            >
+                                <Plug class="size-4" />
+                                Reconnect
+                            </Button>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                @click="toggleCatalog(app)"
+                            >
+                                <Power class="size-4" />
+                                {{ app.enabled ? 'Disable' : 'Enable' }}
+                            </Button>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                class="text-muted-foreground"
+                                @click="removeCatalog(app)"
+                            >
+                                <Trash2 class="size-4" />
+                            </Button>
+                        </template>
+                        <Button
+                            v-else
+                            variant="default"
+                            size="sm"
+                            @click="connectCatalog(app.key)"
+                        >
+                            <Plug class="size-4" />
+                            Connect
                         </Button>
                     </div>
                 </div>
@@ -525,10 +755,16 @@ function hostOf(url: string): string {
                             Connected
                         </span>
                         <span
-                            v-else-if="isLive(item.key)"
+                            v-else-if="connectMode(item) === 'webhook'"
                             class="rounded-full border border-brand-gold/40 bg-brand-gold/10 px-2 py-0.5 text-xs font-medium text-brand-gold"
                         >
                             Available
+                        </span>
+                        <span
+                            v-else-if="connectMode(item) === 'mcp'"
+                            class="rounded-full border border-brand-gold/40 bg-brand-gold/10 px-2 py-0.5 text-xs font-medium text-brand-gold"
+                        >
+                            MCP
                         </span>
                         <span
                             v-else
@@ -551,45 +787,74 @@ function hostOf(url: string): string {
                         → {{ connection(item.key)?.endpoint }}
                     </p>
 
-                    <div class="mt-4 flex items-center gap-2">
-                        <!-- Live + connected -->
-                        <template
-                            v-if="isLive(item.key) && connection(item.key)?.connected"
-                        >
+                    <!-- Automation providers that also expose an MCP server can
+                         connect two ways — spell it out so it isn't confusing. -->
+                    <p
+                        v-if="item.alsoMcp"
+                        class="mt-2 text-xs text-muted-foreground"
+                    >
+                        <span class="font-medium">Use as tools</span> = the
+                        assistant runs your workflows (two-way).
+                        <span class="font-medium">Events webhook</span> =
+                        {{ item.name }} is notified after each chat (one-way).
+                    </p>
+
+                    <div class="mt-4 flex flex-wrap items-center gap-2">
+                        <template v-if="connectMode(item) === 'webhook'">
+                            <!-- Two-way tools (providers that also expose MCP) -->
                             <Button
-                                variant="outline"
+                                v-if="item.alsoMcp"
+                                variant="default"
                                 size="sm"
-                                @click="testN8n"
+                                @click="connectViaMcp(item)"
                             >
-                                Send test
+                                <Plug class="size-4" />
+                                Use as tools
                             </Button>
+
+                            <!-- One-way events webhook -->
+                            <template v-if="connection(item.key)?.connected">
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    @click="testWebhook(item.key)"
+                                >
+                                    Send test
+                                </Button>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    class="text-muted-foreground"
+                                    @click="disconnect(item.key)"
+                                >
+                                    Disconnect
+                                </Button>
+                            </template>
                             <Button
-                                variant="ghost"
+                                v-else
+                                :variant="item.alsoMcp ? 'outline' : 'default'"
                                 size="sm"
-                                class="text-muted-foreground"
-                                @click="disconnect(item.key)"
+                                @click="openConnect(item.key)"
                             >
-                                Disconnect
+                                {{
+                                    item.alsoMcp ? 'Events webhook' : 'Connect'
+                                }}
                             </Button>
                         </template>
 
-                        <!-- Live, not connected -->
+                        <!-- Connect as an MCP server (OAuth or token) -->
                         <Button
-                            v-else-if="isLive(item.key)"
+                            v-else-if="connectMode(item) === 'mcp'"
                             variant="default"
                             size="sm"
-                            @click="openConnect"
+                            @click="connectViaMcp(item)"
                         >
+                            <Plug class="size-4" />
                             Connect
                         </Button>
 
-                        <!-- Placeholder -->
-                        <Button
-                            v-else
-                            variant="outline"
-                            size="sm"
-                            disabled
-                        >
+                        <!-- No backend yet -->
+                        <Button v-else variant="outline" size="sm" disabled>
                             Connect
                         </Button>
 
@@ -609,7 +874,11 @@ function hostOf(url: string): string {
     <!-- Step-by-step guide modal -->
     <Dialog
         :open="guideFor !== null"
-        @update:open="(v) => { if (!v) guideFor = null; }"
+        @update:open="
+            (v) => {
+                if (!v) guideFor = null;
+            }
+        "
     >
         <DialogContent v-if="guideFor">
             <DialogHeader>
@@ -641,19 +910,27 @@ function hostOf(url: string): string {
 
             <DialogFooter>
                 <Button
-                    v-if="isLive(guideFor.key) && !connection(guideFor.key)?.connected"
+                    v-if="
+                        connectMode(guideFor) === 'webhook' &&
+                        !connection(guideFor.key)?.connected
+                    "
                     @click="
+                        openConnect(guideFor.key);
                         guideFor = null;
-                        openConnect();
                     "
                 >
                     Connect now
                 </Button>
                 <Button
-                    v-else
-                    variant="outline"
-                    @click="guideFor = null"
+                    v-else-if="connectMode(guideFor) === 'mcp'"
+                    @click="
+                        connectViaMcp(guideFor);
+                        guideFor = null;
+                    "
                 >
+                    Connect now
+                </Button>
+                <Button v-else variant="outline" @click="guideFor = null">
                     Close
                 </Button>
             </DialogFooter>
@@ -664,51 +941,51 @@ function hostOf(url: string): string {
     <Dialog v-model:open="connectOpen">
         <DialogContent>
             <DialogHeader>
-                <DialogTitle>Connect n8n</DialogTitle>
+                <DialogTitle>Connect {{ connectProviderLabel }}</DialogTitle>
                 <DialogDescription>
-                    Paste the Production URL of an n8n Webhook node. AiMe BOT
-                    POSTs a <code>chat.completed</code> event to it after each
-                    reply.
+                    Paste the webhook URL. AiMe BOT POSTs a
+                    <code>chat.completed</code> event to it after each reply
+                    (outbound only — nothing is sent until an event fires).
                 </DialogDescription>
             </DialogHeader>
 
-            <form class="space-y-4" @submit.prevent="saveN8n">
+            <form class="space-y-4" @submit.prevent="saveWebhook">
                 <div class="space-y-2">
-                    <Label for="n8n-url">Webhook URL</Label>
+                    <Label for="webhook-url">Webhook URL</Label>
                     <Input
-                        id="n8n-url"
-                        v-model="n8nForm.webhook_url"
+                        id="webhook-url"
+                        v-model="webhookForm.webhook_url"
                         type="url"
-                        placeholder="https://your-n8n.example.com/webhook/abc123"
+                        placeholder="https://your-endpoint.example.com/webhook/abc123"
                         autofocus
                     />
                     <p
-                        v-if="n8nForm.errors.webhook_url"
+                        v-if="webhookForm.errors.webhook_url"
                         class="text-sm text-destructive"
                     >
-                        {{ n8nForm.errors.webhook_url }}
+                        {{ webhookForm.errors.webhook_url }}
                     </p>
                 </div>
                 <div class="space-y-2">
-                    <Label for="n8n-secret">Shared secret (optional)</Label>
+                    <Label for="webhook-secret">Shared secret (optional)</Label>
                     <Input
-                        id="n8n-secret"
-                        v-model="n8nForm.secret"
-                        placeholder="Sent as a header n8n can verify"
+                        id="webhook-secret"
+                        v-model="webhookForm.secret"
+                        placeholder="Sent as a header you can verify"
                     />
                     <p
-                        v-if="n8nForm.errors.secret"
+                        v-if="webhookForm.errors.secret"
                         class="text-sm text-destructive"
                     >
-                        {{ n8nForm.errors.secret }}
+                        {{ webhookForm.errors.secret }}
                     </p>
                 </div>
                 <DialogFooter>
                     <Button
                         type="submit"
                         :disabled="
-                            n8nForm.processing ||
-                            n8nForm.webhook_url.trim() === ''
+                            webhookForm.processing ||
+                            webhookForm.webhook_url.trim() === ''
                         "
                     >
                         Save connection
@@ -725,8 +1002,9 @@ function hostOf(url: string): string {
                 <DialogTitle>Add MCP server</DialogTitle>
                 <DialogDescription>
                     Paste the URL of a remote MCP server. Its tools become
-                    available to AiMe BOT in chat. The token is stored encrypted
-                    and never shown again.
+                    available to AiMe BOT in chat. Choose one-click OAuth (you
+                    approve on the server's own page) or paste a token. Secrets
+                    are stored encrypted and never shown again.
                 </DialogDescription>
             </DialogHeader>
 
@@ -762,7 +1040,48 @@ function hostOf(url: string): string {
                     </p>
                 </div>
                 <div class="space-y-2">
-                    <Label for="mcp-token">Authorization token (optional)</Label>
+                    <Label>Authentication</Label>
+                    <div class="flex gap-2">
+                        <Button
+                            type="button"
+                            size="sm"
+                            :variant="
+                                mcpForm.auth_type === 'oauth'
+                                    ? 'default'
+                                    : 'outline'
+                            "
+                            @click="mcpForm.auth_type = 'oauth'"
+                        >
+                            One-click OAuth
+                        </Button>
+                        <Button
+                            type="button"
+                            size="sm"
+                            :variant="
+                                mcpForm.auth_type === 'token'
+                                    ? 'default'
+                                    : 'outline'
+                            "
+                            @click="mcpForm.auth_type = 'token'"
+                        >
+                            Paste a token
+                        </Button>
+                    </div>
+                    <p class="text-xs text-muted-foreground">
+                        <template v-if="mcpForm.auth_type === 'oauth'">
+                            You'll be sent to the server to approve access after
+                            adding it. Works with servers that support OAuth.
+                        </template>
+                        <template v-else>
+                            Use this for servers that need a static bearer token
+                            (or none at all).
+                        </template>
+                    </p>
+                </div>
+                <div v-if="mcpForm.auth_type === 'token'" class="space-y-2">
+                    <Label for="mcp-token"
+                        >Authorization token (optional)</Label
+                    >
                     <Input
                         id="mcp-token"
                         v-model="mcpForm.auth_token"

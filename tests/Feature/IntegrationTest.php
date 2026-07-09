@@ -22,7 +22,7 @@ test('a user can connect n8n with a webhook url', function () {
     $user = User::factory()->create();
 
     $this->actingAs($user)
-        ->post('/integrations/n8n', [
+        ->post('/integrations/webhook/n8n', [
             'webhook_url' => 'https://8.8.8.8/webhook/abc',
             'secret' => 's3cret',
         ])
@@ -40,7 +40,7 @@ test('connecting n8n requires a valid url', function () {
     $user = User::factory()->create();
 
     $this->actingAs($user)
-        ->post('/integrations/n8n', ['webhook_url' => 'not-a-url'])
+        ->post('/integrations/webhook/n8n', ['webhook_url' => 'not-a-url'])
         ->assertRedirect()
         ->assertSessionHasErrors('webhook_url');
 
@@ -60,20 +60,61 @@ test('connecting n8n rejects private and reserved addresses (SSRF guard)', funct
 
     foreach ($blocked as $url) {
         $this->actingAs($user)
-            ->post('/integrations/n8n', ['webhook_url' => $url])
+            ->post('/integrations/webhook/n8n', ['webhook_url' => $url])
             ->assertSessionHasErrors('webhook_url');
     }
 
     expect($user->integrations()->count())->toBe(0);
 });
 
+test('a user can connect a generic webhook provider (zapier)', function () {
+    $user = User::factory()->create();
+
+    $this->actingAs($user)
+        ->post('/integrations/webhook/zapier', ['webhook_url' => 'https://8.8.8.8/hooks/xyz'])
+        ->assertRedirect();
+
+    expect($user->integrations()->where('provider', 'zapier')->first())->not->toBeNull();
+});
+
+test('a user can connect Make.com as a webhook provider', function () {
+    $user = User::factory()->create();
+
+    $this->actingAs($user)
+        ->post('/integrations/webhook/make', ['webhook_url' => 'https://8.8.8.8/hooks/make'])
+        ->assertRedirect();
+
+    expect($user->integrations()->where('provider', 'make')->first())->not->toBeNull();
+});
+
+test('an unknown webhook provider 404s', function () {
+    $user = User::factory()->create();
+
+    $this->actingAs($user)
+        ->post('/integrations/webhook/bogus', ['webhook_url' => 'https://8.8.8.8/x'])
+        ->assertNotFound();
+
+    expect($user->integrations()->count())->toBe(0);
+});
+
+test('the integrations page exposes the app catalog and webhook providers', function () {
+    $user = User::factory()->create();
+
+    $this->actingAs($user)
+        ->get('/integrations')
+        ->assertInertia(fn ($page) => $page
+            ->has('mcpCatalog')
+            ->where('webhookProviders', fn ($p) => collect($p)->contains('zapier'))
+        );
+});
+
 test('connecting again updates the existing n8n row', function () {
     $user = User::factory()->create();
 
-    $this->actingAs($user)->post('/integrations/n8n', [
+    $this->actingAs($user)->post('/integrations/webhook/n8n', [
         'webhook_url' => 'https://8.8.8.8/webhook/one',
     ]);
-    $this->actingAs($user)->post('/integrations/n8n', [
+    $this->actingAs($user)->post('/integrations/webhook/n8n', [
         'webhook_url' => 'https://8.8.8.8/webhook/two',
     ]);
 
@@ -93,7 +134,7 @@ test('the test endpoint posts to the webhook and reports success', function () {
     ]);
 
     $this->actingAs($user)
-        ->post('/integrations/n8n/test')
+        ->post('/integrations/webhook/n8n/test')
         ->assertRedirect()
         ->assertSessionHas('success');
 
@@ -112,7 +153,7 @@ test('the test endpoint reports an error on a non-2xx response', function () {
     ]);
 
     $this->actingAs($user)
-        ->post('/integrations/n8n/test')
+        ->post('/integrations/webhook/n8n/test')
         ->assertRedirect()
         ->assertSessionHas('error');
 });
@@ -121,7 +162,7 @@ test('the test endpoint asks the user to connect first when not connected', func
     $user = User::factory()->create();
 
     $this->actingAs($user)
-        ->post('/integrations/n8n/test')
+        ->post('/integrations/webhook/n8n/test')
         ->assertRedirect()
         ->assertSessionHas('error');
 });
@@ -170,7 +211,7 @@ test('the dispatcher does nothing when the user has no n8n connection', function
 
 test('integration endpoints require authentication', function () {
     $this->get('/integrations')->assertRedirect('/login');
-    $this->post('/integrations/n8n', ['webhook_url' => 'https://x.test/y'])->assertRedirect('/login');
+    $this->post('/integrations/webhook/n8n', ['webhook_url' => 'https://x.test/y'])->assertRedirect('/login');
 });
 
 test('a user cannot see another user\'s connection', function () {
