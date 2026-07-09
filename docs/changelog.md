@@ -3,6 +3,18 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## PostgreSQL + deployment guide
+
+- **Database is now PostgreSQL** (`config/database.php` defaults to `pgsql`;
+  `.env.example` and `CLAUDE.md` updated). Chosen for native JSON — a fit for
+  JSON-heavy sources like NetSuite saved searches. Chat search now uses `ILIKE`
+  on Postgres for case-insensitive matching (MySQL/SQLite `LIKE` already ignores
+  case), via a small `likeOperator()` driver check. Migrations are Postgres-safe
+  (`after()` is a no-op, `json()`/`unsignedInteger` map cleanly).
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** added: server packages, Postgres setup,
+  Nginx vhost tuned for SSE streaming, Supervisor queue worker, the full `.env`
+  checklist (incl. the `APP_KEY`/OAuth/HTTPS gotchas), and a troubleshooting table.
+
 ## MCP URL validation + clearer "working" indicator
 
 - **Endpoint validator.** Adding or one-click-connecting an MCP server now probes

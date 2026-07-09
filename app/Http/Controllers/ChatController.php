@@ -36,6 +36,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -696,12 +697,13 @@ class ChatController extends Controller
 
         $userId = $request->user()->id;
         $like = '%'.$this->escapeLike($q).'%';
+        $op = $this->likeOperator();
 
         $conversations = Conversation::query()
             ->where('user_id', $userId)
-            ->where(function ($query) use ($like): void {
-                $query->where('title', 'like', $like)
-                    ->orWhereHas('messages', fn ($m) => $m->where('content', 'like', $like));
+            ->where(function ($query) use ($like, $op): void {
+                $query->where('title', $op, $like)
+                    ->orWhereHas('messages', fn ($m) => $m->where('content', $op, $like));
             })
             ->latest('updated_at')
             ->limit(20)
@@ -912,6 +914,15 @@ class ChatController extends Controller
     }
 
     /**
+     * Case-insensitive LIKE operator for the active driver: Postgres needs
+     * ILIKE (LIKE is case-sensitive there); MySQL/SQLite LIKE already ignores case.
+     */
+    private function likeOperator(): string
+    {
+        return DB::connection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
+    }
+
+    /**
      * Escape LIKE wildcards so a user's literal search text isn't treated as a
      * pattern.
      */
@@ -926,7 +937,7 @@ class ChatController extends Controller
     private function matchSnippet(Conversation $conversation, string $like, string $q): ?string
     {
         $match = $conversation->messages()
-            ->where('content', 'like', $like)
+            ->where('content', $this->likeOperator(), $like)
             ->orderBy('id')
             ->first(['content']);
 

@@ -1,7 +1,7 @@
 # CW Global People — Customer Portal
 
 Laravel 13 + Vue 3 (Inertia) customer portal. Login-only auth (no registration),
-top navigation, MySQL.
+a collapsible left sidebar, PostgreSQL.
 
 ## Working conventions
 
@@ -20,7 +20,7 @@ top navigation, MySQL.
 
 ## Stack
 
-- Backend: Laravel 13 (PHP 8.3+), Fortify auth, MySQL.
+- Backend: Laravel 13 (PHP 8.3+), Fortify auth, PostgreSQL (needs `pdo_pgsql`).
 - Frontend: Vue 3 + Inertia + TypeScript + Tailwind v4 + shadcn-vue, Wayfinder.
 - Chat: Claude API via the official `anthropic-ai/sdk` (server-side only).
 
