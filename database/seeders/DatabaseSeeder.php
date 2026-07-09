@@ -16,11 +16,30 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // Default login account — email: admin@example.com / password: password
+        // Administrators — can add/remove users. Change the password after first login.
+        $admins = [
+            'alex.gordo@cwglobalpeople.com' => 'Alex Gordo',
+            'dennies.salenga@cwglobalpeople.com' => 'Dennies Salenga',
+        ];
+
+        foreach ($admins as $email => $name) {
+            User::updateOrCreate(
+                ['email' => $email],
+                [
+                    'name' => $name,
+                    'role' => User::ROLE_ADMIN,
+                    'password' => Hash::make('password'),
+                    'email_verified_at' => now(),
+                ],
+            );
+        }
+
+        // Local dev login (not an admin). Remove or change before production use.
         User::updateOrCreate(
             ['email' => 'admin@example.com'],
             [
-                'name' => 'Admin',
+                'name' => 'Dev',
+                'role' => User::ROLE_USER,
                 'password' => Hash::make('password'),
                 'email_verified_at' => now(),
             ],

@@ -3,6 +3,20 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Roles + admin user management
+
+- **Admin/User roles** (`role` column on `users`, `User::isAdmin()`). Admins
+  manage members on a new **Users** page (`/users`) — add (name/email/password/role,
+  pre-verified) or remove users (not yourself). Gated by an `admin` middleware
+  ([`EnsureUserIsAdmin`](../app/Http/Middleware/EnsureUserIsAdmin.php)); non-admins
+  get 403. The "Users" nav item shows only for admins.
+- **Seeder** now creates two admins — `alex.gordo@cwglobalpeople.com` and
+  `dennies.salenga@cwglobalpeople.com` (`password`) — and demotes the dev
+  `admin@example.com` to a plain user.
+- Tests: role/isAdmin, admin-only access (403 for others), add/remove flow,
+  validation, and the seeded admins. Migration
+  `2026_07_09_140000_add_role_to_users_table`.
+
 ## PostgreSQL + deployment guide
 
 - **Database is now PostgreSQL** (`config/database.php` defaults to `pgsql`;

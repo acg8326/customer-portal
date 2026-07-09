@@ -5,6 +5,7 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\IntegrationController;
 use App\Http\Controllers\McpServerController;
 use App\Http\Controllers\ProjectController;
+use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
@@ -13,6 +14,17 @@ Route::get('/', function () {
 
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('dashboard', [DashboardController::class, 'index'])->name('dashboard');
+
+    // User management — admins only (no public registration).
+    Route::middleware('admin')->group(function () {
+        Route::get('users', [UserController::class, 'index'])->name('users');
+        Route::post('users', [UserController::class, 'store'])
+            ->middleware('throttle:integrations')
+            ->name('users.store');
+        Route::delete('users/{user}', [UserController::class, 'destroy'])
+            ->middleware('throttle:integrations')
+            ->name('users.destroy');
+    });
 
     Route::get('integrations', [IntegrationController::class, 'index'])->name('integrations');
     Route::post('integrations/webhook/{provider}', [IntegrationController::class, 'connectWebhook'])

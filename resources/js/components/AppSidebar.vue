@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { Link } from '@inertiajs/vue3';
+import { Link, usePage } from '@inertiajs/vue3';
 import {
     FolderOpen,
     LayoutGrid,
     MessageSquare,
     Plug,
     Search,
+    Users,
 } from '@lucide/vue';
-import { onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import AppLogo from '@/components/AppLogo.vue';
 import ChatSearchDialog from '@/components/ChatSearchDialog.vue';
 import NavMain from '@/components/NavMain.vue';
@@ -25,7 +26,10 @@ import {
 import { chat, dashboard } from '@/routes';
 import type { NavItem } from '@/types';
 
-const mainNavItems: NavItem[] = [
+const page = usePage();
+const isAdmin = computed(() => page.props.auth?.user?.role === 'admin');
+
+const mainNavItems = computed<NavItem[]>(() => [
     {
         title: 'Dashboard',
         href: dashboard(),
@@ -46,7 +50,9 @@ const mainNavItems: NavItem[] = [
         href: '/integrations',
         icon: Plug,
     },
-];
+    // Admin-only.
+    ...(isAdmin.value ? [{ title: 'Users', href: '/users', icon: Users }] : []),
+]);
 
 const searchOpen = ref(false);
 

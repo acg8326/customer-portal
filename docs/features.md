@@ -12,11 +12,21 @@ are wired up and reachable but don't have real functionality yet.
 | Email + password login          | ✅ Active  | `GET/POST /login`                     | Backed by Laravel Fortify                 |
 | "Remember me"                   | ✅ Active  | —                                     | Checkbox on the login form                |
 | Logout                          | ✅ Active  | `POST /logout`                        | From the user menu (top-right)            |
-| Registration                    | ❌ Removed | —                                     | Disabled in Fortify; no sign-up anywhere  |
+| Registration                    | ❌ Removed | —                                     | No public sign-up; **admins add users** at `/users` (see below) |
 | Forgot / reset password         | ✅ Active  | `/forgot-password`, `/reset-password` | "Forgot password?" link on login          |
 | Email verification              | ✅ Active  | `/email/verify`                       | Dashboard & Chat require a verified email |
 | Two-factor authentication (2FA) | ✅ Active  | under Settings → Security             | TOTP + recovery codes                     |
 | Passkeys (WebAuthn)             | ✅ Active  | under Settings → Security             | Passwordless login option                 |
+
+**Roles & user management (admin-only).** Two roles: **`admin`** and **`user`**
+(a `role` column on `users`). Since there's no public registration, **admins add
+members** on the **Users** page (`/users`, in the sidebar for admins only) —
+create with name/email/password/role, or remove a user (can't remove yourself).
+New accounts are pre-verified so they can sign in immediately. Enforced by the
+`admin` middleware ([`EnsureUserIsAdmin`](../app/Http/Middleware/EnsureUserIsAdmin.php))
+on the routes and by `User::isAdmin()`; non-admins get a 403. Seeded admins:
+`alex.gordo@cwglobalpeople.com`, `dennies.salenga@cwglobalpeople.com`.
+Backend: [`UserController`](../app/Http/Controllers/UserController.php).
 
 **Rate limiting:** The login / 2FA / passkey throttles were **removed** — you can
 attempt login as many times as you want. (The password-change endpoint under

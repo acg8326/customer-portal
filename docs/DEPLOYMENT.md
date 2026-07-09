@@ -241,8 +241,11 @@ php artisan up
 - **Back up `APP_KEY`** (in a secrets manager) — losing it orphans every stored
   credential.
 - **Back up the database** (`pg_dump cwgp_aime`) on a schedule.
-- Login account is seeded as `admin@example.com` / `password` — **change it**
-  (or reseed) before go-live.
+- Seeded admins (`php artisan db:seed`): `alex.gordo@cwglobalpeople.com` and
+  `dennies.salenga@cwglobalpeople.com`, both password `password` — **change these
+  after first login**. Admins add everyone else at `/users`; there is no public
+  registration. The seeded `admin@example.com` is a local-dev login (role `user`)
+  — remove it before go-live.
 - Keep `APP_DEBUG=false` in production.
 
 ---
