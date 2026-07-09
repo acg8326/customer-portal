@@ -3,6 +3,20 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Pre-deploy hardening: indexes + soft deletes
+
+- **Indexes** on the foreign-key columns we filter/join on — `messages.conversation_id`,
+  `conversations.project_id`, `mcp_servers.user_id`, `skills.user_id`. PostgreSQL
+  doesn't auto-index FKs (MySQL does), so these speed up the hot paths (loading a
+  chat's messages, search, per-user MCP servers/skills). The `(user_id, updated_at)`
+  listing indexes already existed.
+- **Soft deletes** on user content — `conversations`, `projects`, `skills` — so an
+  accidental delete is recoverable (`deleted_at`, excluded from queries by default,
+  `restore()`-able). MCP servers/integrations stay hard delete (they hold secrets
+  and are easy to reconnect); users stay hard delete (keeps the unique-email
+  constraint simple). Migrations `2026_07_09_150000_add_query_indexes` and
+  `2026_07_09_160000_add_soft_deletes`.
+
 ## Roles + admin user management
 
 - **Admin/User roles** (`role` column on `users`, `User::isAdmin()`). Admins
