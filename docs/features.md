@@ -201,31 +201,74 @@ systems, Productivity & data). Each card has a **Setup guide** modal with
 numbered steps.
 
 - **MCP servers (live — native tools).** Connect a **Model Context Protocol**
-  server (Slack, GitHub, Notion, … anything exposing MCP) with a name, URL, and
-  optional bearer token; the assistant can then **call that server's tools**
-  during chat. Anthropic runs the tool calls **server-side** via the MCP
-  connector. Per-user, token **encrypted at rest**, URL **SSRF-guarded**.
-  Enable/disable/delete each server. **Tool turns stream** like normal chat, and
-  the composer shows **"Using &lt;server&gt;…"** while a tool runs. (MCP turns
-  send text-only history — per-message image/PDF passthrough is still chat-only.)
+  server (Slack, GitHub, Notion, … anything exposing MCP) with a name and URL;
+  the assistant can then **call that server's tools** during chat. Anthropic runs
+  the tool calls **server-side** via the MCP connector. Per-user, secrets
+  **encrypted at rest**, URL **SSRF-guarded**. Enable/disable/delete each server.
+  **Tool turns stream** like normal chat, and the composer shows
+  **"Using &lt;server&gt;…"** while a tool runs. (MCP turns send text-only
+  history — per-message image/PDF passthrough is still chat-only.)
+  Two ways to authenticate:
+    - **One-click OAuth** — pick "One-click OAuth", **Connect**, and you're sent to
+      the server's own approve screen (you're already logged in there); approve and
+      you're back, connected. AiMe discovers the authorization server
+      (RFC 9728 / 8414), **self-registers** via Dynamic Client Registration
+      (RFC 7591) where supported (so most servers need no manually-created app),
+      runs the **authorization-code + PKCE** flow, and **auto-refreshes** the token
+      before it expires. Every discovered URL is SSRF-guarded.
+    - **Paste a token** — for servers that use a static bearer token (or none).
   Backend: [`McpServerController`](../app/Http/Controllers/McpServerController.php),
-  `McpServer` model; streamed via `beta.messages` in
+  [`McpOAuthService`](../app/Services/Mcp/McpOAuthService.php), `McpServer` model;
+  streamed via `beta.messages` in
   [`ChatController::stream`](../app/Http/Controllers/ChatController.php).
-  Config: `ANTHROPIC_MCP_BETA`.
-- **n8n (live).** Paste the **Production URL** of an n8n **Webhook** node (plus an
-  optional shared secret, sent as a header). AiMe BOT **POSTs a `chat.completed`
-  event** to that URL after every reply, so your n8n workflow can react. Use
-  **Send test** to fire a `test.ping` and see the HTTP status, and **Disconnect**
-  to remove it. Connections are **per-user** and stored **encrypted**
-  (`user_integrations` table).
-- **Everything else** (Slack, Email, GHL, HubSpot, Salesforce, Google Drive/Sheets,
-  Webhooks, Zapier, NetSuite, Calendar, Database, Code repos) is a **placeholder**
-  with a working setup guide but a disabled Connect button.
+  Config: `ANTHROPIC_MCP_BETA`, `MCP_OAUTH_*`.
+- **Apps — one-click connect (catalog).** Popular MCP apps (GitHub, Notion, Linear,
+  Sentry, Atlassian, Asana, **HubSpot**, **Airtable**, Stripe, PayPal, Intercom,
+  Vercel, …) appear as cards with a single **Connect** button: it creates the MCP server from the catalog
+  entry and runs the OAuth flow above — no URL to paste. Cards are **state-aware**
+  (Connected / Reconnect / Enable-Disable / remove). The catalog lives in
+  `config/integrations.php` (`mcp_catalog`); each URL is overridable via
+  `MCP_CATALOG_<APP>_URL`. Any app not listed can still be added by hand.
+- **Cross-app interop.** Because every enabled MCP server's tools are offered to
+  the model **together** in one turn, the assistant can move/compare data across
+  connected apps — e.g. "compare HubSpot deals to the Airtable `Deals` table and
+  add the missing ones." No extra wiring; connect both and ask.
+- **Destructive-action guardrail.** When the user has tools connected, a policy is
+  appended to the system prompt requiring the assistant to **confirm before any
+  create / update / delete / send** and wait for explicit approval; reads and
+  searches are unrestricted. Toggle with `ANTHROPIC_TOOL_SAFETY`, override the text
+  with `ANTHROPIC_TOOL_SAFETY_PROMPT`. **Note:** this is a *policy* guardrail (the
+  model complies), not a hard gate — Anthropic's MCP connector executes tools
+  server-side within the turn, so there is no per-call approval interrupt. For a
+  hard gate, pair it with **least-privilege OAuth scopes** (`MCP_OAUTH_SCOPES`) or
+  read-only tokens; a true click-to-approve interrupt would require running tools
+  client-side (a larger change, on the roadmap).
+- **Automation (live): n8n, Zapier, Make.com, and generic Webhooks.** Paste an
+  outbound webhook URL (plus an optional shared secret, sent as a header). AiMe BOT
+  **POSTs a `chat.completed` event** to every connected provider after each reply.
+  Use **Send test** to fire a `test.ping`, and **Disconnect** to remove it.
+  Delivery is on a **queue**, one job per provider (independent retries).
+  These are event *targets* (outbound), not OAuth logins — so they connect by URL,
+  not an approve screen. n8n, Zapier, and Make **also expose an MCP server**, so
+  their cards additionally offer **"Use as tools"** (two-way — the assistant runs
+  your workflows) alongside **"Events webhook"** (one-way). "Use as tools" opens the
+  MCP connect flow prefilled (paste your instance URL → OAuth), since these are
+  self-hosted/per-account and have no single catalog URL.
+- **The other catalog cards** (Slack, GHL, Salesforce, Google Drive/Sheets,
+  NetSuite, Calendar, Code repos) now **Connect via the MCP flow** — the card
+  opens the "Add MCP server" dialog prefilled with the tool name, so you connect
+  it by OAuth or token (paste its MCP URL). Each card declares a `connect` mode
+  (`mcp` default, `webhook`, or `soon`). Only **Email** (IMAP/SMTP) and raw
+  **Database** remain **"Coming soon"** with a disabled button — they have no
+  backend yet, so enabling them would be a dead click.
 - Backend: [`IntegrationController`](../app/Http/Controllers/IntegrationController.php),
-  [`N8nDispatcher`](../app/Services/N8nDispatcher.php), `UserIntegration` model.
-- **Config (all in `.env`):** `INTEGRATIONS_LIVE` (comma-separated provider keys
-  whose Connect works), `INTEGRATION_N8N_TIMEOUT`, `INTEGRATION_N8N_SECRET_HEADER`
-  — defaults in `config/integrations.php`.
+  [`N8nDispatcher`](../app/Services/N8nDispatcher.php) (generic webhook poster),
+  [`DispatchN8nEvent`](../app/Jobs/DispatchN8nEvent.php) (per-provider job),
+  `UserIntegration` model.
+- **Config (all in `.env`):** `INTEGRATIONS_LIVE`, `INTEGRATION_WEBHOOK_PROVIDERS`
+  (comma-separated webhook providers), `INTEGRATION_N8N_TIMEOUT`,
+  `INTEGRATION_N8N_SECRET_HEADER`, `MCP_CATALOG_*` — defaults in
+  `config/integrations.php`.
 
 ## 7. Theming
 

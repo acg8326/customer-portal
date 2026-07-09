@@ -3,6 +3,96 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## MCP URL validation + clearer "working" indicator
+
+- **Endpoint validator.** Adding or one-click-connecting an MCP server now probes
+  the URL first (`McpOAuthService::validateEndpoint` — a minimal MCP `initialize`
+  handshake). A wrong URL that serves a **web page**, a **404**, or an
+  **unreachable** host is rejected with a clear message *before* saving, instead
+  of failing mid-chat. Conservative: a 401/403 auth challenge, JSON-RPC, SSE, or a
+  redirect is accepted, so real servers are never blocked. SSRF-guarded.
+- **Working indicator.** The chat's "Using &lt;tool&gt;…" status now stays visible
+  while a server-side tool runs (create/update/etc.), even after text has started
+  — a slow action no longer looks frozen.
+
+## MCP failure no longer kills the chat
+
+- If a connected MCP server is unreachable or misconfigured (e.g. a wrong server
+  URL), the chat **falls back to a normal reply** instead of erroring out, with an
+  inline note ("Couldn't reach your connected tools… check the server URL"). Both
+  the streaming and non-streaming paths in `ChatController` now catch the MCP call
+  and degrade gracefully rather than surfacing a 400/502.
+
+## Expanded MCP catalog
+
+- **Catalog expanded** after verifying live remote MCP endpoints against vendor
+  docs: added **PayPal** (`https://mcp.paypal.com`), **Intercom**
+  (`https://mcp.intercom.com/mcp`), and **Vercel** (`https://mcp.vercel.com`);
+  corrected **HubSpot** (`https://mcp.hubspot.com`) and **Atlassian**
+  (`https://mcp.atlassian.com/v1/mcp/authv2`). All confirmed OAuth-capable; URLs
+  remain editable via `MCP_CATALOG_<APP>_URL`.
+
+## Make.com automation + destructive-action guardrail
+
+- **Make.com** added as a live automation provider (webhook-style, like n8n /
+  Zapier). `INTEGRATION_WEBHOOK_PROVIDERS` and `INTEGRATIONS_LIVE` now default to
+  `n8n,zapier,webhooks,make`.
+- **Destructive-action guardrail.** When a user has tools connected, a policy is
+  appended to the system prompt requiring the assistant to **confirm before any
+  create/update/delete/send** and wait for approval (reads/searches are free).
+  Config: `ANTHROPIC_TOOL_SAFETY` (default on), `ANTHROPIC_TOOL_SAFETY_PROMPT`.
+  This is a policy guardrail, not a hard gate — the MCP connector runs tools
+  server-side with no per-call interrupt; pair with least-privilege OAuth scopes
+  for a hard limit (a client-side click-to-approve interrupt is future work).
+- Tests: Make provider connect, and the guardrail is present only when an enabled
+  MCP server exists (and honors the config toggle).
+
+## App catalog (one-click connect) + live automation providers
+
+- **One-click app catalog.** Popular MCP apps — GitHub, Notion, Linear, Sentry,
+  Atlassian, Asana, **HubSpot**, **Airtable**, Stripe — now appear as cards with a
+  single **Connect** that creates the MCP server from a config entry and runs the
+  OAuth flow (no URL to paste). Cards are **state-aware** (Connected / Reconnect /
+  Enable-Disable / remove). Catalog + URLs live in `config/integrations.php`
+  (`mcp_catalog`, overridable via `MCP_CATALOG_<APP>_URL`). New `catalog_key`
+  column on `mcp_servers`; `catalogConnect` route; the top MCP section now lists
+  only **custom** (hand-added) servers, so catalog apps aren't duplicated.
+- **Cross-app interop, clarified.** All enabled MCP servers' tools are handed to
+  the model together, so the assistant can compare/copy/update across connected
+  apps (e.g. HubSpot → Airtable) in one turn — documented on the page and in docs.
+- **Automation section is now live for n8n, Zapier, and generic Webhooks.** The
+  n8n-only webhook connect was generalized to any provider in
+  `INTEGRATION_WEBHOOK_PROVIDERS`: generic `connectWebhook`/`testWebhook` routes,
+  and `chat.completed` events dispatched to **every** connected provider (one
+  queued job each, independent retries). These are event targets (connect by URL),
+  not OAuth logins.
+- Tests extended: catalog connect (create + redirect + unknown-key 404), generic
+  webhook provider connect + unknown-provider 404, catalog/webhook props on the
+  page. Migration `2026_07_09_130000_add_catalog_key_to_mcp_servers_table`.
+
+## One-click OAuth for MCP servers
+
+- **"Connect" now means OAuth**, not just pasting a token. Adding an MCP server,
+  you pick **One-click OAuth** or **Paste a token**. For OAuth, clicking **Connect**
+  sends you to the server's own approval page; approve and you're back, connected —
+  no credentials to copy.
+- Generic across tools via the **MCP authorization spec**:
+  [`McpOAuthService`](../app/Services/Mcp/McpOAuthService.php) discovers the
+  authorization server (RFC 9728 protected-resource metadata → RFC 8414 / OIDC
+  server metadata), **self-registers a client** via Dynamic Client Registration
+  (RFC 7591) where supported, runs **authorization-code + PKCE (S256)** with a CSRF
+  `state`, and **auto-refreshes** the access token before it expires (config
+  `MCP_OAUTH_REFRESH_LEEWAY`). Any server that ships a remote MCP server with OAuth
+  "just works" — no per-tool code.
+- **Security:** every discovered/redirected URL is **SSRF-guarded** via `PublicUrl`;
+  client secret + access/refresh tokens are **encrypted at rest**; PKCE verifier and
+  `state` live in the session only; unconnected OAuth servers are **skipped** at chat
+  time rather than failing a turn with a 401. The token flows into the existing
+  (unchanged) MCP connector as its `authorizationToken`.
+- New: `auth_type` + OAuth columns on `mcp_servers`, connect/callback routes,
+  `MCP_OAUTH_*` config, and tests (discovery/registration/PKCE, callback + CSRF,
+  refresh, SSRF). Migration `2026_07_09_120000_add_oauth_to_mcp_servers_table`.
+
 ## Navigation moved to a collapsible left sidebar
 
 - **Left sidebar instead of a top header** (Claude-style). `AppLayout` now renders
