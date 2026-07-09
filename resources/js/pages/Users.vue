@@ -5,6 +5,7 @@ import { computed, ref } from 'vue';
 import { Button } from '@/components/ui/button';
 import {
     Dialog,
+    DialogClose,
     DialogContent,
     DialogDescription,
     DialogFooter,
@@ -62,16 +63,25 @@ function save() {
     });
 }
 
-function remove(u: ManagedUser) {
-    if (u.is_self) {
+const deleting = ref<ManagedUser | null>(null);
+
+function askRemove(u: ManagedUser) {
+    if (!u.is_self) {
+        deleting.value = u;
+    }
+}
+
+function confirmRemove() {
+    if (deleting.value === null) {
         return;
     }
 
-    if (!confirm(`Remove ${u.name}? This cannot be undone.`)) {
-        return;
-    }
-
-    router.delete(`/users/${u.id}`, { preserveScroll: true });
+    router.delete(`/users/${deleting.value.id}`, {
+        preserveScroll: true,
+        onFinish: () => {
+            deleting.value = null;
+        },
+    });
 }
 </script>
 
@@ -161,7 +171,7 @@ function remove(u: ManagedUser) {
                                 variant="ghost"
                                 size="sm"
                                 class="text-muted-foreground"
-                                @click="remove(u)"
+                                @click="askRemove(u)"
                             >
                                 <Trash2 class="size-4" />
                             </Button>
@@ -261,6 +271,37 @@ function remove(u: ManagedUser) {
                     </Button>
                 </DialogFooter>
             </form>
+        </DialogContent>
+    </Dialog>
+
+    <!-- Delete confirmation -->
+    <Dialog
+        :open="deleting !== null"
+        @update:open="
+            (v) => {
+                if (!v) deleting = null;
+            }
+        "
+    >
+        <DialogContent>
+            <DialogHeader class="space-y-3">
+                <DialogTitle>Remove {{ deleting?.name }}?</DialogTitle>
+                <DialogDescription>
+                    This permanently removes
+                    <span class="font-medium">{{ deleting?.email }}</span> and
+                    they will no longer be able to sign in. This cannot be
+                    undone.
+                </DialogDescription>
+            </DialogHeader>
+
+            <DialogFooter class="gap-2">
+                <DialogClose as-child>
+                    <Button variant="secondary">Cancel</Button>
+                </DialogClose>
+                <Button variant="destructive" @click="confirmRemove">
+                    Remove user
+                </Button>
+            </DialogFooter>
         </DialogContent>
     </Dialog>
 </template>
