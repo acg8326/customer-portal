@@ -103,8 +103,18 @@ SESSION_SECURE_COOKIE=true
 # Claude
 ANTHROPIC_API_KEY=sk-ant-...
 
+# Composio (per-user tool connections: Slack, GitHub, HubSpot, Airtable).
+# Omit to disable the Composio cards entirely. One API key + one auth-config id
+# per toolkit (from the Composio dashboard).
+COMPOSIO_API_KEY=ak_...
+COMPOSIO_SLACK_AUTH_CONFIG=ac_...
+COMPOSIO_GITHUB_AUTH_CONFIG=ac_...
+COMPOSIO_HUBSPOT_AUTH_CONFIG=ac_...
+COMPOSIO_AIRTABLE_AUTH_CONFIG=ac_...
+
 # Optional tunables have sensible defaults (see config/*.php): USAGE_*,
-# RATE_LIMIT_*, ANTHROPIC_TOOL_SAFETY, INTEGRATION_WEBHOOK_PROVIDERS, MCP_OAUTH_*.
+# RATE_LIMIT_*, ANTHROPIC_TOOL_SAFETY, INTEGRATION_WEBHOOK_PROVIDERS, MCP_OAUTH_*,
+# COMPOSIO_MAX_TOOLS, COMPOSIO_MAX_TOOL_ROUNDS.
 ```
 
 > ⚠️ **`APP_KEY` is sacred.** MCP tokens, OAuth access/refresh tokens, and webhook
@@ -222,6 +232,22 @@ MCP one-click OAuth redirects the user to the provider and back to
 
 ## 9. Deploy / update routine
 
+**One command** (pull + rebuild + migrate + restart), tracked at
+[`scripts/deploy.sh`](../scripts/deploy.sh):
+
+```bash
+cd /var/www/cwgp-aime
+bash scripts/deploy.sh
+```
+
+It runs `git pull` → `composer install --no-dev` → `npm ci && npm run build` →
+`migrate --force` → rebuilds config/route/view caches → `queue:restart`, then
+best-effort reloads php-fpm (opcache) and `restorecon` on `public/build`. Add any
+**new `.env` keys before running** (this release added the `COMPOSIO_*` keys — the
+script warns if `COMPOSIO_API_KEY` is missing). Re-runnable and safe.
+
+<details><summary>Equivalent manual steps</summary>
+
 ```bash
 cd /var/www/cwgp-aime
 php artisan down
@@ -233,6 +259,7 @@ php artisan optimize
 php artisan queue:restart          # workers pick up new code
 php artisan up
 ```
+</details>
 
 ---
 

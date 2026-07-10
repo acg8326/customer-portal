@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\McpServer;
 use App\Models\UserIntegration;
 use App\Rules\PublicHttpUrl;
+use App\Services\ComposioService;
 use App\Services\N8nDispatcher;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -23,8 +24,33 @@ class IntegrationController extends Controller
             'webhookProviders' => array_values(config('integrations.webhook_providers', [])),
             'connections' => $this->connections($request),
             'mcpServers' => $this->mcpServers($request),
-            'mcpCatalog' => $this->mcpCatalog($request),
+            'composio' => $this->composio($request),
         ]);
+    }
+
+    /**
+     * Composio-brokered per-user tool connections (enabled flag + each
+     * configured toolkit annotated with the current user's connection state).
+     *
+     * @return array{enabled: bool, toolkits: array<int, array{key: string, name: string, connected: bool}>}
+     */
+    private function composio(Request $request): array
+    {
+        $composio = app(ComposioService::class);
+
+        $toolkits = [];
+        foreach ($composio->toolkits() as $key => $meta) {
+            $toolkits[] = [
+                'key' => $key,
+                'name' => $meta['name'],
+                'connected' => $composio->isConnected($request->user(), $key),
+            ];
+        }
+
+        return [
+            'enabled' => $composio->enabled(),
+            'toolkits' => $toolkits,
+        ];
     }
 
     /**
@@ -150,44 +176,6 @@ class IntegrationController extends Controller
                 'oauth_connected' => $s->oauthConnected(),
             ])
             ->all();
-    }
-
-    /**
-     * The one-click app catalog, each entry annotated with the current user's
-     * connection state (so a connected app shows "Connected", not "Connect").
-     *
-     * @return array<int, array{key: string, name: string, description: string, category: string, icon: string, connected: bool, enabled: bool, server_id: int|null}>
-     */
-    private function mcpCatalog(Request $request): array
-    {
-        $mine = $request->user()->mcpServers()
-            ->whereNotNull('catalog_key')
-            ->get()
-            ->keyBy('catalog_key');
-
-        $out = [];
-
-        foreach ((array) config('integrations.mcp_catalog', []) as $entry) {
-            if (! is_array($entry) || blank($entry['key'] ?? null)) {
-                continue;
-            }
-
-            $key = (string) $entry['key'];
-            $server = $mine->get($key);
-
-            $out[] = [
-                'key' => $key,
-                'name' => (string) ($entry['name'] ?? $key),
-                'description' => (string) ($entry['description'] ?? ''),
-                'category' => (string) ($entry['category'] ?? 'Apps'),
-                'icon' => (string) ($entry['icon'] ?? 'plug'),
-                'connected' => $server instanceof McpServer && $server->oauthConnected(),
-                'enabled' => $server instanceof McpServer ? $server->enabled : false,
-                'server_id' => $server instanceof McpServer ? $server->id : null,
-            ];
-        }
-
-        return $out;
     }
 
     /**

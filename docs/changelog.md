@@ -3,6 +3,76 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Integrations: "Currently connected" table + catalog search
+
+- Added a **"Currently connected apps"** overview **table** at the top of the
+  Integrations page listing every app linked through a card (Composio per-user
+  links + event webhooks) with its category, connection type, endpoint, and
+  quick Reconnect / Send test / Disconnect actions. Connected apps **move into
+  this table and no longer render as a card** in the grid below (no duplicate).
+  Shown only when something is connected; MCP servers keep their own section.
+- Added a **search box** (top-right of the page header) that filters the catalog
+  live by app name, description, or category (empty categories hide; a "no
+  matches" note shows when nothing fits). ([`Integrations.vue`](../resources/js/pages/Integrations.vue))
+- Dropped the "How" column from the connected table and show the app's own
+  **details/description** there instead.
+- Added **Airtable** as a Composio toolkit (Productivity & data) —
+  `COMPOSIO_AIRTABLE_AUTH_CONFIG` in `config/services.php` + a card.
+
+## Deploy script
+
+- Added [`scripts/deploy.sh`](../scripts/deploy.sh) — a re-runnable server deploy:
+  pull + `composer install --no-dev` + `npm ci && build` + `migrate --force` +
+  cache rebuild + `queue:restart` (best-effort php-fpm reload + `restorecon`).
+  Wired into `docs/DEPLOYMENT.md` §9, and the `.env` checklist now lists the
+  `COMPOSIO_*` keys.
+
+## Chat renders Markdown (tables, code, lists)
+
+- Assistant replies now render as **formatted Markdown** instead of raw text —
+  GFM **tables**, fenced code blocks, lists, headings, blockquotes, bold/italic,
+  and links. A channel list or comparison now shows as a real table, not
+  `| pipes |`. Rendered with `marked` and sanitized with `DOMPurify` before
+  insertion (model output is never trusted raw); the styling uses the existing
+  light/dark theme tokens and wide tables/code scroll horizontally inside the
+  bubble. User messages stay plain text. ([`ChatPanel.vue`](../resources/js/components/ChatPanel.vue))
+- Composio tool loading now requests each toolkit's **curated high-value tools**
+  (`important=true`) rather than the first N alphabetically, so the model
+  reliably gets the tools people actually ask for (list/search/send/fetch)
+  instead of being cut off mid-alphabet. ([`ComposioService`](../app/Services/ComposioService.php))
+
+## Composio connected apps + Integrations page redesign
+
+- Added **Composio** as a hosted tool gateway so users can connect apps that
+  don't support one-click MCP OAuth (they need a pre-registered app). Composio
+  owns the OAuth apps, so there's **no per-app client id/secret** — one Composio
+  API key + a per-toolkit auth-config id (in `config/services.php`, via `.env`).
+  **Slack, GitHub, and HubSpot** are wired; more toolkits are just config
+  entries + a card `composio:` key.
+- **Per-user connections**: each user links their *own* account (Composio
+  `user_id` = the AiMe user id), so AiMe acts as each person when using the tool.
+- **Client-side tool loop (not MCP connector).** Composio's MCP endpoint needs
+  an `x-api-key` header that Anthropic's server-side MCP connector can't send, so
+  `ChatController` runs the tool loop itself: it fetches Composio tool schemas,
+  offers them to Claude as normal tools, and executes each call **server-side**
+  via Composio's REST API (`POST /api/v3/tools/execute/{slug}`) with the API key,
+  looping until Claude stops. Tool count/rounds are capped
+  (`COMPOSIO_MAX_TOOLS`, `COMPOSIO_MAX_TOOL_ROUNDS`).
+- New: `composio_connections` table + `ComposioConnection` model,
+  `ComposioService` (link, tool schemas, execute, live status), `ComposioController`
+  (connect → consent → **status-verified** callback), routes under
+  `integrations/composio/*`. `mcpEnabled` and the tool-safety guardrail also fire
+  for Composio connections. The callback now **verifies the grant is ACTIVE with
+  Composio** before marking a card connected (no more false "Connected").
+- **Integrations page redesign**: everything is now organized **by category**
+  (Communication, CRM, Developer tools, Files & documents, Automation, …). Each
+  tool is one card that connects in one click via Composio where configured
+  (Slack/GitHub/HubSpot), or shows "coming soon". Removed the broken
+  **"Apps — one-click connect"** catalog (most vendors couldn't self-register an
+  OAuth app). Automation (n8n/Zapier/Make/Webhooks) stays as outbound webhooks,
+  and a de-emphasized **"Advanced — connect a server directly"** section at the
+  bottom keeps the raw MCP-by-URL option for self-hosted/sensitive tools.
+
 ## Pin Composer platform to PHP 8.3 (reproducible deploys)
 
 - Pinned `config.platform.php` to `8.3.31` in `composer.json` and regenerated

@@ -35,6 +35,40 @@ return [
         ],
     ],
 
+    // Composio — a hosted tool gateway. One API key lets each user connect apps
+    // (Slack, GitHub, …) via Composio-managed OAuth, reached over MCP with no
+    // per-app client id/secret. Each toolkit needs an auth-config id (created
+    // once in the Composio dashboard) and an MCP server id (the <id> from the
+    // MCP URL Composio shows: /v3/mcp/<id>?user_id=...).
+    'composio' => [
+        'api_key' => env('COMPOSIO_API_KEY'),
+        'base_url' => env('COMPOSIO_BASE_URL', 'https://backend.composio.dev'),
+
+        // Max tool schemas per toolkit sent to Claude in a turn (keeps the prompt
+        // from ballooning), and max tool-call rounds before we stop the loop.
+        'max_tools' => (int) env('COMPOSIO_MAX_TOOLS', 40),
+        'max_tool_rounds' => (int) env('COMPOSIO_MAX_TOOL_ROUNDS', 8),
+
+        'toolkits' => [
+            'slack' => [
+                'name' => 'Slack',
+                'auth_config_id' => env('COMPOSIO_SLACK_AUTH_CONFIG'),
+            ],
+            'github' => [
+                'name' => 'GitHub',
+                'auth_config_id' => env('COMPOSIO_GITHUB_AUTH_CONFIG'),
+            ],
+            'hubspot' => [
+                'name' => 'HubSpot',
+                'auth_config_id' => env('COMPOSIO_HUBSPOT_AUTH_CONFIG'),
+            ],
+            'airtable' => [
+                'name' => 'Airtable',
+                'auth_config_id' => env('COMPOSIO_AIRTABLE_AUTH_CONFIG'),
+            ],
+        ],
+    ],
+
     'anthropic' => [
         'key' => env('ANTHROPIC_API_KEY'),
         'model' => env('ANTHROPIC_MODEL', 'claude-opus-4-8'),

@@ -16,18 +16,25 @@ use Anthropic\Messages\Base64PDFSource;
 use Anthropic\Messages\CacheControlEphemeral;
 use Anthropic\Messages\DocumentBlockParam;
 use Anthropic\Messages\ImageBlockParam;
+use Anthropic\Messages\MessageParam;
 use Anthropic\Messages\RawContentBlockDeltaEvent;
 use Anthropic\Messages\RawMessageDeltaEvent;
 use Anthropic\Messages\RawMessageStartEvent;
 use Anthropic\Messages\TextBlock;
 use Anthropic\Messages\TextBlockParam;
 use Anthropic\Messages\TextDelta;
+use Anthropic\Messages\Tool;
+use Anthropic\Messages\Tool\InputSchema;
+use Anthropic\Messages\ToolResultBlockParam;
+use Anthropic\Messages\ToolUseBlock;
+use Anthropic\Messages\ToolUseBlockParam;
 use App\Jobs\DispatchN8nEvent;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\Project;
 use App\Models\Skill;
 use App\Models\User;
+use App\Services\ComposioService;
 use App\Services\Mcp\McpOAuthService;
 use App\Services\TokenBudget;
 use Illuminate\Http\JsonResponse;
@@ -43,6 +50,7 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
+use RuntimeException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Throwable;
 
@@ -75,7 +83,10 @@ class ChatController extends Controller
      */
     public static function mcpEnabled(Request $request): bool
     {
-        return $request->user()->mcpServers()->where('enabled', true)->exists();
+        $user = $request->user();
+
+        return $user->mcpServers()->where('enabled', true)->exists()
+            || $user->composioConnections()->where('status', 'active')->exists();
     }
 
     /**
@@ -182,13 +193,29 @@ class ChatController extends Controller
 
         try {
             $client = new Client(apiKey: $apiKey);
-            $mcp = $this->mcpServerDefs($request->user());
+            $user = $request->user();
+            $composioKeys = app(ComposioService::class)->activeToolkitKeys($user);
+            // Composio tools run through a client-side loop; custom MCP servers
+            // run server-side. Prefer Composio when the user has it connected.
+            $mcp = $composioKeys === [] ? $this->mcpServerDefs($user) : [];
 
             $reply = null;
             $inputTokens = 0;
             $outputTokens = 0;
 
-            if ($mcp !== []) {
+            if ($composioKeys !== []) {
+                try {
+                    [$reply, $inputTokens, $outputTokens] =
+                        $this->completeWithComposioTools($client, $conversation, $selectedModel, $composioKeys);
+                } catch (Throwable $e) {
+                    report($e);
+                    Log::warning('Composio tools unavailable; answering without tools', [
+                        'user_id' => $userId,
+                        'error' => $e->getMessage(),
+                    ]);
+                    $reply = null;
+                }
+            } elseif ($mcp !== []) {
                 // Native tool use via the user's MCP servers (server-side). If a
                 // server is unreachable/misconfigured, fall back to a plain reply
                 // rather than failing the whole turn.
@@ -300,10 +327,11 @@ class ChatController extends Controller
         }
 
         [$conversation, $userId, $selectedModel] = $this->startTurn($request, $hasFiles);
-        $mcp = $this->mcpServerDefs($request->user());
+        $composioKeys = app(ComposioService::class)->activeToolkitKeys($request->user());
+        $mcp = $composioKeys === [] ? $this->mcpServerDefs($request->user()) : [];
         $maxTokens = (int) config('services.anthropic.max_tokens', 4096);
 
-        return response()->stream(function () use ($request, $conversation, $mcp, $selectedModel, $maxTokens, $userId, $apiKey): void {
+        return response()->stream(function () use ($request, $conversation, $mcp, $composioKeys, $selectedModel, $maxTokens, $userId, $apiKey): void {
             $this->emit('meta', [
                 'conversation_id' => $conversation->id,
                 'title' => $conversation->title,
@@ -317,72 +345,98 @@ class ChatController extends Controller
                 $outputTokens = 0;
                 $toolNote = '';
                 $stream = null;
+                $handled = false;
 
-                if ($mcp !== []) {
-                    // Native tool use, streamed: Anthropic runs the MCP tools
-                    // server-side and streams the final text. Text-only history.
+                if ($composioKeys !== []) {
+                    // Composio tools: AiMe runs the tool loop itself (non-streamed
+                    // — it executes each call server-side), then emits the final
+                    // answer as one block. On failure, fall back to a plain reply.
                     try {
-                        $stream = $client->beta->messages->createStream(
-                            maxTokens: $maxTokens,
-                            messages: $this->textHistory($conversation),
-                            model: $selectedModel,
-                            system: $this->buildSystemPrompt($conversation),
-                            mcpServers: $mcp,
-                            betas: [(string) config('services.anthropic.mcp_beta', 'mcp-client-2025-04-04')],
-                        );
+                        [$reply, $inputTokens, $outputTokens] =
+                            $this->completeWithComposioTools($client, $conversation, $selectedModel, $composioKeys);
+                        $reply = trim($reply);
+                        if ($reply !== '') {
+                            $this->emit('delta', ['text' => $reply]);
+                        }
+                        $handled = true;
                     } catch (Throwable $e) {
-                        // A connected MCP server is unreachable or misconfigured
-                        // (e.g. a wrong server URL). Don't fail the whole chat —
-                        // answer without tools and tell the user.
                         report($e);
-                        Log::warning('MCP stream unavailable; answering without tools', [
+                        Log::warning('Composio tools unavailable; answering without tools', [
                             'user_id' => $userId,
                             'error' => $e->getMessage(),
                         ]);
-                        $toolNote = "_⚠️ Couldn't reach your connected tools just now — answering without them. Check the server URL under Integrations._\n\n";
+                        $toolNote = "_⚠️ Couldn't use your connected tools just now — answering without them._\n\n";
+                        $reply = '';
                     }
                 }
 
-                if ($stream === null) {
-                    $stream = $client->messages->createStream(
-                        maxTokens: $maxTokens,
-                        messages: $this->buildHistory($conversation),
-                        model: $selectedModel,
-                        system: $this->systemBlocks($conversation),
-                    );
-                }
-
-                if ($toolNote !== '') {
-                    $reply .= $toolNote;
-                    $this->emit('delta', ['text' => $toolNote]);
-                }
-
-                foreach ($stream as $event) {
-                    // Text deltas (plain + beta/MCP streams).
-                    if ($event instanceof RawContentBlockDeltaEvent && $event->delta instanceof TextDelta) {
-                        $reply .= $event->delta->text;
-                        $this->emit('delta', ['text' => $event->delta->text]);
-                    } elseif ($event instanceof BetaRawContentBlockDeltaEvent && $event->delta instanceof BetaTextDelta) {
-                        $reply .= $event->delta->text;
-                        $this->emit('delta', ['text' => $event->delta->text]);
-                    } elseif ($event instanceof BetaRawContentBlockStartEvent && $event->contentBlock instanceof BetaMCPToolUseBlock) {
-                        // Surface a tool call as it starts.
-                        $this->emit('tool', [
-                            'name' => $event->contentBlock->name,
-                            'server' => $event->contentBlock->serverName,
-                        ]);
-                    } elseif ($event instanceof RawMessageStartEvent) {
-                        $inputTokens = $event->message->usage->inputTokens;
-                    } elseif ($event instanceof BetaRawMessageStartEvent) {
-                        $inputTokens = $event->message->usage->inputTokens;
-                    } elseif ($event instanceof RawMessageDeltaEvent) {
-                        $outputTokens = $event->usage->outputTokens;
-                    } elseif ($event instanceof BetaRawMessageDeltaEvent) {
-                        $outputTokens = $event->usage->outputTokens;
+                if (! $handled) {
+                    if ($mcp !== []) {
+                        // Native tool use, streamed: Anthropic runs the MCP tools
+                        // server-side and streams the final text. Text-only history.
+                        try {
+                            $stream = $client->beta->messages->createStream(
+                                maxTokens: $maxTokens,
+                                messages: $this->textHistory($conversation),
+                                model: $selectedModel,
+                                system: $this->buildSystemPrompt($conversation),
+                                mcpServers: $mcp,
+                                betas: [(string) config('services.anthropic.mcp_beta', 'mcp-client-2025-04-04')],
+                            );
+                        } catch (Throwable $e) {
+                            // A connected MCP server is unreachable or misconfigured
+                            // (e.g. a wrong server URL). Don't fail the whole chat —
+                            // answer without tools and tell the user.
+                            report($e);
+                            Log::warning('MCP stream unavailable; answering without tools', [
+                                'user_id' => $userId,
+                                'error' => $e->getMessage(),
+                            ]);
+                            $toolNote = "_⚠️ Couldn't reach your connected tools just now — answering without them. Check the server URL under Integrations._\n\n";
+                        }
                     }
-                }
 
-                $reply = trim($reply);
+                    if ($stream === null) {
+                        $stream = $client->messages->createStream(
+                            maxTokens: $maxTokens,
+                            messages: $this->buildHistory($conversation),
+                            model: $selectedModel,
+                            system: $this->systemBlocks($conversation),
+                        );
+                    }
+
+                    if ($toolNote !== '') {
+                        $reply .= $toolNote;
+                        $this->emit('delta', ['text' => $toolNote]);
+                    }
+
+                    foreach ($stream as $event) {
+                        // Text deltas (plain + beta/MCP streams).
+                        if ($event instanceof RawContentBlockDeltaEvent && $event->delta instanceof TextDelta) {
+                            $reply .= $event->delta->text;
+                            $this->emit('delta', ['text' => $event->delta->text]);
+                        } elseif ($event instanceof BetaRawContentBlockDeltaEvent && $event->delta instanceof BetaTextDelta) {
+                            $reply .= $event->delta->text;
+                            $this->emit('delta', ['text' => $event->delta->text]);
+                        } elseif ($event instanceof BetaRawContentBlockStartEvent && $event->contentBlock instanceof BetaMCPToolUseBlock) {
+                            // Surface a tool call as it starts.
+                            $this->emit('tool', [
+                                'name' => $event->contentBlock->name,
+                                'server' => $event->contentBlock->serverName,
+                            ]);
+                        } elseif ($event instanceof RawMessageStartEvent) {
+                            $inputTokens = $event->message->usage->inputTokens;
+                        } elseif ($event instanceof BetaRawMessageStartEvent) {
+                            $inputTokens = $event->message->usage->inputTokens;
+                        } elseif ($event instanceof RawMessageDeltaEvent) {
+                            $outputTokens = $event->usage->outputTokens;
+                        } elseif ($event instanceof BetaRawMessageDeltaEvent) {
+                            $outputTokens = $event->usage->outputTokens;
+                        }
+                    }
+
+                    $reply = trim($reply);
+                }
 
                 $this->finalizeTurn($request, $conversation, $reply, $selectedModel, $inputTokens, $outputTokens, $userId);
 
@@ -601,6 +655,110 @@ class ChatController extends Controller
         }
 
         return $defs;
+    }
+
+    /**
+     * Run a client-side tool-use loop over the user's Composio tools. Because
+     * Composio's MCP endpoint needs an `x-api-key` header that Anthropic's MCP
+     * connector can't send, AiMe executes each tool call itself (server-side,
+     * with the API key) and feeds the result back to Claude until it stops
+     * calling tools. Returns [reply, inputTokens, outputTokens].
+     *
+     * @param  list<string>  $toolkitKeys
+     * @return array{0: string, 1: int, 2: int}
+     */
+    private function completeWithComposioTools(Client $client, Conversation $conversation, string $model, array $toolkitKeys): array
+    {
+        $composio = app(ComposioService::class);
+        $schemas = $composio->toolSchemas($toolkitKeys);
+
+        if ($schemas === []) {
+            throw new RuntimeException('No Composio tools available for this user.');
+        }
+
+        $tools = [];
+        foreach ($schemas as $schema) {
+            $properties = is_array($schema['input_schema']['properties'] ?? null)
+                ? $schema['input_schema']['properties']
+                : [];
+            $required = array_values(array_filter(
+                (array) ($schema['input_schema']['required'] ?? []),
+                'is_string',
+            ));
+
+            $tools[] = Tool::with(
+                inputSchema: InputSchema::with(properties: $properties, required: $required),
+                name: $schema['name'],
+                description: $schema['description'],
+            );
+        }
+
+        $messages = $this->textHistory($conversation);
+        $system = $this->buildSystemPrompt($conversation);
+        $maxTokens = (int) config('services.anthropic.max_tokens', 4096);
+        $maxRounds = (int) config('services.composio.max_tool_rounds', 8);
+        $user = $conversation->user;
+
+        $reply = '';
+        $inputTokens = 0;
+        $outputTokens = 0;
+
+        for ($round = 0; $round < $maxRounds; $round++) {
+            $message = $client->messages->create(
+                maxTokens: $maxTokens,
+                messages: $messages,
+                model: $model,
+                system: $system,
+                tools: $tools,
+            );
+
+            $inputTokens += $message->usage->inputTokens;
+            $outputTokens += $message->usage->outputTokens;
+
+            $assistantContent = [];
+            $toolUses = [];
+
+            foreach ($message->content as $block) {
+                if ($block instanceof TextBlock) {
+                    $reply .= $block->text;
+                    $assistantContent[] = TextBlockParam::with(text: $block->text);
+                } elseif ($block instanceof ToolUseBlock) {
+                    $toolUses[] = $block;
+                    $assistantContent[] = ToolUseBlockParam::with(
+                        id: $block->id,
+                        input: $block->input,
+                        name: $block->name,
+                    );
+                }
+            }
+
+            if ($message->stopReason !== 'tool_use' || $toolUses === []) {
+                return [$reply, $inputTokens, $outputTokens];
+            }
+
+            $messages[] = MessageParam::with(content: $assistantContent, role: 'assistant');
+
+            $results = [];
+            foreach ($toolUses as $toolUse) {
+                $result = $user !== null
+                    ? $composio->execute($user, $toolUse->name, $toolUse->input)
+                    : ['ok' => false, 'output' => 'No user context.'];
+
+                $content = is_string($result['output'])
+                    ? $result['output']
+                    : (string) json_encode($result['output']);
+
+                $results[] = ToolResultBlockParam::with(
+                    toolUseID: $toolUse->id,
+                    content: $content !== '' ? $content : '(no output)',
+                    isError: ! $result['ok'],
+                );
+            }
+
+            $messages[] = MessageParam::with(content: $results, role: 'user');
+        }
+
+        return [$reply, $inputTokens, $outputTokens];
     }
 
     /**
@@ -901,7 +1059,8 @@ class ChatController extends Controller
         // When the user has connected tools, require confirmation before any
         // destructive tool action (create/update/delete/send/…).
         if (config('services.anthropic.tool_safety', true)
-            && $conversation->user?->mcpServers()->where('enabled', true)->exists()) {
+            && ($conversation->user?->mcpServers()->where('enabled', true)->exists()
+                || $conversation->user?->composioConnections()->where('status', 'active')->exists())) {
             $system .= "\n\n".(string) config('services.anthropic.tool_safety_prompt');
         }
 

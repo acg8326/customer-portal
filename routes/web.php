@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ChatController;
+use App\Http\Controllers\ComposioController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\IntegrationController;
 use App\Http\Controllers\McpServerController;
@@ -57,6 +58,16 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('integrations/mcp/{mcpServer}/oauth/connect', [McpServerController::class, 'oauthConnect'])
         ->middleware('throttle:integrations')
         ->name('integrations.mcp.oauth.connect');
+
+    // Composio — per-user tool connections (Slack, …) via a hosted gateway.
+    Route::get('integrations/composio/{toolkit}/connect', [ComposioController::class, 'connect'])
+        ->middleware('throttle:integrations')
+        ->name('integrations.composio.connect');
+    Route::get('integrations/composio/{toolkit}/callback', [ComposioController::class, 'callback'])
+        ->name('integrations.composio.callback');
+    Route::delete('integrations/composio/{toolkit}', [ComposioController::class, 'disconnect'])
+        ->middleware('throttle:integrations')
+        ->name('integrations.composio.disconnect');
 
     Route::get('chat', [ChatController::class, 'index'])->name('chat');
     Route::get('chat/search', [ChatController::class, 'search'])

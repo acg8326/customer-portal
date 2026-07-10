@@ -97,13 +97,13 @@ test('an unknown webhook provider 404s', function () {
     expect($user->integrations()->count())->toBe(0);
 });
 
-test('the integrations page exposes the app catalog and webhook providers', function () {
+test('the integrations page exposes composio state and webhook providers', function () {
     $user = User::factory()->create();
 
     $this->actingAs($user)
         ->get('/integrations')
         ->assertInertia(fn ($page) => $page
-            ->has('mcpCatalog')
+            ->has('composio')
             ->where('webhookProviders', fn ($p) => collect($p)->contains('zapier'))
         );
 });

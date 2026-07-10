@@ -104,4 +104,12 @@ class User extends Authenticatable implements PasskeyUser
     {
         return $this->hasMany(McpServer::class);
     }
+
+    /**
+     * @return HasMany<ComposioConnection, $this>
+     */
+    public function composioConnections(): HasMany
+    {
+        return $this->hasMany(ComposioConnection::class);
+    }
 }

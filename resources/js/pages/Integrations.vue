@@ -10,11 +10,13 @@ import {
     Code,
     Contact,
     Database,
+    LayoutGrid,
     Mail,
     MessageSquare,
     Plug,
     Plus,
     Power,
+    Search,
     Table,
     Trash2,
     Users,
@@ -50,9 +52,13 @@ type Integration = {
     icon: Component;
     intro: string;
     steps: string[];
-    // How this card connects: 'webhook' (automation URL), 'soon' (no backend
-    // yet), or the default 'mcp' (connect as an MCP server — OAuth or token).
-    connect?: 'mcp' | 'webhook' | 'soon';
+    // How this card connects: 'webhook' (automation URL) or 'soon' (no backend
+    // yet). Tools reachable through Composio set `composio` (their toolkit key)
+    // instead — those connect per-user in one click.
+    connect?: 'webhook' | 'soon';
+    // Composio toolkit key (e.g. 'slack', 'github', 'hubspot'). When set and that
+    // toolkit is configured, the card connects per-user via Composio.
+    composio?: string;
     // A webhook provider that *also* exposes an MCP server, so it can be used
     // two-way (the assistant runs its workflows) as well as one-way (events).
     alsoMcp?: boolean;
@@ -80,15 +86,15 @@ type McpServer = {
     oauth_connected: boolean;
 };
 
-type CatalogApp = {
+type ComposioToolkit = {
     key: string;
     name: string;
-    description: string;
-    category: string;
-    icon: string;
     connected: boolean;
+};
+
+type Composio = {
     enabled: boolean;
-    server_id: number | null;
+    toolkits: ComposioToolkit[];
 };
 
 const props = defineProps<{
@@ -96,24 +102,21 @@ const props = defineProps<{
     webhookProviders: string[];
     connections: Record<string, Connection>;
     mcpServers: McpServer[];
-    mcpCatalog: CatalogApp[];
+    composio: Composio;
 }>();
 
-// Catalog icon name (from config) → Lucide component.
-const catalogIcons: Record<string, Component> = {
-    code: Code,
-    cloud: Cloud,
-    workflow: Workflow,
-    database: Database,
-    building: Building2,
-    contact: Contact,
-    table: Table,
-    plug: Plug,
-};
+// Composio toolkits keyed by their key, for quick per-card lookup.
+const composioByKey = computed<Record<string, ComposioToolkit>>(() => {
+    const map: Record<string, ComposioToolkit> = {};
 
-function catIcon(name: string): Component {
-    return catalogIcons[name] ?? Plug;
-}
+    if (props.composio?.enabled) {
+        for (const t of props.composio.toolkits) {
+            map[t.key] = t;
+        }
+    }
+
+    return map;
+});
 
 const page = usePage();
 const flash = computed(
@@ -133,14 +136,15 @@ const categories: Category[] = [
             {
                 name: 'Slack',
                 key: 'slack',
-                description: 'Send chat summaries and alerts to your channels.',
+                composio: 'slack',
+                description:
+                    'Search messages, post to channels, and look up people.',
                 icon: MessageSquare,
-                intro: 'Post AiMe BOT summaries and alerts into your Slack channels via an incoming webhook.',
+                intro: 'Connect your Slack account so AiMe BOT can search, read, and post on your behalf.',
                 steps: [
-                    'In Slack, create an app (or use an existing one) and enable Incoming Webhooks.',
-                    'Add a webhook to the channel you want and copy the webhook URL.',
-                    'Click Connect here and paste the webhook URL.',
-                    'Pick which events (chat summaries, alerts) get posted.',
+                    'Click Connect and approve access on Slack.',
+                    'Pick your workspace and allow the requested permissions.',
+                    'The card flips to Connected — try “list my Slack channels” in chat.',
                 ],
             },
             {
@@ -163,6 +167,19 @@ const categories: Category[] = [
         label: 'CRM',
         blurb: 'Sync contacts, deals, and conversations with your CRM.',
         items: [
+            {
+                name: 'HubSpot',
+                key: 'hubspot',
+                composio: 'hubspot',
+                description: 'Contacts, deals, and pipelines as native tools.',
+                icon: Contact,
+                intro: 'Connect your HubSpot account so AiMe BOT can read and update contacts, deals, and pipelines.',
+                steps: [
+                    'Click Connect and approve access on HubSpot.',
+                    'Choose the account and allow the requested scopes.',
+                    'The card flips to Connected — ask about your deals in chat.',
+                ],
+            },
             {
                 name: 'GoHighLevel (GHL)',
                 key: 'ghl',
@@ -337,20 +354,109 @@ const categories: Category[] = [
                 ],
             },
             {
-                name: 'Code repos',
-                key: 'code_repos',
-                description: 'Connect repositories for code-aware answers.',
-                icon: Code,
-                intro: 'Index repositories so AiMe BOT can give code-aware answers.',
+                name: 'Airtable',
+                key: 'airtable',
+                composio: 'airtable',
+                description:
+                    'Read and update bases, tables, and records as native tools.',
+                icon: LayoutGrid,
+                intro: 'Connect your Airtable account so AiMe BOT can read and update bases, tables, and records.',
                 steps: [
-                    'Click Connect here and install the AiMe BOT app on GitHub/GitLab.',
-                    'Select which repositories to index.',
-                    'Wait for the initial index to finish.',
+                    'Click Connect and approve access on Airtable.',
+                    'Choose the bases/workspaces to grant access to.',
+                    'The card flips to Connected — try “list my Airtable bases” in chat.',
+                ],
+            },
+            {
+                name: 'GitHub',
+                key: 'github',
+                composio: 'github',
+                description: 'Issues, PRs, and repo context as native tools.',
+                icon: Code,
+                intro: 'Connect your GitHub account so AiMe BOT can read and act on issues, PRs, and repositories.',
+                steps: [
+                    'Click Connect and approve access on GitHub.',
+                    'Authorize the app for your account or organization.',
+                    'The card flips to Connected — try “list my GitHub repos” in chat.',
                 ],
             },
         ],
     },
 ];
+
+// Whether the user has already linked this app (Composio or event webhook).
+// Connected apps move to the "Currently connected" table and drop out of the
+// card grid, so they aren't shown twice.
+function isConnected(item: Integration): boolean {
+    return Boolean(
+        composioState(item)?.connected || connection(item.key)?.connected,
+    );
+}
+
+// Search — filter the catalog by app name, description, or category. Connected
+// apps are always excluded from the grid (they live in the table above).
+const query = ref('');
+
+const filteredCategories = computed<Category[]>(() => {
+    const q = query.value.trim().toLowerCase();
+
+    return categories
+        .map((cat) => ({
+            ...cat,
+            items: cat.items.filter((it) => {
+                if (isConnected(it)) {
+                    return false;
+                }
+
+                if (q === '') {
+                    return true;
+                }
+
+                return (
+                    it.name.toLowerCase().includes(q) ||
+                    it.description.toLowerCase().includes(q) ||
+                    cat.label.toLowerCase().includes(q)
+                );
+            }),
+        }))
+        .filter((cat) => cat.items.length > 0);
+});
+
+// Everything the user has actually connected through a card (Composio per-user
+// links + event webhooks), for the "Currently connected" overview table. MCP
+// servers have their own section above, so they're not duplicated here.
+type ConnectedRow = {
+    item: Integration;
+    category: string;
+    mode: 'composio' | 'webhook';
+    detail: string | null;
+};
+
+const connectedRows = computed<ConnectedRow[]>(() => {
+    const rows: ConnectedRow[] = [];
+
+    for (const cat of categories) {
+        for (const item of cat.items) {
+            if (composioState(item)?.connected) {
+                rows.push({
+                    item,
+                    category: cat.label,
+                    mode: 'composio',
+                    detail: null,
+                });
+            } else if (connection(item.key)?.connected) {
+                rows.push({
+                    item,
+                    category: cat.label,
+                    mode: 'webhook',
+                    detail: connection(item.key)?.endpoint ?? null,
+                });
+            }
+        }
+    }
+
+    return rows;
+});
 
 // Guide modal
 const guideFor = ref<Integration | null>(null);
@@ -399,35 +505,6 @@ function disconnect(key: string) {
     router.delete(`/integrations/${key}`, { preserveScroll: true });
 }
 
-// One-click app catalog (OAuth MCP servers).
-function connectCatalog(key: string) {
-    // Full-page nav: the route creates/finds the server then redirects to the
-    // provider's own approval page (an external redirect Inertia can't follow).
-    window.location.href = `/integrations/mcp/catalog/${key}/connect`;
-}
-
-function toggleCatalog(app: CatalogApp) {
-    if (app.server_id === null) {
-        return;
-    }
-
-    router.patch(
-        `/integrations/mcp/${app.server_id}`,
-        { enabled: !app.enabled },
-        { preserveScroll: true },
-    );
-}
-
-function removeCatalog(app: CatalogApp) {
-    if (app.server_id === null) {
-        return;
-    }
-
-    router.delete(`/integrations/mcp/${app.server_id}`, {
-        preserveScroll: true,
-    });
-}
-
 // MCP servers (native tool connections)
 const mcpOpen = ref(false);
 const mcpForm = useForm<{
@@ -443,18 +520,29 @@ function openMcp() {
     mcpOpen.value = true;
 }
 
-// How a catalog card connects (default: connect as an MCP server).
-function connectMode(item: Integration): 'mcp' | 'webhook' | 'soon' {
-    return item.connect ?? 'mcp';
-}
-
-// Open the "Add MCP server" modal prefilled for a specific tool.
+// Open the "Add MCP server" modal prefilled for a specific tool (used by the
+// automation providers that also expose an MCP server — two-way "Use as tools").
 function connectViaMcp(item: Integration) {
     mcpForm.clearErrors();
     mcpForm.reset();
     mcpForm.name = item.name;
     mcpForm.auth_type = 'oauth';
     mcpOpen.value = true;
+}
+
+// How a card connects: a configured Composio toolkit → 'composio'; an automation
+// webhook → 'webhook'; otherwise it's a not-yet-built placeholder → 'soon'.
+function connectMode(item: Integration): 'composio' | 'webhook' | 'soon' {
+    if (item.composio && composioByKey.value[item.composio]) {
+        return 'composio';
+    }
+
+    return item.connect === 'webhook' ? 'webhook' : 'soon';
+}
+
+// The Composio connection state for a card (undefined if not a Composio tool).
+function composioState(item: Integration): ComposioToolkit | undefined {
+    return item.composio ? composioByKey.value[item.composio] : undefined;
 }
 
 function connectMcp(server: McpServer) {
@@ -485,6 +573,16 @@ function removeMcp(server: McpServer) {
     router.delete(`/integrations/mcp/${server.id}`, { preserveScroll: true });
 }
 
+// Composio-brokered per-user connections. Connect is a full-page redirect to the
+// provider's consent screen; disconnect just clears our record.
+function connectComposio(key: string) {
+    window.location.href = `/integrations/composio/${key}/connect`;
+}
+
+function disconnectComposio(key: string) {
+    router.delete(`/integrations/composio/${key}`, { preserveScroll: true });
+}
+
 function hostOf(url: string): string {
     try {
         return new URL(url).host;
@@ -498,12 +596,29 @@ function hostOf(url: string): string {
     <Head title="Integrations" />
 
     <div class="w-full p-6">
-        <div class="mb-6">
-            <h1 class="text-2xl font-semibold tracking-tight">Integrations</h1>
-            <p class="text-sm text-muted-foreground">
-                Connect AiMe BOT to the tools you already use, grouped by what
-                they do. Click a card's guide for step-by-step setup.
-            </p>
+        <div
+            class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"
+        >
+            <div>
+                <h1 class="text-2xl font-semibold tracking-tight">
+                    Integrations
+                </h1>
+                <p class="text-sm text-muted-foreground">
+                    Connect AiMe BOT to the tools you already use, grouped by
+                    what they do. Click a card's guide for step-by-step setup.
+                </p>
+            </div>
+            <div class="relative w-full sm:w-64 sm:shrink-0">
+                <Search
+                    class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+                />
+                <Input
+                    v-model="query"
+                    type="search"
+                    placeholder="Search integrations…"
+                    class="pl-9"
+                />
+            </div>
         </div>
 
         <!-- Flash -->
@@ -520,7 +635,124 @@ function hostOf(url: string): string {
             {{ flash.error }}
         </div>
 
-        <!-- MCP servers (native tool connections) -->
+        <!-- Currently connected — a quick overview of everything the user has
+             linked through a card (MCP servers have their own section below). -->
+        <section v-if="connectedRows.length > 0" class="mb-8">
+            <div class="mb-3">
+                <h2
+                    class="flex items-center gap-1.5 text-sm font-semibold tracking-tight"
+                >
+                    <CheckCircle2 class="size-4 text-emerald-500" />
+                    Currently connected apps
+                </h2>
+                <p class="text-xs text-muted-foreground">
+                    Apps you've linked to your account — available to AiMe BOT
+                    in chat right now.
+                </p>
+            </div>
+
+            <div class="overflow-x-auto rounded-xl border bg-card">
+                <table class="w-full min-w-[38rem] text-sm">
+                    <thead>
+                        <tr
+                            class="border-b text-left text-xs text-muted-foreground"
+                        >
+                            <th class="px-4 py-2.5 font-medium">App</th>
+                            <th class="px-4 py-2.5 font-medium">Category</th>
+                            <th class="px-4 py-2.5 font-medium">Details</th>
+                            <th class="px-4 py-2.5 text-right font-medium">
+                                Actions
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr
+                            v-for="row in connectedRows"
+                            :key="row.item.key"
+                            class="border-b last:border-0"
+                        >
+                            <td class="px-4 py-3">
+                                <div class="flex items-center gap-2.5">
+                                    <span
+                                        class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-brand-navy to-brand-gold text-white"
+                                    >
+                                        <component
+                                            :is="row.item.icon"
+                                            class="size-4"
+                                        />
+                                    </span>
+                                    <span class="font-medium">{{
+                                        row.item.name
+                                    }}</span>
+                                </div>
+                            </td>
+                            <td class="px-4 py-3 text-muted-foreground">
+                                {{ row.category }}
+                            </td>
+                            <td class="px-4 py-3">
+                                <span
+                                    class="block max-w-[22rem] truncate text-xs text-muted-foreground"
+                                    :title="row.detail ?? row.item.description"
+                                    >{{
+                                        row.detail ?? row.item.description
+                                    }}</span
+                                >
+                            </td>
+                            <td class="px-4 py-3">
+                                <div
+                                    class="flex items-center justify-end gap-2"
+                                >
+                                    <template v-if="row.mode === 'composio'">
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            @click="
+                                                connectComposio(
+                                                    row.item.composio!,
+                                                )
+                                            "
+                                        >
+                                            Reconnect
+                                        </Button>
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            class="text-muted-foreground"
+                                            @click="
+                                                disconnectComposio(
+                                                    row.item.composio!,
+                                                )
+                                            "
+                                        >
+                                            <Trash2 class="size-4" />
+                                        </Button>
+                                    </template>
+                                    <template v-else>
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            @click="testWebhook(row.item.key)"
+                                        >
+                                            Send test
+                                        </Button>
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            class="text-muted-foreground"
+                                            @click="disconnect(row.item.key)"
+                                        >
+                                            <Trash2 class="size-4" />
+                                        </Button>
+                                    </template>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Advanced: connect an MCP server directly (no broker) -->
         <section class="mb-8">
             <div class="mb-3 flex items-start justify-between gap-4">
                 <div>
@@ -528,18 +760,13 @@ function hostOf(url: string): string {
                         class="flex items-center gap-1.5 text-sm font-semibold tracking-tight"
                     >
                         <Plug class="size-4 text-brand-gold" />
-                        Custom MCP servers
-                        <span
-                            class="rounded-full border border-brand-gold/40 bg-brand-gold/10 px-2 py-0.5 text-xs font-medium text-brand-gold"
-                        >
-                            Live
-                        </span>
+                        Connect a server directly
                     </h2>
                     <p class="max-w-2xl text-xs text-muted-foreground">
-                        Add any Model Context Protocol server by URL (one-click
-                        OAuth or a token) and AiMe BOT can use its tools
-                        natively in chat. For popular apps, use the one-click
-                        cards below.
+                        Point AiMe BOT straight at a Model Context Protocol
+                        server by URL (one-click OAuth or a token) — no broker
+                        in between. Use this for self-hosted or sensitive tools
+                        you don't want routed through a third party.
                     </p>
                 </div>
                 <Button size="sm" class="shrink-0" @click="openMcp">
@@ -549,14 +776,9 @@ function hostOf(url: string): string {
             </div>
 
             <div
-                v-if="mcpServers.length === 0"
-                class="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground"
+                v-if="mcpServers.length > 0"
+                class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
             >
-                No custom servers yet — add one above, or connect a popular app
-                in one click below.
-            </div>
-
-            <div v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <div
                     v-for="server in mcpServers"
                     :key="server.id"
@@ -636,96 +858,24 @@ function hostOf(url: string): string {
             </div>
         </section>
 
-        <!-- One-click apps (OAuth MCP catalog) -->
-        <section v-if="mcpCatalog.length > 0" class="mb-8">
-            <div class="mb-3">
-                <h2 class="text-sm font-semibold tracking-tight">
-                    Apps — one-click connect
-                </h2>
-                <p class="text-xs text-muted-foreground">
-                    Connect a tool in one click: approve on its own page, and
-                    AiMe BOT can use its tools in chat. Data can move between
-                    any connected apps — e.g. compare HubSpot deals against
-                    Airtable.
-                </p>
-            </div>
+        <p
+            v-if="filteredCategories.length === 0 && query.trim() !== ''"
+            class="rounded-xl border border-dashed bg-card/50 px-4 py-10 text-center text-sm text-muted-foreground"
+        >
+            No integrations match “{{ query }}”.
+        </p>
+        <p
+            v-else-if="filteredCategories.length === 0"
+            class="rounded-xl border border-dashed bg-card/50 px-4 py-10 text-center text-sm text-muted-foreground"
+        >
+            Everything available is connected — see the table above.
+        </p>
 
-            <div
-                class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
-            >
-                <div
-                    v-for="app in mcpCatalog"
-                    :key="app.key"
-                    class="flex flex-col rounded-xl border bg-card p-5"
-                >
-                    <div class="mb-3 flex items-center justify-between">
-                        <div
-                            class="flex size-10 items-center justify-center rounded-lg bg-gradient-to-br from-brand-navy to-brand-gold text-white"
-                        >
-                            <component :is="catIcon(app.icon)" class="size-5" />
-                        </div>
-                        <span
-                            v-if="app.connected"
-                            class="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300"
-                        >
-                            <CheckCircle2 class="size-3" />
-                            Connected
-                        </span>
-                        <span
-                            v-else
-                            class="rounded-full border border-brand-gold/40 bg-brand-gold/10 px-2 py-0.5 text-xs font-medium text-brand-gold"
-                        >
-                            OAuth
-                        </span>
-                    </div>
-
-                    <p class="font-medium">{{ app.name }}</p>
-                    <p class="mt-1 flex-1 text-sm text-muted-foreground">
-                        {{ app.description }}
-                    </p>
-
-                    <div class="mt-4 flex items-center gap-2">
-                        <template v-if="app.connected">
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                @click="connectCatalog(app.key)"
-                            >
-                                <Plug class="size-4" />
-                                Reconnect
-                            </Button>
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                @click="toggleCatalog(app)"
-                            >
-                                <Power class="size-4" />
-                                {{ app.enabled ? 'Disable' : 'Enable' }}
-                            </Button>
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                class="text-muted-foreground"
-                                @click="removeCatalog(app)"
-                            >
-                                <Trash2 class="size-4" />
-                            </Button>
-                        </template>
-                        <Button
-                            v-else
-                            variant="default"
-                            size="sm"
-                            @click="connectCatalog(app.key)"
-                        >
-                            <Plug class="size-4" />
-                            Connect
-                        </Button>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section v-for="cat in categories" :key="cat.label" class="mb-8">
+        <section
+            v-for="cat in filteredCategories"
+            :key="cat.label"
+            class="mb-8"
+        >
             <div class="mb-3">
                 <h2 class="text-sm font-semibold tracking-tight">
                     {{ cat.label }}
@@ -748,23 +898,23 @@ function hostOf(url: string): string {
                             <component :is="item.icon" class="size-5" />
                         </div>
                         <span
-                            v-if="connection(item.key)?.connected"
+                            v-if="
+                                connection(item.key)?.connected ||
+                                composioState(item)?.connected
+                            "
                             class="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300"
                         >
                             <CheckCircle2 class="size-3" />
                             Connected
                         </span>
                         <span
-                            v-else-if="connectMode(item) === 'webhook'"
+                            v-else-if="
+                                connectMode(item) === 'composio' ||
+                                connectMode(item) === 'webhook'
+                            "
                             class="rounded-full border border-brand-gold/40 bg-brand-gold/10 px-2 py-0.5 text-xs font-medium text-brand-gold"
                         >
                             Available
-                        </span>
-                        <span
-                            v-else-if="connectMode(item) === 'mcp'"
-                            class="rounded-full border border-brand-gold/40 bg-brand-gold/10 px-2 py-0.5 text-xs font-medium text-brand-gold"
-                        >
-                            MCP
                         </span>
                         <span
                             v-else
@@ -842,16 +992,36 @@ function hostOf(url: string): string {
                             </Button>
                         </template>
 
-                        <!-- Connect as an MCP server (OAuth or token) -->
-                        <Button
-                            v-else-if="connectMode(item) === 'mcp'"
-                            variant="default"
-                            size="sm"
-                            @click="connectViaMcp(item)"
-                        >
-                            <Plug class="size-4" />
-                            Connect
-                        </Button>
+                        <!-- One-click connect via Composio (per-user) -->
+                        <template v-else-if="connectMode(item) === 'composio'">
+                            <Button
+                                v-if="!composioState(item)?.connected"
+                                variant="default"
+                                size="sm"
+                                @click="connectComposio(item.composio!)"
+                            >
+                                <Plug class="size-4" />
+                                Connect
+                            </Button>
+                            <template v-else>
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    @click="connectComposio(item.composio!)"
+                                >
+                                    <Plug class="size-4" />
+                                    Reconnect
+                                </Button>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    class="text-muted-foreground"
+                                    @click="disconnectComposio(item.composio!)"
+                                >
+                                    <Trash2 class="size-4" />
+                                </Button>
+                            </template>
+                        </template>
 
                         <!-- No backend yet -->
                         <Button v-else variant="outline" size="sm" disabled>
@@ -922,9 +1092,12 @@ function hostOf(url: string): string {
                     Connect now
                 </Button>
                 <Button
-                    v-else-if="connectMode(guideFor) === 'mcp'"
+                    v-else-if="
+                        connectMode(guideFor) === 'composio' &&
+                        !composioState(guideFor)?.connected
+                    "
                     @click="
-                        connectViaMcp(guideFor);
+                        connectComposio(guideFor.composio!);
                         guideFor = null;
                     "
                 >

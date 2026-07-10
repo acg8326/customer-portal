@@ -102,6 +102,14 @@ the **Claude API**.
 - **Modern UI:** branded gradient bot avatar, "Online" status, per-message
   avatars (bot + user initials), a typing indicator, and a soft ambient
   cyan→indigo glow behind the empty state (so it isn't flat in dark mode).
+- **Rich Markdown answers:** assistant replies render as formatted Markdown —
+  **tables**, code blocks (with a mono-styled surface + horizontal scroll),
+  ordered/unordered lists, headings, blockquotes, bold/italic, and links —
+  instead of raw text. So when AiMe returns a channel list or a comparison it
+  shows as a real table, not `| pipes |`. Rendered with `marked` (GFM) and
+  sanitized with `DOMPurify` before it's inserted (model output is never
+  trusted raw); styling follows the light/dark theme tokens. User messages stay
+  plain text. See [`ChatPanel.vue`](../resources/js/components/ChatPanel.vue).
 - **Personalized empty state:** a time-of-day greeting using the logged-in
   user's name — "Good morning/afternoon/evening, {name}" — with a simple
   "Hi, I'm AiMe BOT. Ask me anything." subtitle.
@@ -206,9 +214,21 @@ project_id`). Project chats appear only in that project; standalone `/chat`
 ## 8. Integrations
 
 Connect AiMe BOT to outside tools. The page (`/integrations`) groups connectors
-by category (Communication, CRM, Files & documents, Automation, ERP & business
-systems, Productivity & data). Each card has a **Setup guide** modal with
-numbered steps.
+**by category** (Communication, CRM, Developer tools, Files & documents,
+Automation, ERP & business systems, Productivity & data). Each card has a
+**Setup guide** modal with numbered steps.
+
+- **"Currently connected apps" overview.** A summary **table** near the top lists
+  every app the user has linked through a card — its category, how it's connected
+  (**Per-user (Composio)** or **Events webhook**), the endpoint (for webhooks),
+  and quick **Reconnect / Send test / Disconnect** actions. Once an app is
+  connected it **moves into this table and drops out of the card grid below** (no
+  duplicate card). It only appears once at least one app is connected, and
+  doesn't duplicate the MCP-servers section (which manages those separately).
+  Table scrolls horizontally on narrow screens.
+- **Search.** A search box filters the catalog live by app **name, description,
+  or category**; categories with no match are hidden, with a "no matches" note
+  when nothing fits. The connected overview above stays put as a summary.
 
 - **MCP servers (live — native tools).** Connect a **Model Context Protocol**
   server (Slack, GitHub, Notion, … anything exposing MCP) with a name and URL;
@@ -232,13 +252,32 @@ numbered steps.
   streamed via `beta.messages` in
   [`ChatController::stream`](../app/Http/Controllers/ChatController.php).
   Config: `ANTHROPIC_MCP_BETA`, `MCP_OAUTH_*`.
-- **Apps — one-click connect (catalog).** Popular MCP apps (GitHub, Notion, Linear,
-  Sentry, Atlassian, Asana, **HubSpot**, **Airtable**, Stripe, PayPal, Intercom,
-  Vercel, …) appear as cards with a single **Connect** button: it creates the MCP server from the catalog
-  entry and runs the OAuth flow above — no URL to paste. Cards are **state-aware**
-  (Connected / Reconnect / Enable-Disable / remove). The catalog lives in
-  `config/integrations.php` (`mcp_catalog`); each URL is overridable via
-  `MCP_CATALOG_<APP>_URL`. Any app not listed can still be added by hand.
+- **One-click app cards via Composio (per-user).** Each app is a **category
+  card** with a single **Connect** button, brokered through **Composio**, a
+  hosted tool gateway. Composio owns the OAuth apps, so there's **no per-app
+  client id/secret** — one `COMPOSIO_API_KEY` plus a per-toolkit auth-config id
+  (`config/services.php` → `services.composio`, all `.env`-driven). Connections
+  are **per user**: each person clicks **Connect**, authorizes their *own*
+  account, and AiMe uses that grant when running the tool — so the assistant
+  acts as that user. The **Connect callback verifies the grant is ACTIVE** with
+  Composio before showing "Connected". **Slack, GitHub, HubSpot, and Airtable** are wired;
+  adding another (Notion, Linear, Google Drive, …) is just another
+  `services.composio.toolkits` entry + a card `composio:` key.
+  - **How tools run:** Composio's MCP endpoint requires an `x-api-key` header
+    that Anthropic's server-side MCP connector can't send, so AiMe runs the tool
+    loop itself — it fetches Composio's tool schemas, gives them to Claude as
+    normal tools, and executes each call **server-side** via Composio's REST API
+    (with the API key + the user's id), looping until Claude is done. Capped by
+    `COMPOSIO_MAX_TOOLS` / `COMPOSIO_MAX_TOOL_ROUNDS`. The destructive-action
+    guardrail still applies.
+  - **Trade-off:** tool traffic flows through Composio, so keep highly sensitive
+    tools on the direct flow (Advanced, below) instead.
+  - Backend: [`ComposioController`](../app/Http/Controllers/ComposioController.php),
+    [`ComposioService`](../app/Services/ComposioService.php), `ComposioConnection`
+    model; tool loop in [`ChatController`](../app/Http/Controllers/ChatController.php).
+  - *(The older `mcp_catalog` one-click OAuth catalog was removed from the UI —
+    most vendors can't self-register an OAuth app, so those buttons failed. The
+    catalog config + `catalogConnect` route remain but are no longer surfaced.)*
 - **Cross-app interop.** Because every enabled MCP server's tools are offered to
   the model **together** in one turn, the assistant can move/compare data across
   connected apps — e.g. "compare HubSpot deals to the Airtable `Deals` table and
@@ -264,13 +303,15 @@ numbered steps.
   your workflows) alongside **"Events webhook"** (one-way). "Use as tools" opens the
   MCP connect flow prefilled (paste your instance URL → OAuth), since these are
   self-hosted/per-account and have no single catalog URL.
-- **The other catalog cards** (Slack, GHL, Salesforce, Google Drive/Sheets,
-  NetSuite, Calendar, Code repos) now **Connect via the MCP flow** — the card
-  opens the "Add MCP server" dialog prefilled with the tool name, so you connect
-  it by OAuth or token (paste its MCP URL). Each card declares a `connect` mode
-  (`mcp` default, `webhook`, or `soon`). Only **Email** (IMAP/SMTP) and raw
-  **Database** remain **"Coming soon"** with a disabled button — they have no
-  backend yet, so enabling them would be a dead click.
+- **Advanced — connect a server directly.** A de-emphasized section at the bottom
+  keeps the raw **"Add MCP server"** flow (one-click OAuth or a token, by URL) for
+  self-hosted or sensitive tools you don't want routed through Composio (e.g.
+  NetSuite). Same backend as the MCP servers above.
+- **Cards not yet wired** (GHL, Salesforce, Google Drive/Sheets, NetSuite,
+  Calendar, Database, Email) show **"Coming soon"** with a disabled button. Each
+  card declares how it connects: a `composio` toolkit key (one-click), `webhook`
+  (automation), or nothing → "coming soon". Lighting one up is a config +
+  `composio:` key change, no new code.
 - Backend: [`IntegrationController`](../app/Http/Controllers/IntegrationController.php),
   [`N8nDispatcher`](../app/Services/N8nDispatcher.php) (generic webhook poster),
   [`DispatchN8nEvent`](../app/Jobs/DispatchN8nEvent.php) (per-provider job),
@@ -278,7 +319,9 @@ numbered steps.
 - **Config (all in `.env`):** `INTEGRATIONS_LIVE`, `INTEGRATION_WEBHOOK_PROVIDERS`
   (comma-separated webhook providers), `INTEGRATION_N8N_TIMEOUT`,
   `INTEGRATION_N8N_SECRET_HEADER`, `MCP_CATALOG_*` — defaults in
-  `config/integrations.php`.
+  `config/integrations.php`. Composio: `COMPOSIO_API_KEY`, `COMPOSIO_BASE_URL`,
+  and per-toolkit `COMPOSIO_<TOOL>_AUTH_CONFIG` / `COMPOSIO_<TOOL>_MCP_SERVER_ID`
+  — defaults in `config/services.php` (`services.composio`).
 
 ## 7. Theming
 
