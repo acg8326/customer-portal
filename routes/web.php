@@ -1,10 +1,12 @@
 <?php
 
 use App\Http\Controllers\ChatController;
+use App\Http\Controllers\ChatExportController;
 use App\Http\Controllers\ComposioController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\IntegrationController;
 use App\Http\Controllers\McpServerController;
+use App\Http\Controllers\NetsuiteController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
@@ -34,6 +36,22 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('integrations/webhook/{provider}/test', [IntegrationController::class, 'testWebhook'])
         ->middleware('throttle:integration-test')
         ->name('integrations.webhook.test');
+
+    // NetSuite — native Token-Based Auth (TBA) connection, not Composio.
+    // Registered before the generic {provider} disconnect so DELETE
+    // /integrations/netsuite hits the NetSuite controller, not the webhook one.
+    Route::post('integrations/netsuite/connect', [NetsuiteController::class, 'connect'])
+        ->middleware('throttle:integrations')
+        ->name('integrations.netsuite.connect');
+    Route::post('integrations/netsuite/test', [NetsuiteController::class, 'test'])
+        ->middleware('throttle:integration-test')
+        ->name('integrations.netsuite.test');
+    Route::get('integrations/netsuite/callback', [NetsuiteController::class, 'callback'])
+        ->name('integrations.netsuite.callback');
+    Route::delete('integrations/netsuite', [NetsuiteController::class, 'disconnect'])
+        ->middleware('throttle:integrations')
+        ->name('integrations.netsuite.disconnect');
+
     Route::delete('integrations/{provider}', [IntegrationController::class, 'disconnect'])
         ->middleware('throttle:integrations')
         ->name('integrations.disconnect');
@@ -63,6 +81,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('integrations/composio/{toolkit}/connect', [ComposioController::class, 'connect'])
         ->middleware('throttle:integrations')
         ->name('integrations.composio.connect');
+    // Bring-your-own-OAuth toolkits (e.g. NetSuite) submit credentials here.
+    Route::post('integrations/composio/{toolkit}/connect', [ComposioController::class, 'connectWithCredentials'])
+        ->middleware('throttle:integrations')
+        ->name('integrations.composio.connect.credentials');
     Route::get('integrations/composio/{toolkit}/callback', [ComposioController::class, 'callback'])
         ->name('integrations.composio.callback');
     Route::delete('integrations/composio/{toolkit}', [ComposioController::class, 'disconnect'])
@@ -79,7 +101,19 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('chat/stream', [ChatController::class, 'stream'])
         ->middleware('throttle:chat')
         ->name('chat.stream');
+    Route::post('chat/export/pdf', [ChatExportController::class, 'pdf'])
+        ->middleware('throttle:chat')
+        ->name('chat.export.pdf');
+    Route::post('chat/export/docx', [ChatExportController::class, 'docx'])
+        ->middleware('throttle:chat')
+        ->name('chat.export.docx');
+    Route::post('chat/export/sheet', [ChatExportController::class, 'sheet'])
+        ->middleware('throttle:chat')
+        ->name('chat.export.sheet');
     Route::get('chat/conversations/{conversation}', [ChatController::class, 'show'])->name('chat.show');
+    Route::post('chat/conversations/{conversation}/compact', [ChatController::class, 'compact'])
+        ->middleware('throttle:chat')
+        ->name('chat.compact');
     Route::delete('chat/conversations/{conversation}', [ChatController::class, 'destroy'])->name('chat.destroy');
 
     Route::get('projects', [ProjectController::class, 'index'])->name('projects.index');

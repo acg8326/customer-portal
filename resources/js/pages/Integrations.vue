@@ -62,6 +62,9 @@ type Integration = {
     // A webhook provider that *also* exposes an MCP server, so it can be used
     // two-way (the assistant runs its workflows) as well as one-way (events).
     alsoMcp?: boolean;
+    // A native (non-broker) integration built into the app — currently just
+    // NetSuite over Token-Based Auth. Drives its own connect modal.
+    native?: 'netsuite';
 };
 
 type Category = {
@@ -86,15 +89,39 @@ type McpServer = {
     oauth_connected: boolean;
 };
 
+type ComposioField = {
+    name: string;
+    label: string;
+};
+
 type ComposioToolkit = {
     key: string;
     name: string;
     connected: boolean;
+    // 'managed' = one-click (Composio owns the OAuth app); 'credentials' =
+    // the user pastes their own OAuth app client id/secret (e.g. NetSuite).
+    mode: string;
+    // Secret credentials collected to create the auth config.
+    credentialFields: ComposioField[];
+    // Non-secret values collected before consent (e.g. NetSuite account id).
+    fields: ComposioField[];
+    // Extra OAuth scopes the user can opt into (checkboxes).
+    optionalScopes: ComposioField[];
 };
 
 type Composio = {
     enabled: boolean;
     toolkits: ComposioToolkit[];
+};
+
+// Native NetSuite connection state — no secrets, only what the UI needs.
+type Netsuite = {
+    enabled: boolean;
+    connected: boolean;
+    accountId: string | null;
+    authType: string | null; // 'tba' | 'oauth2'
+    status: string | null;
+    lastError: string | null;
 };
 
 const props = defineProps<{
@@ -103,7 +130,14 @@ const props = defineProps<{
     connections: Record<string, Connection>;
     mcpServers: McpServer[];
     composio: Composio;
+    netsuite: Netsuite;
 }>();
+
+// Whether the user has a stored NetSuite connection (feature must be enabled).
+const netsuiteConnected = computed(
+    () =>
+        Boolean(props.netsuite?.enabled) && Boolean(props.netsuite?.connected),
+);
 
 // Composio toolkits keyed by their key, for quick per-card lookup.
 const composioByKey = computed<Record<string, ComposioToolkit>>(() => {
@@ -311,15 +345,20 @@ const categories: Category[] = [
             {
                 name: 'NetSuite',
                 key: 'netsuite',
+                native: 'netsuite',
                 description:
-                    'Read and update ERP records — orders, inventory, and finance.',
+                    'Read ERP data — customers, invoices, transactions — with SuiteQL + REST.',
                 icon: Boxes,
-                intro: 'Read and update NetSuite ERP records — orders, inventory, and finance.',
+                intro: 'Connect NetSuite so AiMe BOT can read your ERP data with SuiteQL and the REST record API. Two methods are offered in the Connect dialog: Token-Based Auth (TBA — recommended for a backend, paste 5 values) or OAuth 2.0 (paste your app Client ID/Secret, then approve on NetSuite). Either way the token/role needs REST Web Services + record permissions.',
                 steps: [
-                    'In NetSuite, go to Setup → Integration → Manage Integrations.',
-                    'Create an integration record with Token-Based Authentication.',
-                    'Generate consumer and token key/secret pairs.',
-                    'Click Connect here and paste the four values.',
+                    'You need the NetSuite Administrator role (or a role with the right setup permissions).',
+                    'Setup → Company → Enable Features → SuiteCloud tab: enable “REST WEB SERVICES” and “TOKEN-BASED AUTHENTICATION”, then Save.',
+                    'Setup → Integration → Manage Integrations → New. Name it “CWGP-AIMe”. Check “TOKEN-BASED AUTHENTICATION” and uncheck the OAuth 2.0 boxes. Save.',
+                    'On save, NetSuite shows the Consumer Key and Consumer Secret once — copy both now.',
+                    'Setup → Users/Roles → Access Tokens → New. Pick the “CWGP-AIMe” application, the user, and a role that has “REST Web Services” + “Log in using Access Tokens” permissions and access to the records you need (e.g. Lists → Customers, Transactions).',
+                    'On save, NetSuite shows the Token ID and Token Secret once — copy both now.',
+                    'Find your Account ID: Setup → Company → Company Information → “Account ID” (e.g. 1234567, or 1234567_SB1 for a sandbox).',
+                    'Back here, click Connect on the NetSuite card and paste the Account ID plus the four token values. We run a test query and flip the card to Connected.',
                 ],
             },
         ],
@@ -388,6 +427,10 @@ const categories: Category[] = [
 // Connected apps move to the "Currently connected" table and drop out of the
 // card grid, so they aren't shown twice.
 function isConnected(item: Integration): boolean {
+    if (item.native === 'netsuite') {
+        return netsuiteConnected.value;
+    }
+
     return Boolean(
         composioState(item)?.connected || connection(item.key)?.connected,
     );
@@ -428,7 +471,7 @@ const filteredCategories = computed<Category[]>(() => {
 type ConnectedRow = {
     item: Integration;
     category: string;
-    mode: 'composio' | 'webhook';
+    mode: 'composio' | 'webhook' | 'netsuite';
     detail: string | null;
 };
 
@@ -437,7 +480,21 @@ const connectedRows = computed<ConnectedRow[]>(() => {
 
     for (const cat of categories) {
         for (const item of cat.items) {
-            if (composioState(item)?.connected) {
+            if (item.native === 'netsuite') {
+                if (netsuiteConnected.value) {
+                    rows.push({
+                        item,
+                        category: cat.label,
+                        mode: 'netsuite',
+                        detail:
+                            `Account ${props.netsuite.accountId ?? '—'}` +
+                            ` · ${props.netsuite.authType === 'oauth2' ? 'OAuth 2.0' : 'TBA'}` +
+                            (props.netsuite.status === 'error'
+                                ? ' · needs attention'
+                                : ''),
+                    });
+                }
+            } else if (composioState(item)?.connected) {
                 rows.push({
                     item,
                     category: cat.label,
@@ -532,7 +589,13 @@ function connectViaMcp(item: Integration) {
 
 // How a card connects: a configured Composio toolkit → 'composio'; an automation
 // webhook → 'webhook'; otherwise it's a not-yet-built placeholder → 'soon'.
-function connectMode(item: Integration): 'composio' | 'webhook' | 'soon' {
+function connectMode(
+    item: Integration,
+): 'composio' | 'webhook' | 'netsuite' | 'soon' {
+    if (item.native === 'netsuite' && props.netsuite?.enabled) {
+        return 'netsuite';
+    }
+
     if (item.composio && composioByKey.value[item.composio]) {
         return 'composio';
     }
@@ -573,14 +636,248 @@ function removeMcp(server: McpServer) {
     router.delete(`/integrations/mcp/${server.id}`, { preserveScroll: true });
 }
 
-// Composio-brokered per-user connections. Connect is a full-page redirect to the
-// provider's consent screen; disconnect just clears our record.
+// Composio-brokered per-user connections. Managed toolkits (Composio owns the
+// OAuth app) connect in one click — a full-page redirect to the consent screen.
+// Credentials toolkits (e.g. NetSuite) first collect the user's own OAuth app
+// client id/secret + an account id in a modal; we POST those, the server creates
+// the auth config and returns the consent URL to navigate to.
+const composioConnectToolkit = ref<ComposioToolkit | null>(null);
+const composioForm = ref<Record<string, string>>({});
+const composioScopes = ref<Record<string, boolean>>({});
+const composioSubmitting = ref(false);
+const composioError = ref<string | null>(null);
+
+const composioFormValid = computed(() => {
+    const tk = composioConnectToolkit.value;
+
+    if (tk === null) {
+        return false;
+    }
+
+    return [...tk.credentialFields, ...tk.fields].every(
+        (f) => (composioForm.value[f.name] ?? '').trim() !== '',
+    );
+});
+
 function connectComposio(key: string) {
+    const tk = composioByKey.value[key];
+
+    if (tk && tk.mode === 'credentials') {
+        composioForm.value = Object.fromEntries(
+            [...tk.credentialFields, ...tk.fields].map((f) => [f.name, '']),
+        );
+        composioScopes.value = Object.fromEntries(
+            tk.optionalScopes.map((s) => [s.name, false]),
+        );
+        composioError.value = null;
+        composioConnectToolkit.value = tk;
+
+        return;
+    }
+
     window.location.href = `/integrations/composio/${key}/connect`;
+}
+
+function readCookie(name: string): string {
+    const match = document.cookie.match(
+        new RegExp('(^|; )' + name + '=([^;]*)'),
+    );
+
+    return match ? decodeURIComponent(match[2]) : '';
+}
+
+async function submitComposioConnect() {
+    const tk = composioConnectToolkit.value;
+
+    if (!tk || !composioFormValid.value) {
+        return;
+    }
+
+    composioSubmitting.value = true;
+    composioError.value = null;
+
+    const payload: Record<string, unknown> = {};
+
+    for (const f of [...tk.credentialFields, ...tk.fields]) {
+        payload[f.name] = (composioForm.value[f.name] ?? '').trim();
+    }
+
+    payload.scopes = Object.keys(composioScopes.value).filter(
+        (k) => composioScopes.value[k],
+    );
+
+    try {
+        const res = await fetch(`/integrations/composio/${tk.key}/connect`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': readCookie('XSRF-TOKEN'),
+            },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok || typeof data.redirect_url !== 'string') {
+            composioError.value =
+                data.message ?? 'Could not start the connection. Please retry.';
+
+            return;
+        }
+
+        window.location.href = data.redirect_url;
+    } catch {
+        composioError.value = 'Could not reach the server. Please retry.';
+    } finally {
+        composioSubmitting.value = false;
+    }
 }
 
 function disconnectComposio(key: string) {
     router.delete(`/integrations/composio/${key}`, { preserveScroll: true });
+}
+
+// Native NetSuite (TBA) connect modal — collects the five values from the
+// user's NetSuite Integration record + Access Token, POSTs them, and the server
+// verifies the token before saving. No OAuth redirect (unlike Composio).
+type NetsuiteForm = {
+    account_id: string;
+    consumer_key: string;
+    consumer_secret: string;
+    token_id: string;
+    token_secret: string;
+    client_id: string;
+    client_secret: string;
+};
+
+type NetsuiteField = {
+    name: keyof NetsuiteForm;
+    label: string;
+    secret: boolean;
+};
+
+const netsuiteOpen = ref(false);
+const netsuiteSubmitting = ref(false);
+const netsuiteError = ref<string | null>(null);
+const netsuiteAuthType = ref<'tba' | 'oauth2'>('tba');
+// Shown in the OAuth2 hint so the user knows the exact Redirect URI to register.
+const origin = typeof window !== 'undefined' ? window.location.origin : '';
+const netsuiteForm = ref<NetsuiteForm>({
+    account_id: '',
+    consumer_key: '',
+    consumer_secret: '',
+    token_id: '',
+    token_secret: '',
+    client_id: '',
+    client_secret: '',
+});
+
+// The fields shown depend on the chosen auth method. Account ID is common; TBA
+// needs the four token secrets, OAuth 2.0 needs the app's client id/secret.
+const netsuiteFields = computed<NetsuiteField[]>(() => {
+    const account: NetsuiteField = {
+        name: 'account_id',
+        label: 'Account ID',
+        secret: false,
+    };
+
+    if (netsuiteAuthType.value === 'oauth2') {
+        return [
+            account,
+            { name: 'client_id', label: 'Client ID', secret: false },
+            { name: 'client_secret', label: 'Client Secret', secret: true },
+        ];
+    }
+
+    return [
+        account,
+        { name: 'consumer_key', label: 'Consumer Key', secret: false },
+        { name: 'consumer_secret', label: 'Consumer Secret', secret: true },
+        { name: 'token_id', label: 'Token ID', secret: false },
+        { name: 'token_secret', label: 'Token Secret', secret: true },
+    ];
+});
+
+const netsuiteFormValid = computed(() =>
+    netsuiteFields.value.every((f) => netsuiteForm.value[f.name].trim() !== ''),
+);
+
+function openNetsuite() {
+    netsuiteForm.value = {
+        account_id: props.netsuite?.accountId ?? '',
+        consumer_key: '',
+        consumer_secret: '',
+        token_id: '',
+        token_secret: '',
+        client_id: '',
+        client_secret: '',
+    };
+    netsuiteAuthType.value =
+        props.netsuite?.authType === 'oauth2' ? 'oauth2' : 'tba';
+    netsuiteError.value = null;
+    netsuiteOpen.value = true;
+}
+
+async function submitNetsuite() {
+    if (!netsuiteFormValid.value) {
+        return;
+    }
+
+    netsuiteSubmitting.value = true;
+    netsuiteError.value = null;
+
+    // Send only the fields relevant to the chosen method, plus auth_type.
+    const payload: Record<string, string> = {
+        auth_type: netsuiteAuthType.value,
+    };
+
+    for (const f of netsuiteFields.value) {
+        payload[f.name] = netsuiteForm.value[f.name].trim();
+    }
+
+    try {
+        const res = await fetch('/integrations/netsuite/connect', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': readCookie('XSRF-TOKEN'),
+            },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+            netsuiteError.value =
+                data.message ??
+                (data.errors
+                    ? String(Object.values(data.errors)[0])
+                    : 'Could not connect. Check the credentials and try again.');
+
+            return;
+        }
+
+        // OAuth 2.0: the server returns a consent URL to redirect the browser to.
+        if (typeof data.redirect_url === 'string') {
+            window.location.href = data.redirect_url;
+
+            return;
+        }
+
+        netsuiteOpen.value = false;
+        // Refresh so the connected table + card reflect the new connection.
+        router.reload({ only: ['netsuite'] });
+    } catch {
+        netsuiteError.value = 'Could not reach the server. Please retry.';
+    } finally {
+        netsuiteSubmitting.value = false;
+    }
+}
+
+function disconnectNetsuite() {
+    router.delete('/integrations/netsuite', { preserveScroll: true });
 }
 
 function hostOf(url: string): string {
@@ -723,6 +1020,25 @@ function hostOf(url: string): string {
                                                     row.item.composio!,
                                                 )
                                             "
+                                        >
+                                            <Trash2 class="size-4" />
+                                        </Button>
+                                    </template>
+                                    <template
+                                        v-else-if="row.mode === 'netsuite'"
+                                    >
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            @click="openNetsuite"
+                                        >
+                                            Reconnect
+                                        </Button>
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            class="text-muted-foreground"
+                                            @click="disconnectNetsuite"
                                         >
                                             <Trash2 class="size-4" />
                                         </Button>
@@ -908,10 +1224,7 @@ function hostOf(url: string): string {
                             Connected
                         </span>
                         <span
-                            v-else-if="
-                                connectMode(item) === 'composio' ||
-                                connectMode(item) === 'webhook'
-                            "
+                            v-else-if="connectMode(item) !== 'soon'"
                             class="rounded-full border border-brand-gold/40 bg-brand-gold/10 px-2 py-0.5 text-xs font-medium text-brand-gold"
                         >
                             Available
@@ -1023,6 +1336,18 @@ function hostOf(url: string): string {
                             </template>
                         </template>
 
+                        <!-- Native NetSuite (TBA) — collect five values in a modal -->
+                        <template v-else-if="connectMode(item) === 'netsuite'">
+                            <Button
+                                variant="default"
+                                size="sm"
+                                @click="openNetsuite"
+                            >
+                                <Plug class="size-4" />
+                                Connect
+                            </Button>
+                        </template>
+
                         <!-- No backend yet -->
                         <Button v-else variant="outline" size="sm" disabled>
                             Connect
@@ -1050,7 +1375,7 @@ function hostOf(url: string): string {
             }
         "
     >
-        <DialogContent v-if="guideFor">
+        <DialogContent v-if="guideFor" class="sm:max-w-2xl">
             <DialogHeader>
                 <DialogTitle class="flex items-center gap-2">
                     <span
@@ -1063,7 +1388,9 @@ function hostOf(url: string): string {
                 <DialogDescription>{{ guideFor.intro }}</DialogDescription>
             </DialogHeader>
 
-            <ol class="space-y-3">
+            <!-- Scrolls when a guide has many steps, so the modal never runs off
+                 the screen and the header/footer stay put. -->
+            <ol class="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
                 <li
                     v-for="(step, i) in guideFor.steps"
                     :key="i"
@@ -1074,7 +1401,9 @@ function hostOf(url: string): string {
                     >
                         {{ i + 1 }}
                     </span>
-                    <span class="pt-0.5 leading-relaxed">{{ step }}</span>
+                    <span class="pt-0.5 leading-relaxed break-words">{{
+                        step
+                    }}</span>
                 </li>
             </ol>
 
@@ -1103,10 +1432,241 @@ function hostOf(url: string): string {
                 >
                     Connect now
                 </Button>
+                <Button
+                    v-else-if="
+                        connectMode(guideFor) === 'netsuite' &&
+                        !netsuiteConnected
+                    "
+                    @click="
+                        openNetsuite();
+                        guideFor = null;
+                    "
+                >
+                    Connect now
+                </Button>
                 <Button v-else variant="outline" @click="guideFor = null">
                     Close
                 </Button>
             </DialogFooter>
+        </DialogContent>
+    </Dialog>
+
+    <!-- Composio credentials modal (bring-your-own OAuth app, e.g. NetSuite) -->
+    <Dialog
+        :open="composioConnectToolkit !== null"
+        @update:open="
+            (v) => {
+                if (!v) composioConnectToolkit = null;
+            }
+        "
+    >
+        <DialogContent v-if="composioConnectToolkit" class="sm:max-w-lg">
+            <DialogHeader>
+                <DialogTitle
+                    >Connect {{ composioConnectToolkit.name }}</DialogTitle
+                >
+                <DialogDescription>
+                    Enter the OAuth2 credentials from your
+                    {{ composioConnectToolkit.name }} integration record, then
+                    continue to authorize access. Secrets are sent securely and
+                    stored by Composio, not in your browser.
+                </DialogDescription>
+            </DialogHeader>
+
+            <form
+                class="max-h-[60vh] space-y-4 overflow-y-auto pr-1"
+                @submit.prevent="submitComposioConnect"
+            >
+                <div
+                    v-for="field in composioConnectToolkit.credentialFields"
+                    :key="field.name"
+                    class="space-y-2"
+                >
+                    <Label :for="`composio-${field.name}`">{{
+                        field.label
+                    }}</Label>
+                    <Input
+                        :id="`composio-${field.name}`"
+                        v-model="composioForm[field.name]"
+                        :type="
+                            field.name === 'client_secret' ? 'password' : 'text'
+                        "
+                        :placeholder="field.label"
+                        autocomplete="off"
+                    />
+                </div>
+
+                <div
+                    v-for="field in composioConnectToolkit.fields"
+                    :key="field.name"
+                    class="space-y-2"
+                >
+                    <Label :for="`composio-${field.name}`">{{
+                        field.label
+                    }}</Label>
+                    <Input
+                        :id="`composio-${field.name}`"
+                        v-model="composioForm[field.name]"
+                        :placeholder="
+                            field.name === 'subdomain'
+                                ? 'e.g. 1234567 or 1234567-sb1 (sandbox)'
+                                : field.label
+                        "
+                    />
+                    <p
+                        v-if="field.name === 'subdomain'"
+                        class="text-xs text-muted-foreground"
+                    >
+                        The part of your NetSuite URL before
+                        <code>.app.netsuite.com</code> (sandboxes include the
+                        <code>-sb1</code> suffix).
+                    </p>
+                </div>
+
+                <label
+                    v-for="scope in composioConnectToolkit.optionalScopes"
+                    :key="scope.name"
+                    class="flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-3 text-sm"
+                >
+                    <input
+                        v-model="composioScopes[scope.name]"
+                        type="checkbox"
+                        class="mt-0.5"
+                    />
+                    <span>{{ scope.label }}</span>
+                </label>
+
+                <p v-if="composioError" class="text-sm text-destructive">
+                    {{ composioError }}
+                </p>
+
+                <DialogFooter>
+                    <Button
+                        type="submit"
+                        :disabled="!composioFormValid || composioSubmitting"
+                    >
+                        <Plug class="size-4" />
+                        {{ composioSubmitting ? 'Connecting…' : 'Continue' }}
+                    </Button>
+                </DialogFooter>
+            </form>
+        </DialogContent>
+    </Dialog>
+
+    <!-- NetSuite native (TBA) connect modal -->
+    <Dialog v-model:open="netsuiteOpen">
+        <DialogContent class="sm:max-w-lg">
+            <DialogHeader>
+                <DialogTitle>Connect NetSuite</DialogTitle>
+                <DialogDescription>
+                    Choose how to authenticate. Secrets are encrypted on the
+                    server and never shown again.
+                </DialogDescription>
+            </DialogHeader>
+
+            <form
+                class="max-h-[60vh] space-y-4 overflow-y-auto pr-1"
+                @submit.prevent="submitNetsuite"
+            >
+                <!-- Auth method toggle -->
+                <div class="space-y-2">
+                    <Label>Authentication method</Label>
+                    <div class="flex gap-2">
+                        <Button
+                            type="button"
+                            size="sm"
+                            :variant="
+                                netsuiteAuthType === 'tba'
+                                    ? 'default'
+                                    : 'outline'
+                            "
+                            @click="netsuiteAuthType = 'tba'"
+                        >
+                            Token-Based Auth
+                        </Button>
+                        <Button
+                            type="button"
+                            size="sm"
+                            :variant="
+                                netsuiteAuthType === 'oauth2'
+                                    ? 'default'
+                                    : 'outline'
+                            "
+                            @click="netsuiteAuthType = 'oauth2'"
+                        >
+                            OAuth 2.0
+                        </Button>
+                    </div>
+                    <p class="text-xs text-muted-foreground">
+                        <template v-if="netsuiteAuthType === 'tba'">
+                            Recommended for a backend service. Paste the
+                            Consumer Key/Secret (Integration record) + Token
+                            ID/Secret (Access Token). We verify the token
+                            immediately.
+                        </template>
+                        <template v-else>
+                            Paste your OAuth 2.0 app's Client ID/Secret. You'll
+                            be sent to NetSuite to approve access, then returned
+                            here. The integration record's Redirect URI must be
+                            <code
+                                >{{
+                                    origin
+                                }}/integrations/netsuite/callback</code
+                            >.
+                        </template>
+                    </p>
+                </div>
+
+                <div
+                    v-for="field in netsuiteFields"
+                    :key="field.name"
+                    class="space-y-2"
+                >
+                    <Label :for="`netsuite-${field.name}`">{{
+                        field.label
+                    }}</Label>
+                    <Input
+                        :id="`netsuite-${field.name}`"
+                        v-model="netsuiteForm[field.name]"
+                        :type="field.secret ? 'password' : 'text'"
+                        :placeholder="
+                            field.name === 'account_id'
+                                ? 'e.g. 1234567 or 1234567_SB1 (sandbox)'
+                                : field.label
+                        "
+                        autocomplete="off"
+                    />
+                    <p
+                        v-if="field.name === 'account_id'"
+                        class="text-xs text-muted-foreground"
+                    >
+                        Setup → Company → Company Information → “Account ID”.
+                        Sandboxes include the <code>_SB1</code> suffix.
+                    </p>
+                </div>
+
+                <p v-if="netsuiteError" class="text-sm text-destructive">
+                    {{ netsuiteError }}
+                </p>
+
+                <DialogFooter>
+                    <Button
+                        type="submit"
+                        :disabled="!netsuiteFormValid || netsuiteSubmitting"
+                    >
+                        <Plug class="size-4" />
+                        {{
+                            netsuiteSubmitting
+                                ? netsuiteAuthType === 'oauth2'
+                                    ? 'Redirecting…'
+                                    : 'Verifying…'
+                                : netsuiteAuthType === 'oauth2'
+                                  ? 'Continue to NetSuite'
+                                  : 'Connect'
+                        }}
+                    </Button>
+                </DialogFooter>
+            </form>
         </DialogContent>
     </Dialog>
 

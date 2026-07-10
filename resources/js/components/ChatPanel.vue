@@ -2,17 +2,34 @@
 import { usePage } from '@inertiajs/vue3';
 import {
     ArrowUp,
+    Copy,
+    Download,
     FileText,
+    FileType,
+    FoldVertical,
     Image as ImageIcon,
     Menu,
     Paperclip,
+    Sheet as SheetIcon,
+    ShieldCheck,
     Sparkles,
     X,
+    Zap,
 } from '@lucide/vue';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import { computed, nextTick, onMounted, ref } from 'vue';
 import ChatSidebar from '@/components/ChatSidebar.vue';
+import { Button } from '@/components/ui/button';
+import {
+    Dialog,
+    DialogClose,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
 import {
     Select,
     SelectContent,
@@ -123,6 +140,36 @@ const completionTokens = ref(0);
 const tokenTotal = computed(() => promptTokens.value + completionTokens.value);
 const pendingFiles = ref<File[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
+const compacted = ref(false);
+const compacting = ref(false);
+
+// Session toggle: skip the confirm-before-destructive-actions guardrail for
+// connected tools. Persisted across reloads; sent with every message.
+const AUTO_APPROVE_KEY = 'chat:autoApprove';
+const autoApprove = ref(localStorage.getItem(AUTO_APPROVE_KEY) === '1');
+// Turning auto-approve ON is guarded by a confirmation dialog; turning it OFF
+// is immediate (returning to the safe default needs no warning).
+const showAutoApproveConfirm = ref(false);
+
+function setAutoApprove(on: boolean) {
+    autoApprove.value = on;
+    localStorage.setItem(AUTO_APPROVE_KEY, on ? '1' : '0');
+}
+
+// Clicking the switch: turning ON opens a confirmation first (state only flips
+// once confirmed); turning OFF is immediate.
+function toggleAutoApprove() {
+    if (autoApprove.value) {
+        setAutoApprove(false);
+    } else {
+        showAutoApproveConfirm.value = true;
+    }
+}
+
+function confirmAutoApprove() {
+    setAutoApprove(true);
+    showAutoApproveConfirm.value = false;
+}
 const skillId = ref<number | null>(null);
 const skillValue = computed(() =>
     skillId.value === null ? 'none' : String(skillId.value),
@@ -162,15 +209,99 @@ function renderMarkdown(content: string): string {
     });
 }
 
+// Whether an assistant answer contains a GFM table (so we offer sheet export).
+function hasTable(content: string): boolean {
+    return /\n[ \t]*\|?[ \t]*:?-{2,}:?[ \t]*(\|[ \t]*:?-{2,}:?[ \t]*)+\|?[ \t]*(\n|$)/.test(
+        '\n' + content,
+    );
+}
+
+function triggerDownload(blob: Blob, name: string) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+
+async function copyMessage(content: string) {
+    try {
+        await navigator.clipboard?.writeText(content);
+    } catch {
+        error.value = 'Could not copy to the clipboard.';
+    }
+}
+
+function downloadMarkdown(content: string) {
+    triggerDownload(
+        new Blob([content], { type: 'text/markdown' }),
+        `aime-answer-${Date.now()}.md`,
+    );
+}
+
+// POST the answer to a server export endpoint and download the returned file.
+async function exportAnswer(
+    url: string,
+    payload: Record<string, string>,
+    fallbackName: string,
+) {
+    error.value = null;
+
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: jsonHeaders(),
+            body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+
+            throw new Error(data.message ?? 'Could not export that answer.');
+        }
+
+        const cd = res.headers.get('Content-Disposition') ?? '';
+        const match = cd.match(/filename="([^"]+)"/);
+        triggerDownload(await res.blob(), match ? match[1] : fallbackName);
+    } catch (e) {
+        error.value = e instanceof Error ? e.message : 'Export failed.';
+    }
+}
+
+function downloadPdf(content: string) {
+    exportAnswer(
+        '/chat/export/pdf',
+        { content, title: 'AiMe answer' },
+        'aime-answer.pdf',
+    );
+}
+
+function downloadDocx(content: string) {
+    exportAnswer(
+        '/chat/export/docx',
+        { content, title: 'AiMe answer' },
+        'aime-answer.docx',
+    );
+}
+
+function downloadSheet(content: string, format: 'csv' | 'xlsx') {
+    exportAnswer(
+        '/chat/export/sheet',
+        { content, format },
+        `aime-tables.${format}`,
+    );
+}
+
 function openFilePicker() {
     fileInput.value?.click();
 }
 
-function onFilesSelected(event: Event) {
-    const input = event.target as HTMLInputElement;
-    const picked = Array.from(input.files ?? []);
-    input.value = '';
-
+// Validate a batch of files against the upload limits and append them to the
+// pending list. Shared by the file picker and clipboard paste.
+function addFiles(picked: File[]) {
     if (picked.length === 0) {
         return;
     }
@@ -194,6 +325,57 @@ function onFilesSelected(event: Event) {
 
     error.value = null;
     pendingFiles.value = combined;
+}
+
+function onFilesSelected(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const picked = Array.from(input.files ?? []);
+    input.value = '';
+
+    addFiles(picked);
+}
+
+// Paste images straight into the composer (Ctrl/Cmd+V). Only intercepts when a
+// real image is on the clipboard — plain text pastes fall through to the
+// textarea untouched. Clipboard images often arrive unnamed, so give them a
+// friendly, unique name derived from their type.
+function onPaste(event: ClipboardEvent) {
+    if (!props.uploads.enabled) {
+        return;
+    }
+
+    const items = Array.from(event.clipboardData?.items ?? []);
+    const images = items.filter(
+        (it) => it.kind === 'file' && it.type.startsWith('image/'),
+    );
+
+    if (images.length === 0) {
+        return;
+    }
+
+    event.preventDefault();
+
+    const files: File[] = [];
+
+    images.forEach((it, i) => {
+        const file = it.getAsFile();
+
+        if (!file) {
+            return;
+        }
+
+        const ext = (file.type.split('/')[1] || 'png').split('+')[0];
+        const named =
+            file.name && file.name !== 'image.png'
+                ? file
+                : new File([file], `pasted-image-${Date.now()}-${i}.${ext}`, {
+                      type: file.type,
+                  });
+
+        files.push(named);
+    });
+
+    addFiles(files);
 }
 
 function removeFile(index: number) {
@@ -254,6 +436,7 @@ function newChat() {
     promptTokens.value = 0;
     completionTokens.value = 0;
     pendingFiles.value = [];
+    compacted.value = false;
 }
 
 async function selectConversation(id: number) {
@@ -280,6 +463,7 @@ async function selectConversation(id: number) {
         promptTokens.value = data.prompt_tokens ?? 0;
         completionTokens.value = data.completion_tokens ?? 0;
         skillId.value = data.skill_id ?? null;
+        compacted.value = data.compacted ?? false;
 
         if (typeof data.model === 'string') {
             model.value = data.model;
@@ -342,6 +526,7 @@ async function send() {
 
             form.append('content', text);
             form.append('model', model.value);
+            form.append('auto_approve', autoApprove.value ? '1' : '0');
 
             if (skillId.value != null) {
                 form.append('skill_id', String(skillId.value));
@@ -364,6 +549,7 @@ async function send() {
                     content: text,
                     model: model.value,
                     skill_id: skillId.value,
+                    auto_approve: autoApprove.value,
                 }),
             });
         }
@@ -501,6 +687,47 @@ async function removeConversation(id: number) {
     }
 }
 
+// Compact the active conversation: the server summarizes the transcript so far
+// and future turns replay only newer messages, keeping context (and cost) down
+// on long chats — like Claude's /compact. The visible transcript is untouched.
+async function compactConversation() {
+    if (activeId.value == null || compacting.value || loading.value) {
+        return;
+    }
+
+    compacting.value = true;
+    error.value = null;
+
+    try {
+        const res = await fetch(
+            `/chat/conversations/${activeId.value}/compact`,
+            {
+                method: 'POST',
+                headers: jsonHeaders(),
+            },
+        );
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+            throw new Error(
+                data.message ?? 'Could not compact this conversation.',
+            );
+        }
+
+        compacted.value = true;
+
+        if (data.usage) {
+            promptTokens.value = data.usage.prompt_tokens ?? promptTokens.value;
+            completionTokens.value =
+                data.usage.completion_tokens ?? completionTokens.value;
+        }
+    } catch (e) {
+        error.value = e instanceof Error ? e.message : 'Something went wrong.';
+    } finally {
+        compacting.value = false;
+    }
+}
+
 function onKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -597,24 +824,104 @@ onMounted(() => {
                     </slot>
                 </div>
 
-                <Select
-                    :model-value="model"
-                    @update:model-value="onModelChange"
-                >
-                    <SelectTrigger class="h-8 w-auto min-w-[160px] text-xs">
-                        <SelectValue placeholder="Select a model" />
-                    </SelectTrigger>
-                    <SelectContent>
-                        <SelectItem
-                            v-for="m in models"
-                            :key="m.value"
-                            :value="m.value"
-                            class="text-xs"
+                <div class="flex items-center gap-2">
+                    <div
+                        v-if="mcpEnabled"
+                        class="inline-flex h-8 items-center gap-2 rounded-md border px-2.5 transition-colors"
+                        :class="
+                            autoApprove
+                                ? 'border-brand-gold/50 bg-brand-gold/10'
+                                : 'border-border'
+                        "
+                        :title="
+                            autoApprove
+                                ? 'Auto-approve is ON — tool actions run without asking. Toggle off to require confirmation.'
+                                : 'Tool actions ask for confirmation first. Toggle on to auto-approve them for this session.'
+                        "
+                    >
+                        <component
+                            :is="autoApprove ? Zap : ShieldCheck"
+                            class="size-3.5"
+                            :class="
+                                autoApprove
+                                    ? 'text-brand-gold'
+                                    : 'text-muted-foreground'
+                            "
+                        />
+                        <span
+                            class="text-xs font-medium"
+                            :class="
+                                autoApprove
+                                    ? 'text-brand-gold'
+                                    : 'text-muted-foreground'
+                            "
                         >
-                            {{ m.label }}
-                        </SelectItem>
-                    </SelectContent>
-                </Select>
+                            Auto-approve
+                        </span>
+                        <button
+                            type="button"
+                            role="switch"
+                            :aria-checked="autoApprove"
+                            aria-label="Auto-approve tool actions for this session"
+                            class="relative inline-flex h-4 w-7 shrink-0 cursor-pointer items-center rounded-full transition-colors"
+                            :class="
+                                autoApprove
+                                    ? 'bg-brand-gold'
+                                    : 'bg-muted-foreground/30'
+                            "
+                            @click="toggleAutoApprove"
+                        >
+                            <span
+                                class="inline-block size-3 rounded-full bg-white shadow transition-transform"
+                                :class="
+                                    autoApprove
+                                        ? 'translate-x-3.5'
+                                        : 'translate-x-0.5'
+                                "
+                            />
+                        </button>
+                    </div>
+                    <button
+                        v-if="activeId != null && messages.length > 1"
+                        type="button"
+                        :disabled="compacting || loading"
+                        class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                        :title="
+                            compacted
+                                ? 'Already compacted — run again to fold in newer messages'
+                                : 'Summarize this conversation to save context on long chats'
+                        "
+                        @click="compactConversation"
+                    >
+                        <FoldVertical class="size-3.5" />
+                        {{
+                            compacting
+                                ? 'Compacting…'
+                                : compacted
+                                  ? 'Compacted'
+                                  : 'Compact'
+                        }}
+                    </button>
+
+                    <Select
+                        :model-value="model"
+                        @update:model-value="onModelChange"
+                    >
+                        <SelectTrigger class="h-8 w-auto min-w-[160px] text-xs">
+                            <SelectValue placeholder="Select a model" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem
+                                v-for="m in models"
+                                :key="m.value"
+                                :value="m.value"
+                                class="text-xs"
+                            >
+                                {{ m.label }}
+                            </SelectItem>
+                        </SelectContent>
+                    </Select>
+                </div>
             </div>
 
             <!-- Conversation -->
@@ -646,75 +953,164 @@ onMounted(() => {
                         </div>
                     </div>
 
-                    <!-- Messages -->
+                    <!-- Compacted notice -->
                     <div
-                        v-for="(m, i) in messages"
-                        :key="i"
-                        class="message-row flex items-start gap-3"
-                        :class="
-                            m.role === 'user' ? 'justify-end' : 'justify-start'
-                        "
+                        v-if="compacted && messages.length"
+                        class="flex justify-center"
                     >
-                        <div
-                            v-if="m.role === 'assistant'"
-                            class="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-navy to-brand-gold text-white shadow-sm"
+                        <span
+                            class="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/60 px-3 py-1 text-xs text-muted-foreground"
                         >
-                            <Sparkles class="size-4" />
-                        </div>
+                            <FoldVertical class="size-3.5" />
+                            Earlier messages compacted — AiMe uses a summary of
+                            them to save context.
+                        </span>
+                    </div>
 
+                    <!-- Messages -->
+                    <template v-for="(m, i) in messages" :key="i">
+                        <!-- Skip the empty assistant placeholder while a reply is
+                         still streaming in — the typing indicator covers that
+                         state, so an empty bubble would just be dead space. -->
                         <div
-                            class="max-w-[80%] px-4 py-2.5 text-sm"
+                            v-if="
+                                m.role !== 'assistant' ||
+                                m.content ||
+                                m.attachments?.length
+                            "
+                            class="message-row flex items-start gap-3"
                             :class="
                                 m.role === 'user'
-                                    ? 'rounded-2xl rounded-tr-sm bg-primary whitespace-pre-wrap text-primary-foreground'
-                                    : 'rounded-2xl rounded-tl-sm bg-muted text-foreground'
+                                    ? 'justify-end'
+                                    : 'justify-start'
                             "
                         >
                             <div
-                                v-if="m.attachments?.length"
-                                class="flex flex-wrap gap-1.5"
-                                :class="m.content ? 'mb-2' : ''"
+                                v-if="m.role === 'assistant'"
+                                class="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-navy to-brand-gold text-white shadow-sm"
                             >
-                                <span
-                                    v-for="(a, ai) in m.attachments"
-                                    :key="ai"
-                                    class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs"
-                                    :class="
-                                        m.role === 'user'
-                                            ? 'bg-white/15'
-                                            : 'border border-border bg-background'
-                                    "
-                                >
-                                    <component
-                                        :is="
-                                            isImageMime(a.mime)
-                                                ? ImageIcon
-                                                : FileText
-                                        "
-                                        class="size-3.5 shrink-0"
-                                    />
-                                    <span class="max-w-[12rem] truncate">{{
-                                        a.name
-                                    }}</span>
-                                </span>
+                                <Sparkles class="size-4" />
                             </div>
-                            <template v-if="m.content">
-                                <div
-                                    v-if="m.role === 'assistant'"
-                                    class="md"
-                                    v-html="renderMarkdown(m.content)"
-                                />
-                                <template v-else>{{ m.content }}</template>
-                            </template>
-                        </div>
 
-                        <div
-                            v-if="m.role === 'user'"
-                            class="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary"
-                        >
-                            {{ userInitials }}
+                            <div
+                                class="max-w-[80%] px-4 py-2.5 text-sm"
+                                :class="
+                                    m.role === 'user'
+                                        ? 'rounded-2xl rounded-tr-sm bg-primary whitespace-pre-wrap text-primary-foreground'
+                                        : 'rounded-2xl rounded-tl-sm bg-muted text-foreground'
+                                "
+                            >
+                                <div
+                                    v-if="m.attachments?.length"
+                                    class="flex flex-wrap gap-1.5"
+                                    :class="m.content ? 'mb-2' : ''"
+                                >
+                                    <span
+                                        v-for="(a, ai) in m.attachments"
+                                        :key="ai"
+                                        class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs"
+                                        :class="
+                                            m.role === 'user'
+                                                ? 'bg-white/15'
+                                                : 'border border-border bg-background'
+                                        "
+                                    >
+                                        <component
+                                            :is="
+                                                isImageMime(a.mime)
+                                                    ? ImageIcon
+                                                    : FileText
+                                            "
+                                            class="size-3.5 shrink-0"
+                                        />
+                                        <span class="max-w-[12rem] truncate">{{
+                                            a.name
+                                        }}</span>
+                                    </span>
+                                </div>
+                                <template v-if="m.content">
+                                    <div
+                                        v-if="m.role === 'assistant'"
+                                        class="md"
+                                        v-html="renderMarkdown(m.content)"
+                                    />
+                                    <template v-else>{{ m.content }}</template>
+                                </template>
+
+                                <!-- Export / copy actions on a finished assistant answer -->
+                                <div
+                                    v-if="
+                                        m.role === 'assistant' &&
+                                        m.content &&
+                                        !(loading && i === messages.length - 1)
+                                    "
+                                    class="mt-2 flex flex-wrap items-center gap-1 border-t border-border/50 pt-2 text-xs text-muted-foreground"
+                                >
+                                    <button
+                                        type="button"
+                                        class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-background hover:text-foreground"
+                                        title="Copy"
+                                        @click="copyMessage(m.content)"
+                                    >
+                                        <Copy class="size-3.5" /> Copy
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-background hover:text-foreground"
+                                        title="Download as Markdown"
+                                        @click="downloadMarkdown(m.content)"
+                                    >
+                                        <Download class="size-3.5" /> .md
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-background hover:text-foreground"
+                                        title="Download as PDF"
+                                        @click="downloadPdf(m.content)"
+                                    >
+                                        <FileText class="size-3.5" /> PDF
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-background hover:text-foreground"
+                                        title="Download as Word (.docx)"
+                                        @click="downloadDocx(m.content)"
+                                    >
+                                        <FileType class="size-3.5" /> Word
+                                    </button>
+                                    <template v-if="hasTable(m.content)">
+                                        <button
+                                            type="button"
+                                            class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-background hover:text-foreground"
+                                            title="Download tables as CSV"
+                                            @click="
+                                                downloadSheet(m.content, 'csv')
+                                            "
+                                        >
+                                            <SheetIcon class="size-3.5" /> CSV
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-background hover:text-foreground"
+                                            title="Download tables as Excel (XLSX)"
+                                            @click="
+                                                downloadSheet(m.content, 'xlsx')
+                                            "
+                                        >
+                                            <SheetIcon class="size-3.5" /> XLSX
+                                        </button>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <div
+                                v-if="m.role === 'user'"
+                                class="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary"
+                            >
+                                {{ userInitials }}
+                            </div>
                         </div>
-                    </div>
+                    </template>
 
                     <!-- Typing / working indicator. Stays visible while a tool
                          runs (streamingTool set), even after text has started,
@@ -839,6 +1235,7 @@ onMounted(() => {
                                 placeholder="Message AiMe BOT…"
                                 class="max-h-40 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
                                 @keydown="onKeydown"
+                                @paste="onPaste"
                             />
                             <button
                                 type="button"
@@ -866,7 +1263,13 @@ onMounted(() => {
                     <div
                         class="mt-2 flex items-center justify-between text-xs text-muted-foreground"
                     >
-                        <span>Enter to send · Shift+Enter for a new line</span>
+                        <span
+                            >Enter to send · Shift+Enter for a new line<template
+                                v-if="uploads.enabled"
+                            >
+                                · paste an image with Ctrl+V</template
+                            ></span
+                        >
                         <span
                             v-if="tokenTotal > 0"
                             class="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/60 px-2 py-0.5 font-medium"
@@ -879,6 +1282,42 @@ onMounted(() => {
                 </div>
             </div>
         </div>
+
+        <!-- Confirm before enabling auto-approve for the session -->
+        <Dialog v-model:open="showAutoApproveConfirm">
+            <DialogContent>
+                <DialogHeader class="space-y-3">
+                    <DialogTitle
+                        >Auto-approve tool actions this session?</DialogTitle
+                    >
+                    <DialogDescription>
+                        AiMe will run
+                        <span class="font-medium"
+                            >every connected-tool action</span
+                        >
+                        — including ones that create, update, delete, or send
+                        data —
+                        <span class="font-medium"
+                            >without asking you to confirm first</span
+                        >. This applies to the current chat session until you
+                        toggle it back off. Only enable this if you trust the
+                        requests you're about to make.
+                    </DialogDescription>
+                </DialogHeader>
+
+                <DialogFooter class="gap-2">
+                    <DialogClose as-child>
+                        <Button variant="secondary">Cancel</Button>
+                    </DialogClose>
+                    <Button
+                        class="bg-brand-gold text-white hover:bg-brand-gold/90"
+                        @click="confirmAutoApprove"
+                    >
+                        Yes, auto-approve
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
     </div>
 </template>
 

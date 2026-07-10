@@ -160,7 +160,9 @@ the **Claude API**.
   history. The server is the source of truth — each turn sends only the new
   message + conversation id, and history is loaded from the DB. All endpoints
   are scoped to the authenticated user.
-- **File uploads (images + PDFs):** attach files with the composer paperclip;
+- **File uploads (images + PDFs):** attach files with the composer paperclip
+  **or paste an image straight into the composer with Ctrl/Cmd+V** (a screenshot
+  or copied image becomes an attachment; plain-text pastes are unaffected).
   Claude reads them natively. Files are **re-sent every turn** (stored on the
   message), so follow-up questions keep the document in view. Configurable in
   `.env` (`ANTHROPIC_UPLOADS_*`): enable/disable, max files, max size, and
@@ -169,15 +171,57 @@ the **Claude API**.
 - **Token usage:** each reply's input/output tokens (from the Claude API `usage`)
   accumulate on the conversation and show as a small **"N tokens"** pill in the
   composer footer (hover for the in/out breakdown). Resets on New chat.
-- **Per-user token budget:** every user has a rolling allowance (default
-  **1,000,000 tokens / 30 days**, configurable via `USAGE_*`). Usage is charged
-  per reply; once spent, sending is blocked with a "resets on <date>" message
-  until the window rolls over. The **Dashboard** shows the live meter.
+- **Per-user token usage (+ optional cap):** usage is tracked per reply over a
+  rolling window (`USAGE_PERIOD_DAYS`, default 30) and shown on the **Dashboard**.
+  A cap is **optional**: `USAGE_TOKEN_LIMIT=0` (the default) means **unlimited** —
+  usage is still counted and displayed, but never blocks. Set a positive
+  `USAGE_TOKEN_LIMIT` to enforce a cap (then over-budget sends are blocked with a
+  "resets on <date>" message until the window rolls over). Turn tracking off
+  entirely with `USAGE_LIMIT_ENABLED=false`.
   ([`TokenBudget`](../app/Services/TokenBudget.php).)
 - **Prompt caching + history trimming:** the system prompt is cached
   (`cache_control`) so repeat turns are cheaper, and only the most recent
   `ANTHROPIC_HISTORY_LIMIT` messages (default 40) are replayed each turn, keeping
   long conversations' context and cost bounded.
+- **Compact a conversation (like Claude's /compact):** a **Compact** button in
+  the chat header (shown once a conversation has a real exchange) asks Claude to
+  summarize the transcript so far into a running summary stored on the
+  conversation (`conversations.summary` + `summary_through_id`). From then on
+  only messages **newer than the summary** are replayed to the API — the summary
+  (injected into the system prompt) stands in for everything before it, so long
+  chats keep answering without ballooning context or cost. The full transcript
+  stays visible; a small "Earlier messages compacted" pill marks it. Running it
+  again folds newer messages into the summary. Prompt is configurable
+  (`ANTHROPIC_COMPACT_PROMPT`, default in `config/services.php`).
+  (`POST /chat/conversations/{id}/compact`.)
+- **Web search + fetch (Claude's native tools).** With `ANTHROPIC_WEB_TOOLS=true`
+  (default) the assistant can **search the web** and **read a URL** using
+  Anthropic's server-side `web_search` + `web_fetch` tools — no scraping infra on
+  our side. Active on **every** chat path — plain, MCP, and the connected-tools
+  (Composio/NetSuite) loop, so a user with Slack/NetSuite connected keeps web
+  access too (the connected-tools loop runs on the beta endpoint and merges the
+  web tools alongside the custom tools). If the tools error, the turn falls back
+  to a plain answer with a note. So the model doesn't wrongly claim it can't
+  browse, a short **web-access note** is appended to the system prompt while web
+  tools are on. Configurable: `ANTHROPIC_WEB_TOOLS`, `ANTHROPIC_WEB_TOOL_MAX_USES`,
+  `ANTHROPIC_WEB_FETCH_BETA` (web fetch is beta), `ANTHROPIC_WEB_TOOLS_PROMPT`.
+- **Export an answer (Markdown / PDF / Word / CSV / XLSX).** Each finished
+  assistant answer has a small action row: **Copy**, **.md** (client-side
+  download), **PDF** (server-side — Markdown → sanitized HTML via CommonMark →
+  dompdf), **Word** (.docx — Markdown → minimal OOXML document via `ZipArchive`,
+  with headings, lists, tables, code, and inline bold/italic/code), and, when the
+  answer contains a table, **CSV** + **XLSX**. The spreadsheet export parses the
+  answer's GFM tables server-side; XLSX and DOCX are both written as minimal OOXML
+  via `ZipArchive` (no PhpSpreadsheet/PhpWord, so no `ext-gd` needed). Claude can't
+  generate images — it reads them (§7) but there's no image-generation model wired
+  in. ([`ChatExportService`](../app/Services/ChatExportService.php),
+  [`ChatExportController`](../app/Http/Controllers/ChatExportController.php);
+  `POST /chat/export/pdf`, `POST /chat/export/docx`, `POST /chat/export/sheet`.)
+  A **downloadable-answers
+  note** is appended to the system prompt so that, when asked for a document or
+  spreadsheet, the model writes exportable content (Markdown headings / pipe
+  tables) and points the user at these buttons instead of refusing. Override the
+  note with `ANTHROPIC_FILES_PROMPT`.
 - **Streaming replies:** the assistant's reply **streams in token-by-token**
   over Server-Sent Events (`POST /chat/stream`) — a "Thinking…" indicator shows
   only until the first token, then the text fills in live. The message, token
@@ -252,8 +296,9 @@ Automation, ERP & business systems, Productivity & data). Each card has a
   streamed via `beta.messages` in
   [`ChatController::stream`](../app/Http/Controllers/ChatController.php).
   Config: `ANTHROPIC_MCP_BETA`, `MCP_OAUTH_*`.
-- **One-click app cards via Composio (per-user).** Each app is a **category
-  card** with a single **Connect** button, brokered through **Composio**, a
+- **One-click app cards via Composio (per-user).** *(Deep-dive + add/debug
+  playbook: [composio-integrations.md](composio-integrations.md).)* Each app is a
+  **category card** with a single **Connect** button, brokered through **Composio**, a
   hosted tool gateway. Composio owns the OAuth apps, so there's **no per-app
   client id/secret** — one `COMPOSIO_API_KEY` plus a per-toolkit auth-config id
   (`config/services.php` → `services.composio`, all `.env`-driven). Connections
@@ -292,6 +337,16 @@ Automation, ERP & business systems, Productivity & data). Each card has a
   hard gate, pair it with **least-privilege OAuth scopes** (`MCP_OAUTH_SCOPES`) or
   read-only tokens; a true click-to-approve interrupt would require running tools
   client-side (a larger change, on the roadmap).
+- **Auto-approve toggle (per session).** For power users, the chat header shows an
+  **Auto-approve** switch (only when tools are connected) — a labelled on/off
+  toggle rather than a button whose label flipped. When on, the destructive-action
+  guardrail above is **omitted** for that conversation so the assistant acts
+  without asking each time. Turning it **on** first pops a **confirmation dialog**
+  ("Auto-approve tool actions this session?") — the state only flips once the user
+  confirms; turning it off is immediate. Default is off (safe); the choice is
+  remembered in the browser and sent with each message (`conversations.auto_approve`,
+  set per turn). It has no effect if `ANTHROPIC_TOOL_SAFETY=false` (nothing to skip)
+  or when no tools are connected.
 - **Automation (live): n8n, Zapier, Make.com, and generic Webhooks.** Paste an
   outbound webhook URL (plus an optional shared secret, sent as a header). AiMe BOT
   **POSTs a `chat.completed` event** to every connected provider after each reply.
@@ -305,11 +360,39 @@ Automation, ERP & business systems, Productivity & data). Each card has a
   self-hosted/per-account and have no single catalog URL.
 - **Advanced — connect a server directly.** A de-emphasized section at the bottom
   keeps the raw **"Add MCP server"** flow (one-click OAuth or a token, by URL) for
-  self-hosted or sensitive tools you don't want routed through Composio (e.g.
-  NetSuite). Same backend as the MCP servers above.
-- **Cards not yet wired** (GHL, Salesforce, Google Drive/Sheets, NetSuite,
-  Calendar, Database, Email) show **"Coming soon"** with a disabled button. Each
-  card declares how it connects: a `composio` toolkit key (one-click), `webhook`
+  self-hosted or sensitive tools you don't want routed through Composio. Same
+  backend as the MCP servers above.
+- **NetSuite (native — NOT Composio).** Composio's NetSuite toolkit is **OAuth
+  2.0 only**, and its tokens 401 (`INVALID_LOGIN`) on record reads, so NetSuite
+  is a **native integration** against **SuiteTalk REST + SuiteQL**. The connect
+  dialog offers **two auth methods** (pick in a toggle):
+  - **Token-Based Auth (TBA / OAuth 1.0a)** — *recommended for a backend.* Paste
+    five values: **Account ID** + the Integration record's **Consumer Key /
+    Secret** + an Access Token's **Token ID / Secret**. On save we run a signed
+    test query. Each request is HMAC-SHA256-signed; tokens never expire.
+  - **OAuth 2.0 (Authorization Code Grant)** — paste your OAuth app's **Client
+    ID / Secret** + Account ID; you're redirected to NetSuite to approve, then
+    back to `…/integrations/netsuite/callback`. We store the access + refresh
+    tokens and **auto-refresh** the access token before it expires. Requires the
+    integration record's Redirect URI to match `<APP_URL>/integrations/netsuite/callback`.
+
+  `auth_type` on the connection records which method is in use; all secrets and
+  tokens are stored **encrypted**
+  ([`NetsuiteConnection`](../app/Models/NetsuiteConnection.php)). In chat AiMe
+  gets two tools — **`netsuite_suiteql`** (read-only SuiteQL) and
+  **`netsuite_get_record`** — executed server-side by
+  [`NetsuiteService`](../app/Services/NetsuiteService.php) (TBA signs each
+  request; OAuth2 sends a Bearer token), sharing the client-side tool loop with
+  Composio (dispatched by the `netsuite_` name prefix). **Either method needs the
+  token/role to have REST Web Services + the record permissions.** Config:
+  `services.netsuite` (`NETSUITE_ENABLED`, `NETSUITE_TIMEOUT`,
+  `NETSUITE_SUITEQL_MAX_ROWS`, `NETSUITE_REST_DOMAIN`, plus OAuth2
+  `NETSUITE_APP_DOMAIN` / `NETSUITE_OAUTH_SCOPES` / `NETSUITE_OAUTH_REDIRECT` /
+  `NETSUITE_OAUTH_REFRESH_LEEWAY`). Backend:
+  [`NetsuiteController`](../app/Http/Controllers/NetsuiteController.php).
+- **Cards not yet wired** (GHL, Salesforce, Google Drive/Sheets, Calendar,
+  Database, Email) show **"Coming soon"** with a disabled button. Each card
+  declares how it connects: a `composio` toolkit key (one-click), `webhook`
   (automation), or nothing → "coming soon". Lighting one up is a config +
   `composio:` key change, no new code.
 - Backend: [`IntegrationController`](../app/Http/Controllers/IntegrationController.php),
@@ -321,7 +404,9 @@ Automation, ERP & business systems, Productivity & data). Each card has a
   `INTEGRATION_N8N_SECRET_HEADER`, `MCP_CATALOG_*` — defaults in
   `config/integrations.php`. Composio: `COMPOSIO_API_KEY`, `COMPOSIO_BASE_URL`,
   and per-toolkit `COMPOSIO_<TOOL>_AUTH_CONFIG` / `COMPOSIO_<TOOL>_MCP_SERVER_ID`
-  — defaults in `config/services.php` (`services.composio`).
+  — defaults in `config/services.php` (`services.composio`). NetSuite (native
+  TBA): `NETSUITE_ENABLED`, `NETSUITE_TIMEOUT`, `NETSUITE_SUITEQL_MAX_ROWS`,
+  `NETSUITE_REST_DOMAIN` (`services.netsuite`).
 
 ## 7. Theming
 

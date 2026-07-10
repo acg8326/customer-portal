@@ -11,13 +11,15 @@ return [
     | from the Claude API `usage`). When the window elapses the counter resets,
     | the same way Claude's own usage limits reset on a schedule.
     |
-    | token_limit  — tokens allowed per window (default 1,000,000).
+    | token_limit  — tokens allowed per window. 0 (or negative) = UNLIMITED:
+    |                usage is still tracked and shown, but never blocks.
     | period_days  — length of the window in days (default 30 = ~monthly).
-    | enabled      — master switch; disable to lift the cap entirely.
+    | enabled      — master switch for tracking/display; disable to turn the
+    |                whole feature off.
     |
     */
 
-    'token_limit' => (int) env('USAGE_TOKEN_LIMIT', 1_000_000),
+    'token_limit' => (int) env('USAGE_TOKEN_LIMIT', 0),
 
     'period_days' => (int) env('USAGE_PERIOD_DAYS', 30),
 

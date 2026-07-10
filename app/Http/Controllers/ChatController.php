@@ -3,31 +3,34 @@
 namespace App\Http\Controllers;
 
 use Anthropic\Beta\Messages\BetaMCPToolUseBlock;
+use Anthropic\Beta\Messages\BetaMessageParam;
 use Anthropic\Beta\Messages\BetaRawContentBlockDeltaEvent;
 use Anthropic\Beta\Messages\BetaRawContentBlockStartEvent;
 use Anthropic\Beta\Messages\BetaRawMessageDeltaEvent;
 use Anthropic\Beta\Messages\BetaRawMessageStartEvent;
 use Anthropic\Beta\Messages\BetaRequestMCPServerURLDefinition;
 use Anthropic\Beta\Messages\BetaTextBlock;
+use Anthropic\Beta\Messages\BetaTextBlockParam;
 use Anthropic\Beta\Messages\BetaTextDelta;
+use Anthropic\Beta\Messages\BetaTool;
+use Anthropic\Beta\Messages\BetaTool\InputSchema as BetaInputSchema;
+use Anthropic\Beta\Messages\BetaToolResultBlockParam;
+use Anthropic\Beta\Messages\BetaToolUseBlock;
+use Anthropic\Beta\Messages\BetaToolUseBlockParam;
+use Anthropic\Beta\Messages\BetaWebFetchTool20250910;
+use Anthropic\Beta\Messages\BetaWebSearchTool20250305;
 use Anthropic\Client;
 use Anthropic\Messages\Base64ImageSource;
 use Anthropic\Messages\Base64PDFSource;
 use Anthropic\Messages\CacheControlEphemeral;
 use Anthropic\Messages\DocumentBlockParam;
 use Anthropic\Messages\ImageBlockParam;
-use Anthropic\Messages\MessageParam;
 use Anthropic\Messages\RawContentBlockDeltaEvent;
 use Anthropic\Messages\RawMessageDeltaEvent;
 use Anthropic\Messages\RawMessageStartEvent;
 use Anthropic\Messages\TextBlock;
 use Anthropic\Messages\TextBlockParam;
 use Anthropic\Messages\TextDelta;
-use Anthropic\Messages\Tool;
-use Anthropic\Messages\Tool\InputSchema;
-use Anthropic\Messages\ToolResultBlockParam;
-use Anthropic\Messages\ToolUseBlock;
-use Anthropic\Messages\ToolUseBlockParam;
 use App\Jobs\DispatchN8nEvent;
 use App\Models\Conversation;
 use App\Models\Message;
@@ -36,6 +39,7 @@ use App\Models\Skill;
 use App\Models\User;
 use App\Services\ComposioService;
 use App\Services\Mcp\McpOAuthService;
+use App\Services\NetsuiteService;
 use App\Services\TokenBudget;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -86,7 +90,8 @@ class ChatController extends Controller
         $user = $request->user();
 
         return $user->mcpServers()->where('enabled', true)->exists()
-            || $user->composioConnections()->where('status', 'active')->exists();
+            || $user->composioConnections()->where('status', 'active')->exists()
+            || app(NetsuiteService::class)->enabledFor($user);
     }
 
     /**
@@ -138,6 +143,8 @@ class ChatController extends Controller
             'skill_id' => $conversation->skill_id,
             'prompt_tokens' => $conversation->prompt_tokens,
             'completion_tokens' => $conversation->completion_tokens,
+            'compacted' => filled($conversation->summary),
+            'auto_approve' => $conversation->auto_approve,
             'messages' => $conversation->messages()
                 ->orderBy('id')
                 ->get(['role', 'content', 'attachments'])
@@ -164,6 +171,7 @@ class ChatController extends Controller
             'content' => [$hasFiles ? 'nullable' : 'required', 'string', 'max:8000'],
             'model' => ['required', 'string', Rule::in(array_keys(Config::array('services.anthropic.models')))],
             'skill_id' => ['nullable', 'integer'],
+            'auto_approve' => ['nullable', 'boolean'],
             'files' => [$uploads['enabled'] ? 'nullable' : 'prohibited', 'array', 'max:'.$uploads['maxFiles']],
             'files.*' => ['file', 'mimes:'.$uploads['mimes'], 'max:'.$uploads['maxSizeKb']],
         ]);
@@ -195,36 +203,38 @@ class ChatController extends Controller
             $client = new Client(apiKey: $apiKey);
             $user = $request->user();
             $composioKeys = app(ComposioService::class)->activeToolkitKeys($user);
-            // Composio tools run through a client-side loop; custom MCP servers
-            // run server-side. Prefer Composio when the user has it connected.
-            $mcp = $composioKeys === [] ? $this->mcpServerDefs($user) : [];
+            $netsuite = app(NetsuiteService::class)->enabledFor($user);
+            // Composio + NetSuite tools run through a client-side loop; custom MCP
+            // servers run server-side. Prefer the client-side tools when connected.
+            $useClientTools = $composioKeys !== [] || $netsuite;
+            $mcp = $useClientTools ? [] : $this->mcpServerDefs($user);
 
             $reply = null;
             $inputTokens = 0;
             $outputTokens = 0;
 
-            if ($composioKeys !== []) {
+            if ($useClientTools) {
                 try {
                     [$reply, $inputTokens, $outputTokens] =
-                        $this->completeWithComposioTools($client, $conversation, $selectedModel, $composioKeys);
+                        $this->completeWithClientTools($client, $conversation, $selectedModel, $composioKeys, $netsuite);
                 } catch (Throwable $e) {
                     report($e);
-                    Log::warning('Composio tools unavailable; answering without tools', [
+                    Log::warning('Connected tools unavailable; answering without tools', [
                         'user_id' => $userId,
                         'error' => $e->getMessage(),
                     ]);
                     $reply = null;
                 }
-            } elseif ($mcp !== []) {
-                // Native tool use via the user's MCP servers (server-side). If a
-                // server is unreachable/misconfigured, fall back to a plain reply
-                // rather than failing the whole turn.
+            } elseif ($mcp !== [] || $this->webToolDefs() !== []) {
+                // Server-side tools: the user's MCP servers and/or Claude's
+                // native web search + fetch. If unavailable, fall back to a plain
+                // reply rather than failing the whole turn.
                 try {
                     [$reply, $inputTokens, $outputTokens] =
-                        $this->completeWithMcp($client, $conversation, $selectedModel, $mcp);
+                        $this->completeWithMcp($client, $conversation, $selectedModel, $mcp, $this->webToolDefs());
                 } catch (Throwable $e) {
                     report($e);
-                    Log::warning('MCP request unavailable; answering without tools', [
+                    Log::warning('Server-side tools unavailable; answering without tools', [
                         'user_id' => $userId,
                         'error' => $e->getMessage(),
                     ]);
@@ -304,6 +314,7 @@ class ChatController extends Controller
             'content' => [$hasFiles ? 'nullable' : 'required', 'string', 'max:8000'],
             'model' => ['required', 'string', Rule::in(array_keys(Config::array('services.anthropic.models')))],
             'skill_id' => ['nullable', 'integer'],
+            'auto_approve' => ['nullable', 'boolean'],
             'files' => [$uploads['enabled'] ? 'nullable' : 'prohibited', 'array', 'max:'.$uploads['maxFiles']],
             'files.*' => ['file', 'mimes:'.$uploads['mimes'], 'max:'.$uploads['maxSizeKb']],
         ]);
@@ -328,10 +339,12 @@ class ChatController extends Controller
 
         [$conversation, $userId, $selectedModel] = $this->startTurn($request, $hasFiles);
         $composioKeys = app(ComposioService::class)->activeToolkitKeys($request->user());
-        $mcp = $composioKeys === [] ? $this->mcpServerDefs($request->user()) : [];
+        $netsuite = app(NetsuiteService::class)->enabledFor($request->user());
+        $useClientTools = $composioKeys !== [] || $netsuite;
+        $mcp = $useClientTools ? [] : $this->mcpServerDefs($request->user());
         $maxTokens = (int) config('services.anthropic.max_tokens', 4096);
 
-        return response()->stream(function () use ($request, $conversation, $mcp, $composioKeys, $selectedModel, $maxTokens, $userId, $apiKey): void {
+        return response()->stream(function () use ($request, $conversation, $mcp, $composioKeys, $netsuite, $useClientTools, $selectedModel, $maxTokens, $userId, $apiKey): void {
             $this->emit('meta', [
                 'conversation_id' => $conversation->id,
                 'title' => $conversation->title,
@@ -347,13 +360,14 @@ class ChatController extends Controller
                 $stream = null;
                 $handled = false;
 
-                if ($composioKeys !== []) {
-                    // Composio tools: AiMe runs the tool loop itself (non-streamed
-                    // — it executes each call server-side), then emits the final
-                    // answer as one block. On failure, fall back to a plain reply.
+                if ($useClientTools) {
+                    // Composio + NetSuite tools: AiMe runs the tool loop itself
+                    // (non-streamed — it executes each call server-side), then
+                    // emits the final answer as one block. On failure, fall back
+                    // to a plain reply.
                     try {
                         [$reply, $inputTokens, $outputTokens] =
-                            $this->completeWithComposioTools($client, $conversation, $selectedModel, $composioKeys);
+                            $this->completeWithClientTools($client, $conversation, $selectedModel, $composioKeys, $netsuite);
                         $reply = trim($reply);
                         if ($reply !== '') {
                             $this->emit('delta', ['text' => $reply]);
@@ -361,7 +375,7 @@ class ChatController extends Controller
                         $handled = true;
                     } catch (Throwable $e) {
                         report($e);
-                        Log::warning('Composio tools unavailable; answering without tools', [
+                        Log::warning('Connected tools unavailable; answering without tools', [
                             'user_id' => $userId,
                             'error' => $e->getMessage(),
                         ]);
@@ -371,28 +385,32 @@ class ChatController extends Controller
                 }
 
                 if (! $handled) {
-                    if ($mcp !== []) {
-                        // Native tool use, streamed: Anthropic runs the MCP tools
-                        // server-side and streams the final text. Text-only history.
+                    $webTools = $this->webToolDefs();
+
+                    if ($mcp !== [] || $webTools !== []) {
+                        // Beta endpoint: MCP servers and/or Claude's native web
+                        // search + fetch (all server-side). Anthropic runs them
+                        // and streams the final text. Text-only history. On
+                        // failure, fall back to a plain reply.
                         try {
                             $stream = $client->beta->messages->createStream(
                                 maxTokens: $maxTokens,
                                 messages: $this->textHistory($conversation),
                                 model: $selectedModel,
                                 system: $this->buildSystemPrompt($conversation),
-                                mcpServers: $mcp,
-                                betas: [(string) config('services.anthropic.mcp_beta', 'mcp-client-2025-04-04')],
+                                mcpServers: $mcp !== [] ? $mcp : null,
+                                tools: $webTools !== [] ? $webTools : null,
+                                betas: $this->betaFlags($mcp !== [], $webTools !== []),
                             );
                         } catch (Throwable $e) {
-                            // A connected MCP server is unreachable or misconfigured
-                            // (e.g. a wrong server URL). Don't fail the whole chat —
-                            // answer without tools and tell the user.
                             report($e);
-                            Log::warning('MCP stream unavailable; answering without tools', [
+                            Log::warning('Beta tool stream unavailable; answering without tools', [
                                 'user_id' => $userId,
                                 'error' => $e->getMessage(),
                             ]);
-                            $toolNote = "_⚠️ Couldn't reach your connected tools just now — answering without them. Check the server URL under Integrations._\n\n";
+                            $toolNote = $mcp !== []
+                                ? "_⚠️ Couldn't reach your connected tools just now — answering without them. Check the server URL under Integrations._\n\n"
+                                : "_⚠️ Couldn't use web search just now — answering without it._\n\n";
                         }
                     }
 
@@ -525,6 +543,10 @@ class ChatController extends Controller
         $conversation->skill_id = $skillId > 0
             ? Skill::query()->where('user_id', $userId)->whereKey($skillId)->value('id')
             : null;
+
+        // Session toggle: when on, skip the confirm-before-destructive-actions
+        // guardrail (applied per turn from the chat UI).
+        $conversation->auto_approve = $request->boolean('auto_approve');
         $conversation->save();
 
         $attachments = $this->storeAttachments($request, $conversation, $hasFiles);
@@ -574,7 +596,15 @@ class ChatController extends Controller
      */
     private function recentMessages(Conversation $conversation): Collection
     {
-        $messages = $conversation->messages()->orderBy('id')->get();
+        $query = $conversation->messages()->orderBy('id');
+
+        // Once compacted, only replay messages newer than the summary — the
+        // summary (injected into the system prompt) stands in for the rest.
+        if ($conversation->summary_through_id) {
+            $query->where('id', '>', $conversation->summary_through_id);
+        }
+
+        $messages = $query->get();
         $historyLimit = (int) config('services.anthropic.history_limit', 40);
 
         if ($historyLimit > 0 && $messages->count() > $historyLimit) {
@@ -658,24 +688,87 @@ class ChatController extends Controller
     }
 
     /**
-     * Run a client-side tool-use loop over the user's Composio tools. Because
-     * Composio's MCP endpoint needs an `x-api-key` header that Anthropic's MCP
-     * connector can't send, AiMe executes each tool call itself (server-side,
-     * with the API key) and feeds the result back to Claude until it stops
-     * calling tools. Returns [reply, inputTokens, outputTokens].
+     * Claude's native server-side web tools (search + fetch), or [] when the
+     * feature is off. Anthropic executes these itself; we just declare them.
+     *
+     * @return list<BetaWebSearchTool20250305|BetaWebFetchTool20250910>
+     */
+    private function webToolDefs(): array
+    {
+        if (! config('services.anthropic.web_tools', false)) {
+            return [];
+        }
+
+        $maxUses = (int) config('services.anthropic.web_tool_max_uses', 5);
+
+        // Web search is GA; web fetch is beta and separately toggleable.
+        $defs = [BetaWebSearchTool20250305::with(maxUses: $maxUses)];
+
+        if ($this->webFetchOn()) {
+            $defs[] = BetaWebFetchTool20250910::with(maxUses: $maxUses);
+        }
+
+        return $defs;
+    }
+
+    private function webFetchOn(): bool
+    {
+        return (bool) config('services.anthropic.web_tools', false)
+            && (bool) config('services.anthropic.web_fetch', true);
+    }
+
+    /**
+     * Beta header flags required for the active beta features.
+     *
+     * @return list<string>
+     */
+    private function betaFlags(bool $mcp, bool $webTools): array
+    {
+        $flags = [];
+
+        if ($mcp) {
+            $flags[] = (string) config('services.anthropic.mcp_beta', 'mcp-client-2025-04-04');
+        }
+
+        // Web fetch is beta; web search is GA and needs no flag. Only add the
+        // fetch beta when fetch is actually enabled.
+        if ($webTools && $this->webFetchOn()) {
+            $flags[] = (string) config('services.anthropic.web_fetch_beta', 'web-fetch-2025-09-10');
+        }
+
+        return $flags;
+    }
+
+    /**
+     * Run a client-side tool-use loop over the user's connected tools (Composio
+     * toolkits and/or the native NetSuite integration). AiMe executes each tool
+     * call itself server-side and feeds the result back to Claude until it stops
+     * calling tools — the Composio MCP endpoint needs an `x-api-key` header the
+     * MCP connector can't send, and NetSuite needs OAuth 1.0a request signing.
+     * Returns [reply, inputTokens, outputTokens].
      *
      * @param  list<string>  $toolkitKeys
      * @return array{0: string, 1: int, 2: int}
      */
-    private function completeWithComposioTools(Client $client, Conversation $conversation, string $model, array $toolkitKeys): array
+    private function completeWithClientTools(Client $client, Conversation $conversation, string $model, array $toolkitKeys, bool $netsuite): array
     {
         $composio = app(ComposioService::class);
+        $netsuiteService = app(NetsuiteService::class);
+
         $schemas = $composio->toolSchemas($toolkitKeys);
 
-        if ($schemas === []) {
-            throw new RuntimeException('No Composio tools available for this user.');
+        if ($netsuite) {
+            $schemas = array_merge($schemas, $netsuiteService->toolSchemas());
         }
 
+        if ($schemas === []) {
+            throw new RuntimeException('No connected tools available for this user.');
+        }
+
+        // Custom (client-executed) tools as beta params. We use the beta
+        // endpoint so Claude's native, server-side web search + fetch can run
+        // alongside the user's connected tools in the same loop — otherwise a
+        // user with Slack/NetSuite connected would lose web access entirely.
         $tools = [];
         foreach ($schemas as $schema) {
             $properties = is_array($schema['input_schema']['properties'] ?? null)
@@ -686,12 +779,15 @@ class ChatController extends Controller
                 'is_string',
             ));
 
-            $tools[] = Tool::with(
-                inputSchema: InputSchema::with(properties: $properties, required: $required),
+            $tools[] = BetaTool::with(
+                inputSchema: BetaInputSchema::with(properties: $properties, required: $required),
                 name: $schema['name'],
                 description: $schema['description'],
             );
         }
+
+        $webTools = $this->webToolDefs();
+        $tools = array_merge($tools, $webTools);
 
         $messages = $this->textHistory($conversation);
         $system = $this->buildSystemPrompt($conversation);
@@ -704,12 +800,13 @@ class ChatController extends Controller
         $outputTokens = 0;
 
         for ($round = 0; $round < $maxRounds; $round++) {
-            $message = $client->messages->create(
+            $message = $client->beta->messages->create(
                 maxTokens: $maxTokens,
                 messages: $messages,
                 model: $model,
                 system: $system,
                 tools: $tools,
+                betas: $this->betaFlags(false, $webTools !== []),
             );
 
             $inputTokens += $message->usage->inputTokens;
@@ -719,68 +816,77 @@ class ChatController extends Controller
             $toolUses = [];
 
             foreach ($message->content as $block) {
-                if ($block instanceof TextBlock) {
+                if ($block instanceof BetaTextBlock) {
                     $reply .= $block->text;
-                    $assistantContent[] = TextBlockParam::with(text: $block->text);
-                } elseif ($block instanceof ToolUseBlock) {
+                    $assistantContent[] = BetaTextBlockParam::with(text: $block->text);
+                } elseif ($block instanceof BetaToolUseBlock) {
                     $toolUses[] = $block;
-                    $assistantContent[] = ToolUseBlockParam::with(
+                    $assistantContent[] = BetaToolUseBlockParam::with(
                         id: $block->id,
-                        input: $block->input,
+                        input: (array) $block->input,
                         name: $block->name,
                     );
                 }
+                // Server-side web tool blocks resolve within the same response;
+                // they need no client handling and aren't replayed.
             }
 
             if ($message->stopReason !== 'tool_use' || $toolUses === []) {
                 return [$reply, $inputTokens, $outputTokens];
             }
 
-            $messages[] = MessageParam::with(content: $assistantContent, role: 'assistant');
+            $messages[] = BetaMessageParam::with(content: $assistantContent, role: 'assistant');
 
             $results = [];
             foreach ($toolUses as $toolUse) {
-                $result = $user !== null
-                    ? $composio->execute($user, $toolUse->name, $toolUse->input)
-                    : ['ok' => false, 'output' => 'No user context.'];
+                if ($user === null) {
+                    $result = ['ok' => false, 'output' => 'No user context.'];
+                } elseif ($netsuiteService->isNetsuiteTool($toolUse->name)) {
+                    $result = $netsuiteService->execute($user, $toolUse->name, (array) $toolUse->input);
+                } else {
+                    $result = $composio->execute($user, $toolUse->name, (array) $toolUse->input);
+                }
 
                 $content = is_string($result['output'])
                     ? $result['output']
                     : (string) json_encode($result['output']);
 
-                $results[] = ToolResultBlockParam::with(
+                $results[] = BetaToolResultBlockParam::with(
                     toolUseID: $toolUse->id,
                     content: $content !== '' ? $content : '(no output)',
                     isError: ! $result['ok'],
                 );
             }
 
-            $messages[] = MessageParam::with(content: $results, role: 'user');
+            $messages[] = BetaMessageParam::with(content: $results, role: 'user');
         }
 
         return [$reply, $inputTokens, $outputTokens];
     }
 
     /**
-     * Complete a turn with the user's MCP servers attached. Anthropic runs the
-     * MCP tool calls server-side (looping internally) and returns the final
-     * text plus mcp_tool_use / mcp_tool_result blocks in one response.
+     * Complete a turn with server-side tools attached — the user's MCP servers
+     * and/or Claude's native web search + fetch. Anthropic runs the tool calls
+     * server-side (looping internally) and returns the final text in one
+     * response.
      *
-     * Note: the MCP path sends text-only history — per-message image/PDF
+     * Note: this path sends text-only history — per-message image/PDF
      * re-sending is a chat-only feature for now.
      *
      * @param  list<BetaRequestMCPServerURLDefinition>  $mcp
+     * @param  list<BetaWebSearchTool20250305|BetaWebFetchTool20250910>  $webTools
      * @return array{0: string, 1: int, 2: int} [reply, inputTokens, outputTokens]
      */
-    private function completeWithMcp(Client $client, Conversation $conversation, string $model, array $mcp): array
+    private function completeWithMcp(Client $client, Conversation $conversation, string $model, array $mcp, array $webTools = []): array
     {
         $message = $client->beta->messages->create(
             maxTokens: config('services.anthropic.max_tokens', 4096),
             messages: $this->textHistory($conversation),
             model: $model,
             system: $this->buildSystemPrompt($conversation),
-            mcpServers: $mcp,
-            betas: [(string) config('services.anthropic.mcp_beta', 'mcp-client-2025-04-04')],
+            mcpServers: $mcp !== [] ? $mcp : null,
+            tools: $webTools !== [] ? $webTools : null,
+            betas: $this->betaFlags($mcp !== [], $webTools !== []),
         );
 
         $reply = '';
@@ -891,6 +997,102 @@ class ChatController extends Controller
         return response()->json([
             'conversations' => $this->conversationList($request, $projectId),
         ]);
+    }
+
+    /**
+     * Compact a conversation: summarize the transcript so far into a running
+     * summary and record the last message it covers. Future turns then replay
+     * only newer messages (the summary stands in for the rest), keeping context
+     * and cost bounded on long chats — the way Claude's /compact works.
+     */
+    public function compact(Request $request, Conversation $conversation): JsonResponse
+    {
+        $this->ensureOwner($request, $conversation);
+
+        $apiKey = config('services.anthropic.key');
+
+        if (blank($apiKey)) {
+            return response()->json([
+                'message' => 'The chat is not configured yet. Add ANTHROPIC_API_KEY to your .env file.',
+            ], 503);
+        }
+
+        $messages = $conversation->messages()->orderBy('id')->get();
+
+        // Need at least a full exchange to have anything worth compacting.
+        if ($messages->count() < 2) {
+            return response()->json([
+                'message' => 'This conversation is too short to compact.',
+            ], 422);
+        }
+
+        $transcript = $messages
+            ->map(fn (Message $m): string => ($m->role === 'assistant' ? 'Assistant' : 'User').': '.trim((string) $m->content))
+            ->implode("\n\n");
+
+        // Fold any prior summary in so repeated compaction stays cumulative.
+        if (filled($conversation->summary)) {
+            $transcript = "Summary of the conversation before this point:\n"
+                .$conversation->summary."\n\n---\n\n".$transcript;
+        }
+
+        try {
+            $client = new Client(apiKey: $apiKey);
+
+            $message = $client->messages->create(
+                maxTokens: (int) config('services.anthropic.max_tokens', 4096),
+                messages: [
+                    ['role' => 'user', 'content' => "Transcript to compact:\n\n".$transcript],
+                ],
+                model: $conversation->model ?: (string) config('services.anthropic.model'),
+                system: (string) config('services.anthropic.compact_prompt'),
+            );
+
+            $summary = '';
+
+            foreach ($message->content as $block) {
+                if ($block instanceof TextBlock) {
+                    $summary .= $block->text;
+                }
+            }
+
+            $summary = trim($summary);
+
+            if ($summary === '') {
+                throw new RuntimeException('The API returned an empty summary.');
+            }
+
+            $conversation->summary = $summary;
+            $conversation->summary_through_id = (int) $messages->last()->id;
+            $conversation->prompt_tokens += $message->usage->inputTokens;
+            $conversation->completion_tokens += $message->usage->outputTokens;
+            $conversation->save();
+
+            app(TokenBudget::class)->record(
+                $request->user(),
+                $message->usage->inputTokens + $message->usage->outputTokens,
+            );
+
+            return response()->json([
+                'compacted' => true,
+                'summary' => $summary,
+                'usage' => [
+                    'prompt_tokens' => $conversation->prompt_tokens,
+                    'completion_tokens' => $conversation->completion_tokens,
+                ],
+            ]);
+        } catch (Throwable $e) {
+            Log::error('Conversation compaction failed', [
+                'user_id' => $request->user()->id,
+                'conversation_id' => $conversation->id,
+                'error' => $e->getMessage(),
+            ]);
+            report($e);
+
+            return response()->json([
+                'message' => 'Sorry — could not compact this conversation right now. Please try again.',
+            ], 502);
+        }
     }
 
     /**
@@ -1044,6 +1246,13 @@ class ChatController extends Controller
     private function buildSystemPrompt(Conversation $conversation): string
     {
         $system = (string) config('services.anthropic.system_prompt');
+
+        // A compacted conversation's earlier messages are replaced by this
+        // summary so context stays bounded (see recentMessages()).
+        if (filled($conversation->summary)) {
+            $system .= "\n\n## Summary of the earlier conversation\n".$conversation->summary;
+        }
+
         $project = $conversation->project;
 
         if ($project && filled($project->instructions)) {
@@ -1056,11 +1265,27 @@ class ChatController extends Controller
             $system .= "\n\n## Active skill: {$skill->name}\n".$skill->instructions;
         }
 
+        // Tell the model it can actually browse the web when the web tools are
+        // active, so it stops claiming it can't. Web tools now run on every path
+        // (plain, MCP, and the connected-tools loop).
+        if ($this->webToolDefs() !== [] && filled(config('services.anthropic.web_tools_prompt'))) {
+            $system .= "\n\n".(string) config('services.anthropic.web_tools_prompt');
+        }
+
+        // Make the model aware that any reply can be downloaded as a file from
+        // the chat UI, so it writes exportable content instead of refusing.
+        if (filled(config('services.anthropic.files_prompt'))) {
+            $system .= "\n\n".(string) config('services.anthropic.files_prompt');
+        }
+
         // When the user has connected tools, require confirmation before any
-        // destructive tool action (create/update/delete/send/…).
+        // destructive tool action (create/update/delete/send/…) — unless the
+        // conversation has auto-approve on (the chat's session toggle).
         if (config('services.anthropic.tool_safety', true)
+            && ! $conversation->auto_approve
             && ($conversation->user?->mcpServers()->where('enabled', true)->exists()
-                || $conversation->user?->composioConnections()->where('status', 'active')->exists())) {
+                || $conversation->user?->composioConnections()->where('status', 'active')->exists()
+                || ($conversation->user !== null && app(NetsuiteService::class)->enabledFor($conversation->user)))) {
             $system .= "\n\n".(string) config('services.anthropic.tool_safety_prompt');
         }
 

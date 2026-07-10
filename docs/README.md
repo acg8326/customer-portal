@@ -18,6 +18,7 @@ for CW Global People.
 | ---------------------------------------- | -------------------------------------------------------------------- |
 | [getting-started.md](getting-started.md) | How to set up, run, and log in                                       |
 | [features.md](features.md)               | Every feature currently in the app                                   |
+| [composio-integrations.md](composio-integrations.md) | Composio integrations — API quirks, toolkit modes, add/debug playbook |
 | [tech-stack.md](tech-stack.md)           | Frameworks, libraries, and project layout                            |
 | [changelog.md](changelog.md)             | What we've changed from the base starter kit                         |
 | [roadmap.md](roadmap.md)                 | Parked features & future plans (chat persistence, memory, streaming) |

@@ -45,7 +45,9 @@ class TokenBudget
      */
     public function exceeded(User $user): bool
     {
-        if (! $this->enabled()) {
+        // Not tracking, or no cap configured (limit <= 0 = unlimited) → never
+        // blocks. Usage is still recorded and shown; there's just no ceiling.
+        if (! $this->enabled() || $this->limit() <= 0) {
             return false;
         }
 
@@ -72,6 +74,10 @@ class TokenBudget
     /**
      * A display-ready snapshot of the user's budget (for the dashboard).
      *
+     * `enabled` here means "a cap is actively enforced" — false when tracking is
+     * off OR the limit is unlimited (<= 0). Usage (`used`) is always reported so
+     * the dashboard can show current usage even with no cap.
+     *
      * @return array{
      *     enabled: bool,
      *     used: int,
@@ -88,11 +94,12 @@ class TokenBudget
 
         $limit = $this->limit();
         $used = (int) $user->token_budget_used;
-        $remaining = max(0, $limit - $used);
-        $percent = $limit > 0 ? min(100, round($used / $limit * 100, 1)) : 0.0;
+        $capActive = $this->enabled() && $limit > 0;
+        $remaining = $capActive ? max(0, $limit - $used) : 0;
+        $percent = $capActive ? min(100, round($used / $limit * 100, 1)) : 0.0;
 
         return [
-            'enabled' => $this->enabled(),
+            'enabled' => $capActive,
             'used' => $used,
             'limit' => $limit,
             'remaining' => $remaining,

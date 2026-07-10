@@ -3,6 +3,142 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Chat: UI polish — no empty "thinking" bubble, clearer auto-approve switch
+
+- **No dead space while thinking.** The empty assistant placeholder bubble that
+  showed alongside the "AiMe is thinking…" indicator is now hidden until the first
+  token streams in, so there's no blank pill above the indicator.
+- **Auto-approve is a labelled switch, not a relabelling button.** The header
+  control now reads **Auto-approve** with an on/off toggle (clearer than a button
+  whose text swapped between "Confirm actions" and "Auto-approve").
+- **Confirmation before enabling auto-approve.** Flipping the switch on opens a
+  dialog ("Auto-approve tool actions this session?") explaining that every
+  connected-tool action — including create/update/delete/send — will run without
+  asking; the state only flips once confirmed. Turning it off is immediate.
+
+## Chat: Word (.docx) answer export + removed Composio NetSuite
+
+- **Word export.** Added a **Word (.docx)** button to the answer action row, next
+  to PDF. Like the XLSX writer, the `.docx` is built as minimal OOXML via
+  `ZipArchive` (no PhpWord) — Markdown → headings, bullet/ordered lists,
+  blockquotes, fenced code, GFM tables, and inline bold/italic/code.
+  ([`ChatExportService::docx`](../app/Services/ChatExportService.php),
+  `POST /chat/export/docx`.)
+- **Images:** confirmed out of scope — Claude reads images but can't generate
+  them (no image-generation model wired in); noted in the docs rather than faked.
+- **Removed Composio NetSuite.** The native NetSuite integration (TBA + OAuth2)
+  fully replaces it, so the stale Composio NetSuite artifacts (3 auth configs + 1
+  connected account) were deleted from Composio. Config/toolkits already carried
+  no NetSuite entry.
+
+## Chat: fix web browsing with tools connected + tell the model it can browse/export
+
+- **Web access now works when tools are connected.** Web search/fetch was only
+  attached on the plain and MCP paths — as soon as a user connected Composio
+  (Slack) or NetSuite, the connected-tools loop ran without web tools and the
+  assistant said it couldn't browse. The connected-tools loop
+  ([`ChatController::completeWithClientTools`](../app/Http/Controllers/ChatController.php))
+  now runs on the **beta Messages endpoint** and **merges Claude's server-side web
+  tools alongside the custom tools**, so Slack/NetSuite and web browsing work in
+  the same turn.
+- **Capability notes in the system prompt.** The model was over-refusing ("I can't
+  browse the web", "I can't generate PDFs") even though both are available. Added
+  two configurable, appended notes: a **web-access note** (while web tools are on)
+  and a **downloadable-answers note** (replies can be downloaded as PDF/Markdown/
+  CSV/XLSX from the buttons under each message, so it should write exportable
+  content rather than refuse). Override with `ANTHROPIC_WEB_TOOLS_PROMPT` and
+  `ANTHROPIC_FILES_PROMPT`. Reflection tests cover both notes.
+
+## Chat: auto-approve tool actions (per-session toggle)
+
+- Added an **Auto-approve / Confirm actions** toggle in the chat header (shown
+  only when tools are connected). When set to auto-approve, the
+  confirm-before-destructive-actions guardrail is **omitted** from the system
+  prompt for that conversation, so the assistant acts without asking each time.
+  Default stays **Confirm actions** (safe). The toggle is remembered in the
+  browser (session-wide) and sent with each message; the backend records it on
+  `conversations.auto_approve` per turn and
+  [`ChatController::buildSystemPrompt`](../app/Http/Controllers/ChatController.php)
+  skips the guardrail when it's on. New migration + boolean cast; reflection
+  tests cover both states.
+
+## Chat: web search/fetch + export answers (PDF / MD / CSV / XLSX)
+
+- **Web access.** Enabled Claude's **native server-side web tools** — `web_search`
+  + `web_fetch` — so AiMe can look things up online and read a URL. Wired into the
+  plain and MCP chat paths (Composio/NetSuite tools still take precedence when
+  connected); failures fall back to a plain answer. Config: `ANTHROPIC_WEB_TOOLS`,
+  `ANTHROPIC_WEB_TOOL_MAX_USES`, `ANTHROPIC_WEB_FETCH_BETA`.
+- **Export answers.** Each assistant answer gets a **Copy / .md / PDF** action row,
+  plus **CSV / XLSX** when it contains a table.
+  [`ChatExportService`](../app/Services/ChatExportService.php) renders Markdown →
+  PDF (CommonMark + the already-installed dompdf), and parses GFM tables into CSV
+  (native) or XLSX (a minimal OOXML writer via `ZipArchive` — **no PhpSpreadsheet**,
+  so no `ext-gd` dependency). New endpoints `POST /chat/export/{pdf,sheet}` +
+  [`ChatExportController`](../app/Http/Controllers/ChatExportController.php).
+  `.md` downloads happen client-side. Tests cover PDF/CSV/XLSX + table parsing.
+
+## NetSuite: add OAuth 2.0 as a second auth method (alongside TBA)
+
+- The native NetSuite integration now supports **two auth methods**, chosen with
+  a toggle in the connect dialog:
+  - **Token-Based Auth (TBA)** — the original, recommended for a backend.
+  - **OAuth 2.0 (Authorization Code Grant)** — paste the OAuth app's Client
+    ID/Secret + Account ID, get redirected to NetSuite to approve, and we store
+    + **auto-refresh** the access/refresh tokens. Redirect URI:
+    `<APP_URL>/integrations/netsuite/callback`.
+- `netsuite_connections` gains `auth_type` + OAuth2 columns (`client_id`,
+  `client_secret`, `access_token`, `refresh_token`, `token_expires_at`, all
+  encrypted); the TBA columns became nullable (new migration).
+  [`NetsuiteService`](../app/Services/NetsuiteService.php) signs each request for
+  TBA or sends a Bearer token (refreshing first) for OAuth2;
+  [`NetsuiteController`](../app/Http/Controllers/NetsuiteController.php) gains an
+  OAuth2 `callback`. New config: `NETSUITE_APP_DOMAIN`, `NETSUITE_OAUTH_SCOPES`,
+  `NETSUITE_OAUTH_REDIRECT`, `NETSUITE_OAUTH_REFRESH_LEEWAY`. Note: either method
+  still needs the NetSuite token/role to have REST Web Services + record
+  permissions. Tests cover both flows.
+
+## NetSuite: native Token-Based Auth integration (replaces Composio)
+
+- **Why:** Composio's NetSuite toolkit is **OAuth 2.0 only**, and those tokens
+  can't reliably read records — data calls 401 with `INVALID_LOGIN` even on an
+  ACTIVE connection. NetSuite's own recommended server-to-server method is
+  **Token-Based Authentication (TBA / OAuth 1.0a)**, so we built NetSuite as a
+  **native integration** and removed it from Composio.
+- **Connect flow:** the NetSuite card now opens a native modal collecting five
+  values — **Account ID** + the Integration record's **Consumer Key/Secret** +
+  an Access Token's **Token ID/Secret**. On submit the server signs a test
+  SuiteQL query and, if the token is accepted, stores the four secrets
+  **encrypted** (`netsuite_connections` table,
+  [`NetsuiteConnection`](../app/Models/NetsuiteConnection.php)). No OAuth
+  redirect, no Composio.
+- **In chat:** AiMe gets two tools — **`netsuite_suiteql`** (read-only SuiteQL)
+  and **`netsuite_get_record`** — run server-side with each request OAuth
+  1.0a-signed by [`NetsuiteService`](../app/Services/NetsuiteService.php). They
+  share the existing client-side tool loop with Composio, dispatched by the
+  `netsuite_` name prefix.
+- New: [`NetsuiteController`](../app/Http/Controllers/NetsuiteController.php),
+  routes `integrations/netsuite/{connect,test}` + `DELETE integrations/netsuite`,
+  `services.netsuite` config (`NETSUITE_*`), and `NetsuiteTest` coverage.
+  NetSuite dropped from `services.composio.toolkits` and the Composio card.
+
+## Chat: paste images + compact a conversation
+
+- **Paste an image into the composer (Ctrl/Cmd+V).** A screenshot or copied
+  image on the clipboard becomes an attachment (validated against the same
+  size/count limits as the paperclip picker); plain-text pastes are untouched.
+  ([`ChatPanel.vue`](../resources/js/components/ChatPanel.vue))
+- **Compact a conversation, like Claude's `/compact`.** A **Compact** button in
+  the chat header summarizes the transcript so far into a running summary stored
+  on the conversation (`conversations.summary` + `summary_through_id`, new
+  migration). Future turns replay only messages **newer than the summary**, which
+  is injected into the system prompt — long chats keep answering without
+  ballooning context or cost. The transcript stays visible with a small
+  "compacted" pill; re-running folds in newer messages. New endpoint
+  `POST /chat/conversations/{id}/compact`; prompt configurable via
+  `ANTHROPIC_COMPACT_PROMPT` (default in `config/services.php`). Guard-path tests
+  added.
+
 ## Integrations: "Currently connected" table + catalog search
 
 - Added a **"Currently connected apps"** overview **table** at the top of the
@@ -18,6 +154,104 @@ customized so far, newest first.
   **details/description** there instead.
 - Added **Airtable** as a Composio toolkit (Productivity & data) —
   `COMPOSIO_AIRTABLE_AUTH_CONFIG` in `config/services.php` + a card.
+
+## Token limit is now optional (default unlimited)
+
+- The per-user token cap is now **off by default**: `USAGE_TOKEN_LIMIT=0` (the new
+  default) means **unlimited** — usage is still tracked and shown on the
+  Dashboard, but chat is never blocked. Set a positive value to re-enable a cap.
+- `TokenBudget::exceeded()` treats `limit <= 0` as unlimited; `snapshot()` reports
+  `enabled=false` (cap inactive) so the Dashboard shows its "no limit configured"
+  view with the live usage count. Tests cover the unlimited path.
+
+## Fix: NetSuite tool execution (version + connected account)
+
+- **Bug:** even with tools loaded, executing a NetSuite tool 404'd
+  ("Tool … not found"). Composio's `execute` endpoint defaults `version` to an
+  empty `00000000_00`, which doesn't exist for versioned toolkits.
+- **Fix:** `execute()` now sends `version` (from `services.composio.tool_version`,
+  default `latest`) — matching the version we list schemas with. New
+  `COMPOSIO_TOOL_VERSION` env (used for both listing and execution).
+- **Also:** `execute()` now pins to the **`connected_account_id`** we recorded
+  (plus `user_id`) so a stale/duplicate account (e.g. left over after a NetSuite
+  credential reset) can't be picked — a common `INVALID_LOGIN` cause. And
+  `disconnect()` best-effort deletes the remote Composio account so reconnects
+  start clean. Documented in [`composio-integrations.md`](composio-integrations.md) §3g–3i.
+- Tests: execute sends `version`; execute pins to the recorded connected account.
+
+## Fix: NetSuite (and other) tools not loading in chat
+
+- **Bug:** connected NetSuite showed no tools in chat ("I only have Slack"). Two
+  causes in `ComposioService::toolSchemas()`:
+  1. Composio's tools list returns **zero** for some toolkits (NetSuite) unless
+     `toolkit_versions=latest` is passed — the default version resolves empty.
+  2. `important=true` alone is unreliable per toolkit — great for Slack (surfaces
+     its late-alphabet send/search tools) but for NetSuite it returns only 5
+     create/OAuth tools and **no read tools**.
+- **Fix:** fetch tools in two deduped passes per toolkit — the curated
+  `important` set **plus** the general list — always with
+  `toolkit_versions=latest`, capped at `COMPOSIO_MAX_TOOLS` (default raised
+  40 → 100). NetSuite now exposes all 86 tools (incl. `GET_CUSTOMER`,
+  `LIST_RECORDS`, `RUN_SUITEQL_QUERY`); Slack keeps its send/search.
+- Tests: `toolkit_versions=latest` is always sent; the two lists merge + de-dupe.
+- Documented the whole Composio integration surface (API quirks, toolkit modes,
+  endpoints, add/debug playbook) in
+  [`docs/composio-integrations.md`](composio-integrations.md), linked from the
+  docs index and features.
+
+## Brand logo (favicon + in-app)
+
+- Replaced the placeholder mark with the **CW Global People** logo everywhere:
+  - **Browser/favicon** — regenerated `public/favicon.ico` (16/32/48),
+    `favicon-16x16.png`, `favicon-32x32.png`, and `apple-touch-icon.png`
+    (white-flattened for iOS) from the logo; removed the stale default
+    `favicon.svg` and updated the `<link>`s in `app.blade.php`.
+  - **In-app** — `AppLogoIcon.vue` now renders the real logo image (used by the
+    sidebar, header, and auth screens); `AppLogo.vue` dropped the gold box that
+    clashed with the full-colour mark.
+- Moved the loose logo files out of `resources/` into
+  `resources/js/assets/brand/` (`cwgp-logo.webp` + `cwgp-logo-alt.avif`); the
+  webp is imported through Vite (fingerprinted at build).
+
+## NetSuite connect (bring-your-own OAuth app)
+
+- Made **NetSuite** a live Composio toolkit with a **credentials** flow (like
+  ToppFive): the user pastes their NetSuite integration record's **Client ID /
+  Secret** and **Account ID** in a connect dialog — **no Composio dashboard step**.
+  Our server **creates the Composio auth config on the fly** (`use_custom_auth`,
+  OAUTH2) from those credentials, then links with the account id as
+  `connection_data.subdomain`, and returns the consent URL.
+- Introduced two toolkit **modes** in `config/services.php`:
+  - `managed` (Slack/GitHub/HubSpot/Airtable) — Composio owns the OAuth app,
+    one-click connect (a pre-set `auth_config_id`).
+  - `credentials` (NetSuite) — declares `credentials` (secret fields → create
+    the auth config), `initiation` (non-secret fields → `connection_data`), and
+    `optional_scopes` (opt-in scope toggles, e.g. **SuiteAnalytics Connect**).
+- Service: `initiateWithCredentials()` + `createCustomAuthConfig()`; the link
+  logic is shared. Controller: `POST /integrations/composio/{toolkit}/connect`
+  validates the fields and returns `{redirect_url}` as JSON (secrets can't ride
+  a GET redirect); the UI posts it and navigates. Managed toolkits keep the GET
+  one-click connect.
+- UI: a **credentials modal** (Client ID, Client Secret as password, Account ID,
+  SuiteAnalytics checkbox) with inline errors; scrolls if long.
+- Config: OAuth scopes via `COMPOSIO_NETSUITE_SCOPES`
+  (default `restlets,rest_webservices`). Redirect URI for the NetSuite app is
+  Composio's `https://backend.composio.dev/api/v1/auth-apps/add`.
+- Tests: credentials toolkit offered without a pre-set auth config; connect
+  validates creds+account id (no Composio call); connect creates the auth config
+  (scopes merged) and links with the subdomain.
+
+## NetSuite guide (OAuth 2.0) + roomier guide modal
+
+- Rewrote the **NetSuite** setup guide to the correct **OAuth 2.0 (Authorization
+  Code Grant)** flow brokered through Composio: enable SuiteCloud features →
+  create an Integration record with the Composio redirect URI → copy Client
+  ID/Secret (shown once) → find the Account ID → connect. Replaces the old
+  Token-Based Auth steps.
+- The **setup-guide modal** is now wider (`sm:max-w-2xl`) and its step list
+  **scrolls** (`max-h-[60vh]`) so long guides aren't cramped or clipped; long
+  values (like the redirect URI) wrap instead of overflowing.
+  ([`Integrations.vue`](../resources/js/pages/Integrations.vue))
 
 ## Deploy script
 

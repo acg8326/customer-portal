@@ -71,6 +71,24 @@ test('disabling the limit never blocks a user', function () {
     expect($budget->exceeded($user->fresh()))->toBeFalse();
 });
 
+test('token_limit 0 is unlimited: still tracks usage but never blocks', function () {
+    config(['usage.enabled' => true, 'usage.token_limit' => 0]);
+
+    $user = User::factory()->create();
+    $budget = app(TokenBudget::class);
+
+    $budget->record($user, 5_000_000);
+
+    expect($budget->exceeded($user->fresh()))->toBeFalse();
+
+    $snap = $budget->snapshot($user->fresh());
+
+    // Usage is still tracked/shown, but the cap is reported inactive so the
+    // dashboard renders the "no limit configured" view.
+    expect($snap['used'])->toBe(5_000_000)
+        ->and($snap['enabled'])->toBeFalse();
+});
+
 test('the dashboard shows the token usage snapshot', function () {
     $user = User::factory()->create();
     app(TokenBudget::class)->record($user, 400);

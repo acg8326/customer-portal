@@ -7,6 +7,7 @@ use App\Models\UserIntegration;
 use App\Rules\PublicHttpUrl;
 use App\Services\ComposioService;
 use App\Services\N8nDispatcher;
+use App\Services\NetsuiteService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -25,18 +26,52 @@ class IntegrationController extends Controller
             'connections' => $this->connections($request),
             'mcpServers' => $this->mcpServers($request),
             'composio' => $this->composio($request),
+            'netsuite' => $this->netsuite($request),
         ]);
+    }
+
+    /**
+     * Native NetSuite (TBA) connection state for the current user. Secrets are
+     * never returned — only the account id and status.
+     *
+     * @return array{enabled: bool, connected: bool, accountId: string|null, authType: string|null, status: string|null, lastError: string|null}
+     */
+    private function netsuite(Request $request): array
+    {
+        $service = app(NetsuiteService::class);
+        $conn = $service->connectionFor($request->user());
+
+        return [
+            'enabled' => $service->enabled(),
+            // A 'pending' OAuth2 row (awaiting consent) isn't a live connection.
+            'connected' => $conn !== null && $conn->status !== 'pending',
+            'accountId' => $conn?->account_id,
+            'authType' => $conn?->auth_type,
+            'status' => $conn?->status,
+            'lastError' => $conn?->last_error,
+        ];
     }
 
     /**
      * Composio-brokered per-user tool connections (enabled flag + each
      * configured toolkit annotated with the current user's connection state).
+     * `fields` lists any values the user must enter before consent (e.g.
+     * NetSuite's account id), so the UI can prompt for them.
      *
-     * @return array{enabled: bool, toolkits: array<int, array{key: string, name: string, connected: bool}>}
+     * @return array{enabled: bool, toolkits: array<int, array{key: string, name: string, connected: bool, mode: string, credentialFields: array<int, array{name: string, label: string}>, fields: array<int, array{name: string, label: string}>, optionalScopes: array<int, array{name: string, label: string}>}>}
      */
     private function composio(Request $request): array
     {
         $composio = app(ComposioService::class);
+
+        $pairs = static function (array $map): array {
+            $out = [];
+            foreach ($map as $name => $label) {
+                $out[] = ['name' => $name, 'label' => $label];
+            }
+
+            return $out;
+        };
 
         $toolkits = [];
         foreach ($composio->toolkits() as $key => $meta) {
@@ -44,6 +79,12 @@ class IntegrationController extends Controller
                 'key' => $key,
                 'name' => $meta['name'],
                 'connected' => $composio->isConnected($request->user(), $key),
+                'mode' => $meta['mode'],
+                // Secret fields (create the auth config) + non-secret initiation
+                // fields + optional scope toggles, so the UI can prompt for them.
+                'credentialFields' => $pairs($meta['credentials']),
+                'fields' => $pairs($meta['initiation']),
+                'optionalScopes' => $pairs($meta['optional_scopes']),
             ];
         }
 

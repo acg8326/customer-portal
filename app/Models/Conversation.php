@@ -17,11 +17,24 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * @property string $model
  * @property int $prompt_tokens
  * @property int $completion_tokens
+ * @property string|null $summary
+ * @property int|null $summary_through_id
+ * @property bool $auto_approve
  */
 #[Fillable(['title', 'model', 'project_id'])]
 class Conversation extends Model
 {
     use SoftDeletes;
+
+    /**
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'auto_approve' => 'boolean',
+        ];
+    }
 
     /**
      * @return BelongsTo<User, $this>
