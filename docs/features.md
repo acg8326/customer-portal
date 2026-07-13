@@ -18,14 +18,20 @@ are wired up and reachable but don't have real functionality yet.
 | Two-factor authentication (2FA) | ✅ Active  | under Settings → Security             | TOTP + recovery codes                     |
 | Passkeys (WebAuthn)             | ✅ Active  | under Settings → Security             | Passwordless login option                 |
 
-**Roles & user management (admin-only).** Two roles: **`admin`** and **`user`**
-(a `role` column on `users`). Since there's no public registration, **admins add
-members** on the **Users** page (`/users`, in the sidebar for admins only) —
-create with name/email/password/role, or remove a user (can't remove yourself).
-New accounts are pre-verified so they can sign in immediately. Enforced by the
-`admin` middleware ([`EnsureUserIsAdmin`](../app/Http/Middleware/EnsureUserIsAdmin.php))
-on the routes and by `User::isAdmin()`; non-admins get a 403. Seeded admins:
-`alex.gordo@cwglobalpeople.com`, `dennies.salenga@cwglobalpeople.com`.
+**Roles & user management (admin-only).** Three roles: **`super_admin`**,
+**`admin`**, and **`user`** (a `role` column on `users`). Since there's no
+public registration, **admins add members** on the **Users** page (`/users`,
+in the sidebar for admins only) — create with name/email/password/role (the
+UI only assigns admin/user; super admin is granted by migration/seed), or
+remove a user (can't remove yourself; **only the super admin can remove a
+super admin**). New accounts are pre-verified so they can sign in immediately.
+Enforced by the `admin` middleware
+([`EnsureUserIsAdmin`](../app/Http/Middleware/EnsureUserIsAdmin.php)) on the
+routes and by `User::isAdmin()` (true for both admin tiers) /
+`User::isSuperAdmin()`; non-admins get a 403. The super admin additionally
+sees org-wide insights — the dashboard's **Answer feedback** card. Seeded:
+`alex.gordo@cwglobalpeople.com` (super admin, promoted by a data migration on
+deploy too), `dennies.salenga@cwglobalpeople.com` (admin).
 Backend: [`UserController`](../app/Http/Controllers/UserController.php).
 
 **Rate limiting:** The login / 2FA / passkey throttles were **removed** — you can
@@ -70,7 +76,7 @@ A bespoke, modern "AI product" login:
 
 | Page                  | Route                  | Status                                                   |
 | --------------------- | ---------------------- | -------------------------------------------------------- |
-| Dashboard             | `/dashboard`           | ✅ Token-usage meter + conversation/project/skill counts |
+| Dashboard             | `/dashboard`           | ✅ Token-usage meter, answer-feedback card, stat tiles   |
 | Chat                  | `/chat`                | ✅ Working — AI chat powered by the Claude API (see §7)  |
 | Integrations          | `/integrations`        | ✅ **MCP servers + n8n live**; other cards placeholder    |
 | Settings → Profile    | `/settings/profile`    | ✅ Update name & email, delete account                   |
@@ -245,7 +251,16 @@ the **Claude API**.
   **Retry** (regenerates — the server deletes it and replays history), the last
   user message has a **pencil** (edit and resend — replaces the last exchange),
   and every assistant reply has **thumbs up/down** stored on
-  `messages.feedback` for later analysis (`POST /chat/messages/{id}/feedback`).
+  `messages.feedback` (`POST /chat/messages/{id}/feedback`). Feedback surfaces
+  on the **Dashboard**'s "Answer feedback" card — **super admin only**: the
+  whole team's thumbs (up/down totals + recent items with user, excerpt, and
+  chat). Everyone else gets no card (`DASHBOARD_FEEDBACK_LIMIT`, default 8
+  recent items).
+- **Starred chats:** the star icon on any sidebar chat pins it into a
+  **Starred** section above **Recents**, like claude.ai
+  (`conversations.starred`, `POST /chat/conversations/{id}/star`). Starring
+  doesn't bump recency — within each section, chats stay ordered by last
+  activity. The Starred section only appears when something is starred.
 - **Per-user chat preferences:** a "Chat preferences" box under **Settings →
   Profile** (`users.chat_preferences`, max 2000 chars) is appended to the system
   prompt as `## User preferences` — standing instructions like "always answer in
@@ -257,7 +272,9 @@ the **Claude API**.
 - **Web search + fetch (Claude's native tools).** With `ANTHROPIC_WEB_TOOLS=true`
   (default) the assistant can **search the web** and **read a URL** using
   Anthropic's server-side `web_search` + `web_fetch` tools — no scraping infra on
-  our side. Active on **every** chat path — plain, MCP, and the connected-tools
+  our side. A **Web toggle** in the chat header (like claude.ai's) turns it off
+  per session — answers then use only the model + connected tools, and the web
+  tools' schema/prompt tokens are saved. Active on **every** chat path — plain, MCP, and the connected-tools
   (Composio/NetSuite) loop, so a user with Slack/NetSuite connected keeps web
   access too (the connected-tools loop runs on the beta endpoint and merges the
   web tools alongside the custom tools). If the tools error, the turn falls back
@@ -508,7 +525,8 @@ Automation, ERP & business systems, Productivity & data). Each card has a
   extraction. Also **project-level files** (a persistent per-project knowledge
   base, vs. per-message attachments) and **auto-updating memory** — see
   [roadmap.md](roadmap.md).
-- **Streaming** chat responses (replies arrive all at once after a wait).
-- Real **Dashboard** content — only placeholder cards.
+- **Token-by-token streaming during connected-tools turns** — plain and MCP
+  chats stream live, but when the Composio/NetSuite tool loop runs, the final
+  answer arrives as one block after the tools finish.
 - A custom brand **logo icon** — still the default Laravel mark; only the text
   was rebranded.

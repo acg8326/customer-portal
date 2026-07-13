@@ -114,6 +114,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('chat/messages/{message}/feedback', [ChatController::class, 'feedback'])
         ->middleware('throttle:search')
         ->name('chat.feedback');
+    Route::post('chat/conversations/{conversation}/star', [ChatController::class, 'star'])
+        ->middleware('throttle:search')
+        ->name('chat.star');
     Route::post('chat/conversations/{conversation}/compact', [ChatController::class, 'compact'])
         ->middleware('throttle:chat')
         ->name('chat.compact');

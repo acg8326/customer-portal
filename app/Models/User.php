@@ -40,16 +40,29 @@ class User extends Authenticatable implements PasskeyUser
     /** @use HasFactory<UserFactory> */
     use HasFactory, Notifiable, PasskeyAuthenticatable, TwoFactorAuthenticatable;
 
+    public const ROLE_SUPER_ADMIN = 'super_admin';
+
     public const ROLE_ADMIN = 'admin';
 
     public const ROLE_USER = 'user';
 
     /**
      * Whether this user is an administrator (can manage other users).
+     * Super admins are administrators too.
      */
     public function isAdmin(): bool
     {
-        return $this->role === self::ROLE_ADMIN;
+        return $this->role === self::ROLE_ADMIN || $this->isSuperAdmin();
+    }
+
+    /**
+     * Whether this user is the super administrator — everything an admin can
+     * do, plus org-wide insights (the dashboard's answer-feedback card) and
+     * managing other admins.
+     */
+    public function isSuperAdmin(): bool
+    {
+        return $this->role === self::ROLE_SUPER_ADMIN;
     }
 
     /**

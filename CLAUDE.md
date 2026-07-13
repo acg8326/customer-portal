@@ -26,10 +26,12 @@ a collapsible left sidebar, PostgreSQL.
 
 ## Key facts
 
-- Roles: `admin` and `user` (column on `users`). Admins manage members at
-  `/users` (no public registration). Seeded admins: `alex.gordo@cwglobalpeople.com`
-  and `dennies.salenga@cwglobalpeople.com` (`password` — change after first login).
-  `admin@example.com` / `password` is a seeded local-dev login (role `user`).
+- Roles: `super_admin`, `admin`, `user` (column on `users`). Admins manage
+  members at `/users` (no public registration); the super admin additionally
+  sees org-wide insights (dashboard feedback card) and can manage admins.
+  Seeded: `alex.gordo@cwglobalpeople.com` (super admin) and
+  `dennies.salenga@cwglobalpeople.com` (admin) — `password`, change after first
+  login. `admin@example.com` / `password` is a seeded local-dev login (role `user`).
 - Run: `composer run dev`. Build: `npm run build`.
 - Claude chat needs `ANTHROPIC_API_KEY` in `.env`.
 

@@ -16,18 +16,20 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // Administrators — can add/remove users. Change the password after first login.
+        // Administrators — can add/remove users. Change the password after first
+        // login. The super admin additionally sees org-wide insights (the
+        // dashboard's answer-feedback card) and can manage other admins.
         $admins = [
-            'alex.gordo@cwglobalpeople.com' => 'Alex Gordo',
-            'dennies.salenga@cwglobalpeople.com' => 'Dennies Salenga',
+            'alex.gordo@cwglobalpeople.com' => ['Alex Gordo', User::ROLE_SUPER_ADMIN],
+            'dennies.salenga@cwglobalpeople.com' => ['Dennies Salenga', User::ROLE_ADMIN],
         ];
 
-        foreach ($admins as $email => $name) {
+        foreach ($admins as $email => [$name, $role]) {
             User::updateOrCreate(
                 ['email' => $email],
                 [
                     'name' => $name,
-                    'role' => User::ROLE_ADMIN,
+                    'role' => $role,
                     'password' => Hash::make('password'),
                     'email_verified_at' => now(),
                 ],

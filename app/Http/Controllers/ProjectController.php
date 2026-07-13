@@ -71,13 +71,16 @@ class ProjectController extends Controller
             'uploads' => ChatController::uploadsProps(),
             'skills' => ChatController::skillOptions($request),
             'mcpEnabled' => ChatController::mcpEnabled($request),
+            'webEnabled' => ChatController::webToolsConfigured(),
             'continuePrompt' => (string) config('services.anthropic.continue_prompt'),
             'conversations' => $project->conversations()
+                ->orderByDesc('starred')
                 ->latest('updated_at')
-                ->get(['id', 'title', 'updated_at'])
+                ->get(['id', 'title', 'starred', 'updated_at'])
                 ->map(fn (Conversation $c): array => [
                     'id' => $c->id,
                     'title' => $c->title,
+                    'starred' => $c->starred,
                     'updated_at' => $c->updated_at?->toIso8601String(),
                 ])
                 ->all(),

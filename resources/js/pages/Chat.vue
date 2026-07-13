@@ -27,6 +27,7 @@ defineProps<{
     };
     skills: { id: number; name: string; icon: string | null }[];
     mcpEnabled: boolean;
+    webEnabled: boolean;
     continuePrompt?: string;
 }>();
 </script>
@@ -42,6 +43,7 @@ defineProps<{
             :uploads="uploads"
             :skills="skills"
             :mcp-enabled="mcpEnabled"
+            :web-enabled="webEnabled"
             :continue-prompt="continuePrompt"
             full-bleed
         />

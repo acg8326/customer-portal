@@ -20,6 +20,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * @property string|null $summary
  * @property int|null $summary_through_id
  * @property bool $auto_approve
+ * @property bool $starred
  * @property array<string, mixed>|null $pending_tool_state
  */
 #[Fillable(['title', 'model', 'project_id'])]
@@ -34,6 +35,7 @@ class Conversation extends Model
     {
         return [
             'auto_approve' => 'boolean',
+            'starred' => 'boolean',
             // Paused tool-loop state (hard approval gate). Encrypted — it
             // carries tool inputs and intermediate results.
             'pending_tool_state' => 'encrypted:array',

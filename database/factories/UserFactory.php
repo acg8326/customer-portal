@@ -48,6 +48,16 @@ class UserFactory extends Factory
     }
 
     /**
+     * Indicate that the user is the super administrator.
+     */
+    public function superAdmin(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'role' => User::ROLE_SUPER_ADMIN,
+        ]);
+    }
+
+    /**
      * Indicate that the model's email address should be unverified.
      */
     public function unverified(): static

@@ -71,6 +71,13 @@ use Throwable;
 class ChatController extends Controller
 {
     /**
+     * Per-turn opt-out of Claude's web tools (the chat header's Web search
+     * toggle). Set from the request before any tool definitions are built;
+     * webToolDefs() returning [] also drops the web-answer style prompt.
+     */
+    private bool $webToolsOff = false;
+
+    /**
      * Render the chat page with the user's saved conversations and model list.
      */
     public function index(Request $request): Response
@@ -88,8 +95,18 @@ class ChatController extends Controller
             'uploads' => self::uploadsProps(),
             'skills' => self::skillOptions($request),
             'mcpEnabled' => self::mcpEnabled($request),
+            'webEnabled' => self::webToolsConfigured(),
             'continuePrompt' => (string) config('services.anthropic.continue_prompt'),
         ]);
+    }
+
+    /**
+     * Whether Claude's native web tools are configured on — so the chat UI
+     * can offer the per-session Web search toggle.
+     */
+    public static function webToolsConfigured(): bool
+    {
+        return (bool) config('services.anthropic.web_tools', false);
     }
 
     /**
@@ -187,6 +204,7 @@ class ChatController extends Controller
             'model' => ['required', 'string', Rule::in(array_keys(Config::array('services.anthropic.models')))],
             'skill_id' => ['nullable', 'integer'],
             'auto_approve' => ['nullable', 'boolean'],
+            'web' => ['nullable', 'boolean'],
             'files' => [$uploads['enabled'] ? 'nullable' : 'prohibited', 'array', 'max:'.$uploads['maxFiles']],
             'files.*' => ['file', 'mimes:'.$uploads['mimes'], 'max:'.$uploads['maxSizeKb']],
         ]);
@@ -350,6 +368,7 @@ class ChatController extends Controller
             'skill_id' => ['nullable', 'integer'],
             'auto_approve' => ['nullable', 'boolean'],
             'thinking' => ['nullable', 'boolean'],
+            'web' => ['nullable', 'boolean'],
             'retry' => ['nullable', 'boolean'],
             'replace_last' => ['nullable', 'boolean'],
             'files' => [$uploads['enabled'] ? 'nullable' : 'prohibited', 'array', 'max:'.$uploads['maxFiles']],
@@ -616,6 +635,10 @@ class ChatController extends Controller
      */
     private function startTurn(Request $request, bool $hasFiles): array
     {
+        // The chat header's Web search toggle: absent defaults to ON, an
+        // explicit '0' turns Claude's web tools off for this turn.
+        $this->webToolsOff = $request->has('web') && ! $request->boolean('web');
+
         $userId = $request->user()->id;
         $content = (string) $request->input('content');
         $selectedModel = (string) $request->input('model');
@@ -981,7 +1004,7 @@ class ChatController extends Controller
      */
     private function webToolDefs(): array
     {
-        if (! config('services.anthropic.web_tools', false)) {
+        if ($this->webToolsOff || ! config('services.anthropic.web_tools', false)) {
             return [];
         }
 
@@ -1929,14 +1952,17 @@ class ChatController extends Controller
     }
 
     /**
-     * The current user's conversations, most recently updated first.
-     * Scoped to a project, or to standalone chats when $projectId is null.
+     * The current user's conversations — starred pinned first, then most
+     * recently updated. Scoped to a project, or to standalone chats when
+     * $projectId is null.
      *
-     * @return array<int, array{id: int, title: string, updated_at: string|null}>
+     * @return array<int, array{id: int, title: string, starred: bool, updated_at: string|null}>
      */
     private function conversationList(Request $request, ?int $projectId = null): array
     {
-        $query = $request->user()->conversations()->latest('updated_at');
+        $query = $request->user()->conversations()
+            ->orderByDesc('starred')
+            ->latest('updated_at');
 
         if ($projectId === null) {
             $query->whereNull('project_id');
@@ -1944,13 +1970,29 @@ class ChatController extends Controller
             $query->where('project_id', $projectId);
         }
 
-        return $query->get(['id', 'title', 'updated_at'])
+        return $query->get(['id', 'title', 'starred', 'updated_at'])
             ->map(fn (Conversation $c): array => [
                 'id' => $c->id,
                 'title' => $c->title,
+                'starred' => $c->starred,
                 'updated_at' => $c->updated_at?->toIso8601String(),
             ])
             ->all();
+    }
+
+    /**
+     * Toggle a conversation's star. Starring is not "activity" — it does not
+     * bump updated_at, so the recency order under the pinned block is stable.
+     */
+    public function star(Request $request, Conversation $conversation): JsonResponse
+    {
+        $this->ensureOwner($request, $conversation);
+
+        $conversation->starred = ! $conversation->starred;
+        $conversation->timestamps = false;
+        $conversation->save();
+
+        return response()->json(['starred' => $conversation->starred]);
     }
 
     /**

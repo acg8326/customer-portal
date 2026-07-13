@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Head, router, useForm, usePage } from '@inertiajs/vue3';
-import { Plus, Shield, Trash2, User as UserIcon } from '@lucide/vue';
+import { Crown, Plus, Shield, Trash2, User as UserIcon } from '@lucide/vue';
 import { computed, ref } from 'vue';
 import { Button } from '@/components/ui/button';
 import {
@@ -26,7 +26,7 @@ type ManagedUser = {
     id: number;
     name: string;
     email: string;
-    role: 'admin' | 'user';
+    role: 'super_admin' | 'admin' | 'user';
     created_at: string | null;
     is_self: boolean;
 };
@@ -38,6 +38,12 @@ const flash = computed(
     () =>
         page.props.flash as { success?: string | null; error?: string | null },
 );
+
+// Only the super admin may remove a super admin account (enforced
+// server-side too — this just hides the dead-end button).
+const canRemove = (u: ManagedUser) =>
+    !u.is_self &&
+    (u.role !== 'super_admin' || page.props.auth?.user?.role === 'super_admin');
 
 const open = ref(false);
 const form = useForm<{
@@ -150,16 +156,28 @@ function confirmRemove() {
                             <span
                                 class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
                                 :class="
-                                    u.role === 'admin'
-                                        ? 'border-brand-gold/40 bg-brand-gold/10 text-brand-gold'
-                                        : 'border-border bg-muted/60 text-muted-foreground'
+                                    u.role === 'user'
+                                        ? 'border-border bg-muted/60 text-muted-foreground'
+                                        : 'border-brand-gold/40 bg-brand-gold/10 text-brand-gold'
                                 "
                             >
                                 <component
-                                    :is="u.role === 'admin' ? Shield : UserIcon"
+                                    :is="
+                                        u.role === 'super_admin'
+                                            ? Crown
+                                            : u.role === 'admin'
+                                              ? Shield
+                                              : UserIcon
+                                    "
                                     class="size-3"
                                 />
-                                {{ u.role === 'admin' ? 'Admin' : 'User' }}
+                                {{
+                                    u.role === 'super_admin'
+                                        ? 'Super admin'
+                                        : u.role === 'admin'
+                                          ? 'Admin'
+                                          : 'User'
+                                }}
                             </span>
                         </td>
                         <td class="px-4 py-3 text-muted-foreground">
@@ -167,7 +185,7 @@ function confirmRemove() {
                         </td>
                         <td class="px-4 py-3 text-right">
                             <Button
-                                v-if="!u.is_self"
+                                v-if="canRemove(u)"
                                 variant="ghost"
                                 size="sm"
                                 class="text-muted-foreground"

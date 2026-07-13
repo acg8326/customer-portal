@@ -29,6 +29,7 @@ defineProps<{
     };
     skills: { id: number; name: string; icon: string | null }[];
     mcpEnabled: boolean;
+    webEnabled: boolean;
     continuePrompt?: string;
 }>();
 
@@ -55,6 +56,7 @@ const railClass = computed(() =>
                     :uploads="uploads"
                     :skills="skills"
                     :mcp-enabled="mcpEnabled"
+                    :web-enabled="webEnabled"
                     :continue-prompt="continuePrompt"
                     :project-id="project.id"
                 >

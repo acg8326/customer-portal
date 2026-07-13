@@ -63,6 +63,11 @@ class UserController extends Controller
             return back()->with('error', "You can't remove your own account.");
         }
 
+        // Only the super admin can remove a super admin account.
+        if ($user->isSuperAdmin() && ! $request->user()->isSuperAdmin()) {
+            return back()->with('error', 'Only the super admin can remove this account.');
+        }
+
         $user->delete();
 
         return back()->with('success', 'User removed.');

@@ -3,6 +3,42 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Super admin role + Starred/Recents sidebar sections
+
+- **New `super_admin` role** above `admin`: everything an admin can do, plus
+  org-wide insights and managing admins. `alex.gordo@cwglobalpeople.com` is
+  promoted by a **data migration** (runs on prod deploy — no re-seed needed)
+  and the seeder. `User::isAdmin()` stays true for both admin tiers;
+  `isSuperAdmin()` gates the extras. Only the super admin can remove a super
+  admin account (server-enforced; the Users page hides the dead-end button and
+  shows a **Super admin** crown badge).
+- **Feedback card is super-admin-only now.** The dashboard's Answer feedback
+  card (below) moved from admins to the super admin; admins and members get no
+  card (`feedback` prop is null).
+- **Sidebar sections like claude.ai:** the chat sidebar now groups chats under
+  **Starred** and **Recents** headers; the Starred section only appears when
+  something is starred.
+
+## Chat: starred chats + web-search toggle; Dashboard: answer-feedback card
+
+- **Starred chats.** A star icon on every sidebar chat pins it to the top,
+  like claude.ai (`conversations.starred`,
+  `POST /chat/conversations/{id}/star`, throttled). Starring doesn't bump
+  `updated_at`, so recency order under the pinned block stays stable. Optimistic
+  UI with server reconciliation; works on the project chat sidebar too.
+- **Web search toggle.** A **Web** button in the chat header (next to
+  Thinking) turns Claude's web tools off per session — the turn then ships no
+  `web_search`/`web_fetch` schemas and drops the web-answer style prompt
+  (token savings), forcing knowledge-base/tools-only answers. ON by default,
+  remembered in the browser, sent per message (`web=0`); shown only when
+  `ANTHROPIC_WEB_TOOLS` is configured on.
+- **Dashboard "Answer feedback" card.** The chat thumbs finally surface
+  somewhere: up/down totals plus the most recent rated answers (excerpt, chat
+  title, when). **Admins see the whole team's feedback** (with who left it);
+  members see their own. List length via `DASHBOARD_FEEDBACK_LIMIT` (new
+  `config/dashboard.php`, default 8). Also refreshed the stale "not built yet"
+  docs list (dashboard placeholders, streaming).
+
 ## Security hardening: hard tool-approval gate, CSP, upload scanning + new docs
 
 - **Hard approval gate (the big one).** Destructive Composio/NetSuite tool

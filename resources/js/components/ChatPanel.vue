@@ -8,6 +8,7 @@ import {
     FileText,
     FileType,
     FoldVertical,
+    Globe,
     Image as ImageIcon,
     Menu,
     Paperclip,
@@ -62,6 +63,7 @@ type ChatMessage = {
 type ConversationSummary = {
     id: number;
     title: string;
+    starred?: boolean;
 };
 
 // A tool call awaiting Approve/Cancel at the hard gate.
@@ -93,6 +95,7 @@ const props = withDefaults(
         uploads?: UploadConfig;
         skills?: SkillOption[];
         mcpEnabled?: boolean;
+        webEnabled?: boolean;
         continuePrompt?: string;
     }>(),
     {
@@ -106,6 +109,7 @@ const props = withDefaults(
         }),
         skills: () => [],
         mcpEnabled: false,
+        webEnabled: false,
         continuePrompt:
             'Continue exactly where you left off — do not repeat what you already wrote.',
     },
@@ -197,6 +201,17 @@ const thinkingOn = ref(localStorage.getItem(THINKING_KEY) === '1');
 function toggleThinking() {
     thinkingOn.value = !thinkingOn.value;
     localStorage.setItem(THINKING_KEY, thinkingOn.value ? '1' : '0');
+}
+
+// Web search toggle (like claude.ai's). ON by default; persisted in the
+// browser; sent with every message. OFF forces knowledge-base/tools-only
+// answers and saves the web tools' tokens.
+const WEB_KEY = 'chat:webSearch';
+const webOn = ref(localStorage.getItem(WEB_KEY) !== '0');
+
+function toggleWeb() {
+    webOn.value = !webOn.value;
+    localStorage.setItem(WEB_KEY, webOn.value ? '1' : '0');
 }
 
 // stop_reason of the last completed reply — 'max_tokens' shows "Continue".
@@ -519,11 +534,53 @@ async function selectConversation(id: number) {
     }
 }
 
+// Starred chats stay pinned above the rest; within each group the existing
+// (recency) order is kept — Array.sort is stable.
+function sortConversations() {
+    conversations.value = [...conversations.value].sort(
+        (a, b) => Number(b.starred ?? false) - Number(a.starred ?? false),
+    );
+}
+
 function bumpToTop(id: number, title: string) {
+    const starred =
+        conversations.value.find((c) => c.id === id)?.starred ?? false;
+
     conversations.value = [
-        { id, title },
+        { id, title, starred },
         ...conversations.value.filter((c) => c.id !== id),
     ];
+    sortConversations();
+}
+
+// Toggle a star optimistically; revert if the server disagrees.
+async function toggleStar(id: number) {
+    const c = conversations.value.find((x) => x.id === id);
+
+    if (!c) {
+        return;
+    }
+
+    c.starred = !c.starred;
+    sortConversations();
+
+    try {
+        const res = await fetch(`/chat/conversations/${id}/star`, {
+            method: 'POST',
+            headers: jsonHeaders(),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            throw new Error();
+        }
+
+        c.starred = data.starred === true;
+    } catch {
+        c.starred = !c.starred;
+    }
+
+    sortConversations();
 }
 
 type SendOptions = {
@@ -613,6 +670,7 @@ async function send(opts: SendOptions = {}) {
             form.append('model', model.value);
             form.append('auto_approve', autoApprove.value ? '1' : '0');
             form.append('thinking', thinkingOn.value ? '1' : '0');
+            form.append('web', webOn.value ? '1' : '0');
 
             if (skillId.value != null) {
                 form.append('skill_id', String(skillId.value));
@@ -637,6 +695,7 @@ async function send(opts: SendOptions = {}) {
                     skill_id: skillId.value,
                     auto_approve: autoApprove.value,
                     thinking: thinkingOn.value,
+                    web: webOn.value,
                     retry: isRetry,
                     replace_last: opts.replaceLast === true,
                 }),
@@ -1003,6 +1062,7 @@ onMounted(() => {
                 @new="newChat"
                 @select="selectConversation"
                 @remove="removeConversation"
+                @star="toggleStar"
             />
         </aside>
 
@@ -1027,6 +1087,7 @@ onMounted(() => {
                     @new="newChat"
                     @select="selectConversation"
                     @remove="removeConversation"
+                    @star="toggleStar"
                 />
             </aside>
         </div>
@@ -1068,6 +1129,25 @@ onMounted(() => {
                 </div>
 
                 <div class="flex items-center gap-2">
+                    <button
+                        v-if="webEnabled"
+                        type="button"
+                        class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors"
+                        :class="
+                            webOn
+                                ? 'border-brand-gold/50 bg-brand-gold/10 text-brand-gold'
+                                : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
+                        "
+                        :title="
+                            webOn
+                                ? 'Web search is ON — answers can use live web results with sources. Click to turn off.'
+                                : 'Web search is OFF — answers use only the knowledge base and connected tools. Click to turn on.'
+                        "
+                        @click="toggleWeb"
+                    >
+                        <Globe class="size-3.5" />
+                        Web
+                    </button>
                     <button
                         type="button"
                         class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors"
