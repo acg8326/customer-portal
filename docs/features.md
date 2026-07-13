@@ -29,7 +29,8 @@ Enforced by the `admin` middleware
 ([`EnsureUserIsAdmin`](../app/Http/Middleware/EnsureUserIsAdmin.php)) on the
 routes and by `User::isAdmin()` (true for both admin tiers) /
 `User::isSuperAdmin()`; non-admins get a 403. The super admin additionally
-sees org-wide insights — the dashboard's **Answer feedback** card. Seeded:
+sees org-wide insights — the dashboard's **Answer feedback** and **Team
+usage** cards — and can set the org-wide token limit in-app. Seeded:
 `alex.gordo@cwglobalpeople.com` (super admin, promoted by a data migration on
 deploy too), `dennies.salenga@cwglobalpeople.com` (admin).
 Backend: [`UserController`](../app/Http/Controllers/UserController.php).
@@ -76,7 +77,7 @@ A bespoke, modern "AI product" login:
 
 | Page                  | Route                  | Status                                                   |
 | --------------------- | ---------------------- | -------------------------------------------------------- |
-| Dashboard             | `/dashboard`           | ✅ Token-usage meter, answer-feedback card, stat tiles   |
+| Dashboard             | `/dashboard`           | ✅ Usage meter, team usage + limit settings (super admin), feedback card, stat tiles |
 | Chat                  | `/chat`                | ✅ Working — AI chat powered by the Claude API (see §7)  |
 | Integrations          | `/integrations`        | ✅ **MCP servers + n8n live**; other cards placeholder    |
 | Settings → Profile    | `/settings/profile`    | ✅ Update name & email, delete account                   |
@@ -209,6 +210,15 @@ the **Claude API**.
   "resets on <date>" message until the window rolls over). Turn tracking off
   entirely with `USAGE_LIMIT_ENABLED=false`.
   ([`TokenBudget`](../app/Services/TokenBudget.php).)
+- **Team usage screen + in-app limit settings (super admin):** the Dashboard's
+  **Team usage** card lists every member's tokens in their current window
+  (heaviest first, with per-user progress bars against the limit) plus the
+  **org total**, and a gear opens inline settings to change the **token limit
+  per user** and **period days** for everyone at once. UI-set values are
+  stored in the new `app_settings` table
+  ([`AppSettings`](../app/Services/AppSettings.php)) and **override the
+  `.env` defaults** immediately — no redeploy; clearing falls back to `.env`.
+  (`PATCH /dashboard/usage-settings`, super admin only.)
 - **Prompt caching + history trimming:** the system prompt is cached
   (`cache_control`) on **every** path — plain, MCP/web (beta), and the
   connected-tools loop. Because the API builds the cache prefix tools → system →

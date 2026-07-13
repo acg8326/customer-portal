@@ -121,13 +121,23 @@ class TokenBudget
         return (bool) config('usage.enabled', true);
     }
 
+    /**
+     * Limit and period read the UI-set override first (app_settings, super
+     * admin editable on the dashboard) and fall back to the .env config.
+     */
     private function limit(): int
     {
-        return (int) config('usage.token_limit', 1_000_000);
+        return app(AppSettings::class)->int(
+            'usage.token_limit',
+            (int) config('usage.token_limit', 1_000_000),
+        );
     }
 
     private function periodDays(): int
     {
-        return max(1, (int) config('usage.period_days', 30));
+        return max(1, app(AppSettings::class)->int(
+            'usage.period_days',
+            (int) config('usage.period_days', 30),
+        ));
     }
 }

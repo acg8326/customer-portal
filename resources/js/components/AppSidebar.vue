@@ -27,7 +27,10 @@ import { chat, dashboard } from '@/routes';
 import type { NavItem } from '@/types';
 
 const page = usePage();
-const isAdmin = computed(() => page.props.auth?.user?.role === 'admin');
+// Both admin tiers manage users (matches User::isAdmin() server-side).
+const isAdmin = computed(() =>
+    ['admin', 'super_admin'].includes(page.props.auth?.user?.role ?? ''),
+);
 
 const mainNavItems = computed<NavItem[]>(() => [
     {

@@ -3,6 +3,35 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Team usage dashboard, in-app usage limits + super admin nav fix
+
+- **Fix: Users nav hidden for the super admin.** The sidebar checked
+  `role === 'admin'` literally, so the promotion to `super_admin` hid the
+  Users item (the backend still allowed access — only the menu vanished).
+  Now both admin tiers see it, matching `User::isAdmin()`.
+- **Team usage card (super admin):** every member's tokens in their current
+  window, heaviest first, with progress bars against the limit, reset dates,
+  and the **org total**.
+- **In-app usage settings:** a gear on the card edits the **per-user token
+  limit** and **period days** for the whole org at once. Stored in the new
+  `app_settings` key-value table ([`AppSettings`](../app/Services/AppSettings.php),
+  cached as one map, invalidated on write); `TokenBudget` reads the override
+  first and falls back to `.env` — so limits change without a redeploy, and
+  clearing a setting restores the `.env` value.
+  (`PATCH /dashboard/usage-settings`, super admin only, validated 0–1B / 1–365.)
+
+## Prompt accuracy: real company description + Word in export list
+
+- **Company context now describes the real business** (from
+  cwglobalpeople.com): CWGP is a recruitment & staffing company (sourcing,
+  vetting, onboarding, payroll for client businesses), and the portal is the
+  INTERNAL company-wide assistant — the block keeps the explicit "don't assume
+  HR" instruction. So AiMe can answer "what does our company do?" correctly.
+- **files_prompt now lists Word (.docx)** — it still described the export
+  buttons as Copy/Markdown/PDF/CSV/XLSX from before DOCX export shipped, so
+  AiMe never mentioned Word when describing its own capabilities.
+  prompts.md synced (PDF regenerated locally).
+
 ## Office file understanding, automatic memory + company-context prompt
 
 - **Office file understanding.** Chat uploads now accept **DOCX / XLSX / CSV /

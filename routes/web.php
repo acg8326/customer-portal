@@ -17,6 +17,8 @@ Route::get('/', function () {
 
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('dashboard', [DashboardController::class, 'index'])->name('dashboard');
+    Route::patch('dashboard/usage-settings', [DashboardController::class, 'updateUsageSettings'])
+        ->name('dashboard.usage-settings');
 
     // User management — admins only (no public registration).
     Route::middleware('admin')->group(function () {

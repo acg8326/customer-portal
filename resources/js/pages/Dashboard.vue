@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { Head } from '@inertiajs/vue3';
+import { Head, router } from '@inertiajs/vue3';
 import {
     FolderOpen,
     MessageSquareHeart,
     MessagesSquare,
+    Settings2,
     Sparkles,
     ThumbsDown,
     ThumbsUp,
+    UsersRound,
     Zap,
 } from '@lucide/vue';
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { dashboard } from '@/routes';
 
 defineOptions({
@@ -48,6 +50,20 @@ const props = defineProps<{
             when: string | null;
         }[];
     } | null;
+    // Super admin only — null hides the card entirely.
+    teamUsage: {
+        users: {
+            id: number;
+            name: string;
+            role: string;
+            used: number;
+            percent: number;
+            resets_at: string | null;
+        }[];
+        total: number;
+        limit: number;
+        period_days: number;
+    } | null;
 }>();
 
 const nf = new Intl.NumberFormat();
@@ -84,6 +100,37 @@ const barColor = computed(() => {
 
     return 'bg-brand-gold';
 });
+
+// --- Team usage (super admin) ---------------------------------------------------
+
+const editingUsage = ref(false);
+const limitDraft = ref(String(props.teamUsage?.limit ?? 0));
+const periodDraft = ref(String(props.teamUsage?.period_days ?? 30));
+
+function saveUsageSettings() {
+    router.patch(
+        '/dashboard/usage-settings',
+        {
+            token_limit: Number(limitDraft.value),
+            period_days: Number(periodDraft.value),
+        },
+        {
+            preserveScroll: true,
+            onSuccess: () => (editingUsage.value = false),
+        },
+    );
+}
+
+function resetLabel(iso: string | null): string {
+    if (!iso) {
+        return '—';
+    }
+
+    return new Date(iso).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+    });
+}
 
 const tiles = computed(() => [
     {
@@ -165,6 +212,149 @@ const tiles = computed(() => [
                     will be blocked until your allowance resets.
                 </p>
             </template>
+        </section>
+
+        <!-- Team usage + limit settings (super admin only) -->
+        <section v-if="teamUsage" class="rounded-xl border bg-card p-5">
+            <div class="mb-4 flex items-center justify-between gap-4">
+                <div class="flex items-center gap-3">
+                    <div
+                        class="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground"
+                    >
+                        <UsersRound class="size-5" />
+                    </div>
+                    <div>
+                        <h2 class="font-semibold tracking-tight">Team usage</h2>
+                        <p class="text-xs text-muted-foreground">
+                            Tokens per member in their current
+                            {{ teamUsage.period_days }}-day window ·
+                            {{
+                                teamUsage.limit > 0
+                                    ? `limit ${compact(teamUsage.limit)} each`
+                                    : 'no limit set'
+                            }}
+                        </p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <div class="text-right">
+                        <p class="text-2xl font-semibold tabular-nums">
+                            {{ compact(teamUsage.total) }}
+                        </p>
+                        <p class="text-xs text-muted-foreground">
+                            total, all members
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        class="rounded-md border p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        :title="
+                            editingUsage
+                                ? 'Close settings'
+                                : 'Set the per-user token limit and period'
+                        "
+                        @click="editingUsage = !editingUsage"
+                    >
+                        <Settings2 class="size-4" />
+                    </button>
+                </div>
+            </div>
+
+            <form
+                v-if="editingUsage"
+                class="mb-4 flex flex-wrap items-end gap-3 rounded-lg border bg-muted/30 p-3"
+                @submit.prevent="saveUsageSettings"
+            >
+                <div>
+                    <label
+                        class="mb-1 block text-xs font-medium text-muted-foreground"
+                        for="usage-limit"
+                    >
+                        Token limit per user (0 = unlimited)
+                    </label>
+                    <input
+                        id="usage-limit"
+                        v-model="limitDraft"
+                        type="number"
+                        min="0"
+                        step="50000"
+                        class="h-9 w-44 rounded-md border border-input bg-background px-3 text-sm tabular-nums outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                    />
+                </div>
+                <div>
+                    <label
+                        class="mb-1 block text-xs font-medium text-muted-foreground"
+                        for="usage-period"
+                    >
+                        Period (days)
+                    </label>
+                    <input
+                        id="usage-period"
+                        v-model="periodDraft"
+                        type="number"
+                        min="1"
+                        max="365"
+                        class="h-9 w-28 rounded-md border border-input bg-background px-3 text-sm tabular-nums outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                    />
+                </div>
+                <button
+                    type="submit"
+                    class="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+                >
+                    Save for everyone
+                </button>
+                <p class="basis-full text-xs text-muted-foreground">
+                    Applies to all members immediately. Changes here override
+                    the server's <code>.env</code> defaults.
+                </p>
+            </form>
+
+            <ul class="divide-y">
+                <li
+                    v-for="u in teamUsage.users"
+                    :key="u.id"
+                    class="flex items-center gap-3 py-2"
+                >
+                    <span class="w-44 truncate text-sm font-medium">
+                        {{ u.name }}
+                        <span
+                            v-if="u.role !== 'user'"
+                            class="ml-1 text-xs font-normal text-brand-gold"
+                            >{{
+                                u.role === 'super_admin'
+                                    ? 'super admin'
+                                    : 'admin'
+                            }}</span
+                        >
+                    </span>
+                    <div
+                        class="h-2 flex-1 overflow-hidden rounded-full bg-muted"
+                    >
+                        <div
+                            v-if="teamUsage.limit > 0"
+                            class="h-full rounded-full"
+                            :class="
+                                u.percent >= 90
+                                    ? 'bg-destructive'
+                                    : u.percent >= 75
+                                      ? 'bg-amber-500'
+                                      : 'bg-brand-gold'
+                            "
+                            :style="{ width: `${Math.min(100, u.percent)}%` }"
+                        />
+                    </div>
+                    <span
+                        class="w-24 text-right text-sm text-muted-foreground tabular-nums"
+                    >
+                        {{ compact(u.used) }}
+                    </span>
+                    <span
+                        class="hidden w-24 text-right text-xs text-muted-foreground sm:block"
+                    >
+                        resets {{ resetLabel(u.resets_at) }}
+                    </span>
+                </li>
+            </ul>
         </section>
 
         <!-- Answer feedback (super admin only) -->
