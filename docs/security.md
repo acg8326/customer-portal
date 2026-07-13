@@ -111,6 +111,16 @@ scopes (`MCP_OAUTH_SCOPES`).
 - Tool results capped (`ANTHROPIC_TOOL_RESULT_MAX_CHARS`), SuiteQL rows capped
   (`NETSUITE_SUITEQL_MAX_ROWS`) — a hostile/huge payload can't blow up a turn.
 
+## Data retention
+
+Retention is **opt-in** (`config/retention.php`): by default chats are kept
+until their owner deletes them. Setting `RETENTION_CHAT_DAYS` hard-deletes
+conversations (messages + stored attachments) idle longer than that, via the
+daily `chat:prune` schedule; soft-deleted (trashed) records purge for good
+after `RETENTION_TRASH_DAYS` (default 30). Users can always delete their own
+chats immediately. Messages are also sent to Anthropic's API at generation
+time under Anthropic's data policies.
+
 ## Known limitations
 
 - MCP tool calls execute server-side at Anthropic — for them the guardrail is

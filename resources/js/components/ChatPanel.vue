@@ -14,6 +14,7 @@ import {
     Paperclip,
     Pencil,
     RefreshCw,
+    Share2,
     Sheet as SheetIcon,
     ShieldCheck,
     Sparkles,
@@ -212,6 +213,49 @@ const webOn = ref(localStorage.getItem(WEB_KEY) !== '0');
 function toggleWeb() {
     webOn.value = !webOn.value;
     localStorage.setItem(WEB_KEY, webOn.value ? '1' : '0');
+}
+
+// Team share link for the active conversation (null = not shared).
+const shareUrl = ref<string | null>(null);
+const showShareDialog = ref(false);
+const shareBusy = ref(false);
+const shareCopied = ref(false);
+
+async function toggleShare() {
+    if (activeId.value == null || shareBusy.value) {
+        return;
+    }
+
+    shareBusy.value = true;
+    shareCopied.value = false;
+
+    try {
+        const res = await fetch(`/chat/conversations/${activeId.value}/share`, {
+            method: 'POST',
+            headers: jsonHeaders(),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            throw new Error();
+        }
+
+        shareUrl.value = data.url ?? null;
+    } catch {
+        error.value = 'Could not update sharing.';
+    } finally {
+        shareBusy.value = false;
+    }
+}
+
+async function copyShareLink() {
+    if (!shareUrl.value) {
+        return;
+    }
+
+    await navigator.clipboard.writeText(shareUrl.value);
+    shareCopied.value = true;
+    setTimeout(() => (shareCopied.value = false), 2000);
 }
 
 // stop_reason of the last completed reply — 'max_tokens' shows "Continue".
@@ -493,6 +537,8 @@ function newChat() {
     lastStopReason.value = null;
     editingIndex.value = null;
     pendingApproval.value = null;
+    shareUrl.value = null;
+    showShareDialog.value = false;
 }
 
 async function selectConversation(id: number) {
@@ -523,6 +569,7 @@ async function selectConversation(id: number) {
         lastStopReason.value = null;
         editingIndex.value = null;
         pendingApproval.value = data.pending_approval ?? null;
+        shareUrl.value = data.share_url ?? null;
 
         if (typeof data.model === 'string') {
             model.value = data.model;
@@ -1223,6 +1270,25 @@ onMounted(() => {
                         </button>
                     </div>
                     <button
+                        v-if="activeId != null"
+                        type="button"
+                        class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors"
+                        :class="
+                            shareUrl
+                                ? 'border-brand-gold/50 bg-brand-gold/10 text-brand-gold'
+                                : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
+                        "
+                        :title="
+                            shareUrl
+                                ? 'Shared — any logged-in member with the link can view. Click to manage.'
+                                : 'Share a read-only link with your team'
+                        "
+                        @click="showShareDialog = true"
+                    >
+                        <Share2 class="size-3.5" />
+                        {{ shareUrl ? 'Shared' : 'Share' }}
+                    </button>
+                    <button
                         v-if="activeId != null && messages.length > 1"
                         type="button"
                         :disabled="compacting || loading"
@@ -1711,8 +1777,7 @@ onMounted(() => {
                                         :value="String(s.id)"
                                         class="text-xs"
                                     >
-                                        {{ s.icon ? s.icon + ' ' : ''
-                                        }}{{ s.name }}
+                                        {{ s.name }}
                                     </SelectItem>
                                 </SelectContent>
                             </Select>
@@ -1846,6 +1911,58 @@ onMounted(() => {
                         @click="confirmAutoApprove"
                     >
                         Yes, auto-approve
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+
+        <!-- Share link dialog -->
+        <Dialog v-model:open="showShareDialog">
+            <DialogContent>
+                <DialogHeader>
+                    <DialogTitle>Share this chat</DialogTitle>
+                    <DialogDescription>
+                        Anyone signed in to the portal with the link can view a
+                        read-only copy of this conversation. Turning sharing off
+                        invalidates the link.
+                    </DialogDescription>
+                </DialogHeader>
+
+                <div v-if="shareUrl" class="flex items-center gap-2">
+                    <input
+                        readonly
+                        :value="shareUrl"
+                        class="h-9 flex-1 rounded-md border border-input bg-muted/40 px-3 text-xs text-muted-foreground outline-none"
+                        @focus="($event.target as HTMLInputElement).select()"
+                    />
+                    <Button
+                        variant="secondary"
+                        size="sm"
+                        @click="copyShareLink"
+                    >
+                        {{ shareCopied ? 'Copied!' : 'Copy' }}
+                    </Button>
+                </div>
+
+                <DialogFooter>
+                    <DialogClose as-child>
+                        <Button variant="secondary">Close</Button>
+                    </DialogClose>
+                    <Button
+                        v-if="!shareUrl"
+                        class="bg-brand-gold text-white hover:bg-brand-gold/90"
+                        :disabled="shareBusy"
+                        @click="toggleShare"
+                    >
+                        Create share link
+                    </Button>
+                    <Button
+                        v-else
+                        variant="destructive"
+                        :disabled="shareBusy"
+                        @click="toggleShare"
+                    >
+                        Stop sharing
                     </Button>
                 </DialogFooter>
             </DialogContent>

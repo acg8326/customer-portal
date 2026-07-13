@@ -17,22 +17,10 @@ return new class extends Migration
             $table->timestamps();
         });
 
-        Schema::table('users', function (Blueprint $table): void {
-            // Per-user opt-out of automatic memory.
-            $table->boolean('memory_enabled')->default(true);
-        });
-
-        Schema::table('conversations', function (Blueprint $table): void {
-            // Last message id already folded into the user's memory — the
-            // extraction job only reads messages after this.
-            $table->unsignedBigInteger('memory_through_id')->nullable();
-        });
     }
 
     public function down(): void
     {
         Schema::dropIfExists('memories');
-        Schema::table('users', fn (Blueprint $table) => $table->dropColumn('memory_enabled'));
-        Schema::table('conversations', fn (Blueprint $table) => $table->dropColumn('memory_through_id'));
     }
 };

@@ -176,6 +176,9 @@ class ChatController extends Controller
             'compacted' => filled($conversation->summary),
             'auto_approve' => $conversation->auto_approve,
             'pending_approval' => $this->pendingCalls($conversation) ?: null,
+            'share_url' => $conversation->share_token !== null
+                ? route('chat.shared', $conversation->share_token)
+                : null,
             'messages' => $conversation->messages()
                 ->orderBy('id')
                 ->get(['id', 'role', 'content', 'thinking', 'feedback', 'attachments'])
@@ -2031,6 +2034,58 @@ class ChatController extends Controller
     }
 
     /**
+     * Toggle a team share link. Sharing is portal-wide read-only: any logged-in
+     * member with the link can view the conversation (no editing, no thinking,
+     * no feedback — just the exchange). Toggling off invalidates the link.
+     */
+    public function share(Request $request, Conversation $conversation): JsonResponse
+    {
+        $this->ensureOwner($request, $conversation);
+
+        $conversation->share_token = $conversation->share_token === null
+            ? Str::random(48)
+            : null;
+        $conversation->timestamps = false;
+        $conversation->save();
+
+        return response()->json([
+            'shared' => $conversation->share_token !== null,
+            'url' => $conversation->share_token !== null
+                ? route('chat.shared', $conversation->share_token)
+                : null,
+        ]);
+    }
+
+    /**
+     * Read-only view of a shared conversation, for any logged-in member.
+     */
+    public function shared(string $token): Response
+    {
+        $conversation = Conversation::query()
+            ->where('share_token', $token)
+            ->with('user:id,name')
+            ->firstOrFail();
+
+        return Inertia::render('chat/Shared', [
+            'title' => $conversation->title,
+            'owner' => $conversation->user?->name,
+            'messages' => $conversation->messages()
+                ->orderBy('id')
+                ->get(['id', 'role', 'content', 'attachments'])
+                ->map(fn (Message $m): array => [
+                    'id' => $m->id,
+                    'role' => $m->role,
+                    'content' => $m->content,
+                    'attachments' => array_map(
+                        fn (array $att): string => $att['name'],
+                        $m->attachments ?? [],
+                    ),
+                ])
+                ->all(),
+        ]);
+    }
+
+    /**
      * Toggle a conversation's star. Starring is not "activity" — it does not
      * bump updated_at, so the recency order under the pinned block is stable.
      */
@@ -2043,6 +2098,48 @@ class ChatController extends Controller
         $conversation->save();
 
         return response()->json(['starred' => $conversation->starred]);
+    }
+
+    /**
+     * The "## Project files" block: each knowledge-base file's extracted text
+     * (from its upload-time sidecar), appended until the total character
+     * budget is spent — files beyond it are listed by name so the model can
+     * ask the user to trim the knowledge base.
+     */
+    private function projectFilesBlock(Project $project): string
+    {
+        $files = $project->files()->orderBy('name')->get();
+
+        if ($files->isEmpty()) {
+            return '';
+        }
+
+        $budget = (int) config('services.anthropic.uploads.project_max_chars', 100000);
+        $block = "\n\n## Project files\nReference documents attached to this project:";
+        $skipped = [];
+
+        foreach ($files as $file) {
+            $text = Storage::exists($file->path.'.extracted.txt')
+                ? trim((string) Storage::get($file->path.'.extracted.txt'))
+                : '';
+
+            if ($text === '' || mb_strlen($text) > $budget) {
+                $skipped[] = $file->name;
+
+                continue;
+            }
+
+            $block .= "\n\n### File: {$file->name}\n".$text;
+            $budget -= mb_strlen($text);
+        }
+
+        if ($skipped !== []) {
+            $block .= "\n\n(Not loaded, over the context budget: "
+                .implode(', ', $skipped)
+                .' — tell the user if you need their contents.)';
+        }
+
+        return $block;
     }
 
     /**
@@ -2070,6 +2167,13 @@ class ChatController extends Controller
             $system .= "\nUser: {$user->name}";
         }
 
+        // Reply-language setting (Settings -> Profile). Unset/auto = the
+        // persona's default: answer in whatever language the user writes.
+        if ($user !== null && filled($user->preferred_language)) {
+            $system .= "\nAlways respond in {$user->preferred_language} unless"
+                .' the user explicitly asks for another language.';
+        }
+
         // A compacted conversation's earlier messages are replaced by this
         // summary so context stays bounded (see recentMessages()).
         if (filled($conversation->summary)) {
@@ -2080,6 +2184,12 @@ class ChatController extends Controller
 
         if ($project && filled($project->instructions)) {
             $system .= "\n\n## Project instructions\n".$project->instructions;
+        }
+
+        // Project knowledge base: the extracted text of every project file,
+        // within a total budget so ten spreadsheets can't flood the context.
+        if ($project !== null) {
+            $system .= $this->projectFilesBlock($project);
         }
 
         $skill = $conversation->skill;

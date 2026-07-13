@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { router, useForm } from '@inertiajs/vue3';
+import { FileText, Loader2, Plus, Trash2 } from '@lucide/vue';
 import { ref } from 'vue';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,6 +12,8 @@ const props = defineProps<{
         name: string;
         instructions: string | null;
     };
+    files?: { id: number; name: string; size: number }[];
+    fileLimits?: { maxFiles: number; mimes: string };
 }>();
 
 const emit = defineEmits<{ (e: 'saved'): void }>();
@@ -37,6 +40,61 @@ function destroy() {
     }
 
     router.delete(`/projects/${props.project.id}`);
+}
+
+// --- Knowledge-base files -------------------------------------------------------
+
+const fileInput = ref<HTMLInputElement | null>(null);
+const uploading = ref(false);
+const fileError = ref<string | null>(null);
+
+function acceptAttr(): string {
+    return (props.fileLimits?.mimes ?? 'docx,xlsx,csv,txt,md')
+        .split(',')
+        .map((ext) => `.${ext.trim()}`)
+        .join(',');
+}
+
+function pickFiles() {
+    fileError.value = null;
+    fileInput.value?.click();
+}
+
+function uploadFiles(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    input.value = '';
+
+    if (files.length === 0) {
+        return;
+    }
+
+    uploading.value = true;
+
+    router.post(
+        `/projects/${props.project.id}/files`,
+        { files },
+        {
+            forceFormData: true,
+            preserveScroll: true,
+            onError: (errors) =>
+                (fileError.value =
+                    Object.values(errors)[0] ?? 'Upload failed.'),
+            onFinish: () => (uploading.value = false),
+        },
+    );
+}
+
+function removeFile(id: number) {
+    router.delete(`/projects/${props.project.id}/files/${id}`, {
+        preserveScroll: true,
+    });
+}
+
+function sizeLabel(bytes: number): string {
+    return bytes >= 1048576
+        ? `${(bytes / 1048576).toFixed(1)} MB`
+        : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 </script>
 
@@ -75,6 +133,71 @@ function destroy() {
             <Button class="w-full" :disabled="form.processing" @click="save">
                 Save changes
             </Button>
+
+            <div class="space-y-1.5 border-t pt-4">
+                <div class="flex items-center justify-between">
+                    <Label>Files</Label>
+                    <button
+                        type="button"
+                        class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                        :disabled="
+                            uploading ||
+                            (files?.length ?? 0) >= (fileLimits?.maxFiles ?? 10)
+                        "
+                        @click="pickFiles"
+                    >
+                        <component
+                            :is="uploading ? Loader2 : Plus"
+                            class="size-3.5"
+                            :class="uploading ? 'animate-spin' : ''"
+                        />
+                        Add
+                    </button>
+                </div>
+                <input
+                    ref="fileInput"
+                    type="file"
+                    class="hidden"
+                    multiple
+                    :accept="acceptAttr()"
+                    @change="uploadFiles"
+                />
+                <p class="text-xs text-muted-foreground">
+                    Documents ({{
+                        fileLimits?.mimes ?? 'docx,xlsx,csv,txt,md'
+                    }}) the assistant can use in every chat here — max
+                    {{ fileLimits?.maxFiles ?? 10 }}.
+                </p>
+                <p v-if="fileError" class="text-xs text-destructive">
+                    {{ fileError }}
+                </p>
+
+                <ul v-if="files?.length" class="space-y-1 pt-1">
+                    <li
+                        v-for="f in files"
+                        :key="f.id"
+                        class="group flex items-center gap-2 rounded-md border px-2 py-1.5"
+                    >
+                        <FileText
+                            class="size-3.5 shrink-0 text-muted-foreground"
+                        />
+                        <span class="min-w-0 flex-1 truncate text-xs">{{
+                            f.name
+                        }}</span>
+                        <span class="shrink-0 text-xs text-muted-foreground">{{
+                            sizeLabel(f.size)
+                        }}</span>
+                        <button
+                            type="button"
+                            class="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition group-hover:opacity-100 hover:text-destructive"
+                            aria-label="Remove file"
+                            @click="removeFile(f.id)"
+                        >
+                            <Trash2 class="size-3.5" />
+                        </button>
+                    </li>
+                </ul>
+            </div>
         </div>
 
         <div class="border-t p-4">

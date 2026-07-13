@@ -27,10 +27,22 @@ defineOptions({
 const props = defineProps<{
     memoryEnabled: boolean;
     memories: { id: number; content: string }[];
+    preferredLanguage: string | null;
+    languages: string[];
 }>();
 
 const page = usePage();
 const user = computed(() => page.props.auth.user);
+
+// --- Assistant language ---------------------------------------------------------
+
+function setLanguage(e: Event) {
+    router.patch(
+        '/settings/language',
+        { language: (e.target as HTMLSelectElement).value },
+        { preserveScroll: true },
+    );
+}
 
 // --- Assistant memory ---------------------------------------------------------
 
@@ -185,6 +197,35 @@ function clearMemories() {
                 <Button :disabled="processing">Save preferences</Button>
             </div>
         </Form>
+    </div>
+
+    <div class="mt-10 flex flex-col space-y-6">
+        <Heading
+            variant="small"
+            title="Language"
+            description="Your preferred language across the portal — AiMe answers in it"
+        />
+
+        <div class="grid max-w-xs gap-2">
+            <Label for="preferred-language">Preferred language</Label>
+            <select
+                id="preferred-language"
+                class="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                :value="preferredLanguage ?? 'auto'"
+                @change="setLanguage"
+            >
+                <option value="auto">
+                    Auto — match the language I write in
+                </option>
+                <option
+                    v-for="lang in props.languages"
+                    :key="lang"
+                    :value="lang"
+                >
+                    {{ lang }}
+                </option>
+            </select>
+        </div>
     </div>
 
     <div class="mt-10 flex flex-col space-y-6">

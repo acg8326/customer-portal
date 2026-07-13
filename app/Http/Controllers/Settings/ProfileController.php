@@ -10,6 +10,7 @@ use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -24,12 +25,43 @@ class ProfileController extends Controller
             'mustVerifyEmail' => $request->user() instanceof MustVerifyEmail,
             'status' => $request->session()->get('status'),
             'memoryEnabled' => $request->user()->memory_enabled,
+            'preferredLanguage' => $request->user()->preferred_language,
+            'languages' => array_values(array_filter(array_map(
+                'trim',
+                explode(',', (string) config('services.anthropic.languages', 'English')),
+            ))),
             'memories' => $request->user()->memories()
                 ->orderBy('id')
                 ->get(['id', 'content'])
                 ->map(fn (Memory $m): array => ['id' => $m->id, 'content' => $m->content])
                 ->all(),
         ]);
+    }
+
+    /**
+     * Set AiMe's reply language for this user (null/'auto' = match whatever
+     * language the user writes in). Injected into the system prompt.
+     */
+    public function updateLanguage(Request $request): RedirectResponse
+    {
+        $languages = array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) config('services.anthropic.languages', 'English')),
+        )));
+
+        $validated = $request->validate([
+            'language' => ['nullable', 'string', Rule::in([...$languages, 'auto'])],
+        ]);
+
+        $language = $validated['language'] ?? null;
+
+        $request->user()->forceFill([
+            'preferred_language' => ($language === 'auto' || $language === null) ? null : $language,
+        ])->save();
+
+        Inertia::flash('toast', ['type' => 'success', 'message' => __('Language updated.')]);
+
+        return to_route('profile.edit');
     }
 
     /**

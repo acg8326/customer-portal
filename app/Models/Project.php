@@ -35,4 +35,12 @@ class Project extends Model
     {
         return $this->hasMany(Conversation::class);
     }
+
+    /**
+     * @return HasMany<ProjectFile, $this>
+     */
+    public function files(): HasMany
+    {
+        return $this->hasMany(ProjectFile::class);
+    }
 }

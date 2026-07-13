@@ -3,6 +3,50 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Chat sharing, retention policy, reply language + migration consolidation
+
+- **Chat sharing (team-only).** A **Share** button in the chat header creates
+  a read-only link (`/chat/shared/{token}`) any **logged-in** member can open
+  — never public. The dialog shows the link with Copy; **Stop sharing**
+  invalidates it (`conversations.share_token`, owner-only toggle). The shared
+  page renders the exchange (Markdown, attachment names) with no composer,
+  thinking, or feedback.
+- **Data retention policy** (new `config/retention.php`): `chat:prune` runs
+  daily (03:30) — with `RETENTION_CHAT_DAYS` set it permanently deletes
+  conversations (messages + stored attachments) idle longer than that;
+  **off by default** (0 = keep forever). Independently, trashed
+  conversations/projects/skills purge for good after `RETENTION_TRASH_DAYS`
+  (default 30). `--dry-run` reports without deleting. This resolves the
+  roadmap's open privacy/retention decision.
+- **Reply language setting** (Settings → Profile): a dropdown sets the
+  language AiMe answers in ("Auto" = match the user's message, the default).
+  Injected as one system-prompt line; list configurable via
+  `ANTHROPIC_CHAT_LANGUAGES`.
+- **Migration consolidation.** All 20 "add column" migrations were folded
+  into their create-table migrations — 34 files down to 16 clean creates
+  (+1 data migration). Schema validated by the full test suite on a fresh
+  database.
+  **⚠️ One-time deploy note:** the prod migrations table references the old
+  file names, so the NEXT deploy must run `php artisan migrate:fresh --force
+  --seed` (wipes data — fine while not yet in production use) instead of the
+  usual `migrate`. After that, `deploy.sh` works as normal.
+
+## Project files (knowledge base) + comparison.md refresh
+
+- **Project files:** the project panel's new **Files** section holds a
+  per-project knowledge base (docx/xlsx/csv/txt/md — text-extractable formats
+  only). Content is extracted once at upload (same `OfficeTextExtractor`,
+  virus-scanned when scanning is on, unreadable files rejected) and injected
+  into the system prompt of every chat in the project as `## Project files`.
+  Bounded by `ANTHROPIC_PROJECT_MAX_FILES` (10) and
+  `ANTHROPIC_PROJECT_MAX_CHARS` (100k total per prompt — over-budget files are
+  listed by name so the model can say what's missing). Owner-only; deleting
+  the project cleans up storage. This closes the last big roadmap item.
+- **comparison.md refreshed** (was written 2026-07-07): document processing
+  marked shipped, native NetSuite/Composio added to the integrations row,
+  three-tier roles + live limit settings noted, hard gate + exports called
+  out, honest-take paragraph updated.
+
 ## Team usage dashboard, in-app usage limits + super admin nav fix
 
 - **Fix: Users nav hidden for the super admin.** The sidebar checked

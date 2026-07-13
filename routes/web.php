@@ -119,6 +119,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('chat/conversations/{conversation}/star', [ChatController::class, 'star'])
         ->middleware('throttle:search')
         ->name('chat.star');
+    Route::post('chat/conversations/{conversation}/share', [ChatController::class, 'share'])
+        ->middleware('throttle:search')
+        ->name('chat.share');
+    Route::get('chat/shared/{token}', [ChatController::class, 'shared'])->name('chat.shared');
     Route::post('chat/conversations/{conversation}/compact', [ChatController::class, 'compact'])
         ->middleware('throttle:chat')
         ->name('chat.compact');
@@ -132,6 +136,11 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('projects/{project}', [ProjectController::class, 'show'])->name('projects.show');
     Route::patch('projects/{project}', [ProjectController::class, 'update'])->name('projects.update');
     Route::delete('projects/{project}', [ProjectController::class, 'destroy'])->name('projects.destroy');
+    Route::post('projects/{project}/files', [ProjectController::class, 'storeFiles'])
+        ->middleware('throttle:chat')
+        ->name('projects.files.store');
+    Route::delete('projects/{project}/files/{file}', [ProjectController::class, 'destroyFile'])
+        ->name('projects.files.destroy');
 });
 
 require __DIR__.'/settings.php';

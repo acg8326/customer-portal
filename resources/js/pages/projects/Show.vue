@@ -31,6 +31,8 @@ defineProps<{
     mcpEnabled: boolean;
     webEnabled: boolean;
     continuePrompt?: string;
+    files: { id: number; name: string; size: number }[];
+    fileLimits: { maxFiles: number; mimes: string };
 }>();
 
 const panelOpen = ref(false);
@@ -107,6 +109,8 @@ const railClass = computed(() =>
             <aside :class="railClass">
                 <ProjectKnowledge
                     :project="project"
+                    :files="files"
+                    :file-limits="fileLimits"
                     @saved="panelOpen = false"
                 />
             </aside>

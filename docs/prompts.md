@@ -23,8 +23,10 @@ prefix, and safety blocks come last so user preferences can't override them):
 | 1 | Persona (`system_prompt`) | always |
 | 2 | About this portal (`company_context`) | always (unless blanked) |
 | 3 | `Current date: …` + `User: {name}` | always (date-only granularity, so the cached prefix stays stable within a day) |
+| 3b | `Always respond in {language} …` | the user set a reply language in Settings → Profile |
 | 4 | `## Summary of the earlier conversation` | the conversation has been compacted |
 | 5 | `## Project instructions` | the chat belongs to a project with instructions |
+| 5b | `## Project files` | the project has knowledge-base files (within `ANTHROPIC_PROJECT_MAX_CHARS`) |
 | 6 | `## Active skill: {name}` | a skill is selected on the conversation |
 | 7 | Web access + answering style (`web_tools_prompt`) | web tools are ON for the turn (config on **and** the header's Web toggle not off) |
 | 8 | Downloadable answers (`files_prompt`) | always (unless blanked) |
@@ -132,11 +134,13 @@ user's words set the topic.
 These are assembled per-turn by `buildSystemPrompt()` — the wording below is
 the exact code-owned text; the *content* comes from the database.
 
-**Date + user** (always):
+**Date + user** (always), plus the reply-language line when the user picked
+one in Settings → Profile:
 
 ```
 Current date: Monday, July 13, 2026
 User: Alex Gordo
+Always respond in Tagalog unless the user explicitly asks for another language.
 ```
 
 **Compaction summary** (after a manual or automatic compact):
@@ -151,6 +155,21 @@ User: Alex Gordo
 ```
 ## Project instructions
 {projects.instructions}
+```
+
+**Project files** (project chats with knowledge-base files; each file's
+extracted text, up to `ANTHROPIC_PROJECT_MAX_CHARS` total — files over the
+budget are listed by name instead):
+
+```
+## Project files
+Reference documents attached to this project:
+
+### File: {name}
+{extracted text}
+
+(Not loaded, over the context budget: {names} — tell the user if you
+need their contents.)
 ```
 
 **Active skill** (when selected):

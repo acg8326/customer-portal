@@ -22,6 +22,7 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property string $email
  * @property string $role
  * @property string|null $chat_preferences
+ * @property string|null $preferred_language
  * @property bool $memory_enabled
  * @property Carbon|null $email_verified_at
  * @property string $password

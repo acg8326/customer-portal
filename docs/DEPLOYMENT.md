@@ -246,6 +246,20 @@ best-effort reloads php-fpm (opcache) and `restorecon` on `public/build`. Add an
 **new `.env` keys before running** (this release added the `COMPOSIO_*` keys — the
 script warns if `COMPOSIO_API_KEY` is missing). Re-runnable and safe.
 
+> **⚠️ One-time exception (2026-07-14 migration consolidation):** the "add
+> column" migrations were folded into their create-table files, so the server's
+> `migrations` table references names that no longer exist. The first deploy
+> after that change must run `php artisan migrate:fresh --force --seed`
+> (**wipes all data** — acceptable pre-production) instead of letting
+> `deploy.sh`'s plain `migrate` run. Every deploy after that is normal again.
+
+Also make sure the **scheduler** cron exists — retention pruning
+(`chat:prune`) runs through it:
+
+```
+* * * * * cd /var/www/cwgp-aime && php artisan schedule:run >> /dev/null 2>&1
+```
+
 <details><summary>Equivalent manual steps</summary>
 
 ```bash

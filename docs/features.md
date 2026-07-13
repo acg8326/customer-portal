@@ -280,6 +280,19 @@ the **Claude API**.
   whole team's thumbs (up/down totals + recent items with user, excerpt, and
   chat). Everyone else gets no card (`DASHBOARD_FEEDBACK_LIMIT`, default 8
   recent items).
+- **Share a chat (team-only):** the header's **Share** button creates a
+  read-only link any **logged-in** member can open (`/chat/shared/{token}`) —
+  never public. Copy it from the dialog; **Stop sharing** invalidates it.
+  Owner-only toggle; the shared view has no composer, thinking, or feedback.
+- **Language:** Settings → Profile → **Language** sets your preferred
+  language across the portal — AiMe answers in it ("Auto" = match whatever
+  language you write). One system-prompt line; the list is configurable
+  (`ANTHROPIC_CHAT_LANGUAGES`).
+- **Data retention:** off by default (chats are kept forever). Set
+  `RETENTION_CHAT_DAYS` to hard-delete idle conversations (+ attachments) via
+  the daily `chat:prune` schedule; trashed records purge after
+  `RETENTION_TRASH_DAYS` (default 30). `php artisan chat:prune --dry-run`
+  previews. Config: [`config/retention.php`](../config/retention.php).
 - **Starred chats:** the star icon on any sidebar chat pins it into a
   **Starred** section above **Recents**, like claude.ai
   (`conversations.starred`, `POST /chat/conversations/{id}/star`). Starring
@@ -346,6 +359,17 @@ modeled on Claude.ai Projects.
   project (appended to the base guardrails), so the assistant behaves
   consistently. _(A per-project **Memory** field was removed — not needed for
   now. The DB column is retained but unused.)_
+- **Project files (knowledge base):** upload documents to the panel's
+  **Files** section (`ANTHROPIC_PROJECT_MIMES`, default docx/xlsx/csv/txt/md —
+  text-extractable formats only, since their content is **injected into the
+  system prompt** of every chat in the project as a `## Project files` block;
+  images/PDFs stay per-message attachments). Extracted once at upload (same
+  [`OfficeTextExtractor`](../app/Services/OfficeTextExtractor.php) as chat
+  uploads, virus-scanned when scanning is on, unreadable files rejected).
+  Bounded: `ANTHROPIC_PROJECT_MAX_FILES` (10) per project and
+  `ANTHROPIC_PROJECT_MAX_CHARS` (100k) total per prompt — files over the
+  budget are listed by name so the model can say what's missing. Owner-only
+  add/remove; deleting the project removes its files from storage.
 - **Scoping:** a conversation optionally belongs to a project (`conversations.
 project_id`). Project chats appear only in that project; standalone `/chat`
   shows only non-project chats. All endpoints are owner-checked.
@@ -353,8 +377,6 @@ project_id`). Project chats appear only in that project; standalone `/chat`
   `Project` model, `projects` table. UI:
   [`projects/Index.vue`](../resources/js/pages/projects/Index.vue),
   [`projects/Show.vue`](../resources/js/pages/projects/Show.vue).
-- **Not yet:** project-level file attachments (per-message uploads exist in chat,
-  §7) — see [roadmap.md](roadmap.md).
 
 ## 8. Integrations
 
@@ -544,8 +566,6 @@ Automation, ERP & business systems, Productivity & data). Each card has a
 
 ## What's NOT built yet
 
-- **Project-level files** — a persistent per-project knowledge base, vs. the
-  per-message attachments the chat has today. See [roadmap.md](roadmap.md).
 - **Token-by-token streaming during connected-tools turns** — plain and MCP
   chats stream live, but when the Composio/NetSuite tool loop runs, the final
   answer arrives as one block after the tools finish.

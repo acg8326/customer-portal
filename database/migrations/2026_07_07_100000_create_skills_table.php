@@ -16,6 +16,8 @@ return new class extends Migration
             $table->string('description')->nullable();
             $table->text('instructions');
             $table->timestamps();
+            $table->softDeletes();
+            $table->index('user_id');
         });
     }
 

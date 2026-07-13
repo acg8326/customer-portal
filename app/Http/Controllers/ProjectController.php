@@ -4,11 +4,17 @@ namespace App\Http\Controllers;
 
 use App\Models\Conversation;
 use App\Models\Project;
+use App\Models\ProjectFile;
+use App\Services\OfficeTextExtractor;
+use App\Services\UploadScanner;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
+use RuntimeException;
 
 class ProjectController extends Controller
 {
@@ -66,6 +72,19 @@ class ProjectController extends Controller
                 'name' => $project->name,
                 'instructions' => $project->instructions,
             ],
+            'files' => $project->files()
+                ->orderBy('name')
+                ->get(['id', 'name', 'size'])
+                ->map(fn (ProjectFile $f): array => [
+                    'id' => $f->id,
+                    'name' => $f->name,
+                    'size' => $f->size,
+                ])
+                ->all(),
+            'fileLimits' => [
+                'maxFiles' => (int) config('services.anthropic.uploads.project_max_files', 10),
+                'mimes' => (string) config('services.anthropic.uploads.project_mimes', 'docx,xlsx,csv,txt,md'),
+            ],
             'models' => $models,
             'defaultModel' => config('services.anthropic.model'),
             'uploads' => ChatController::uploadsProps(),
@@ -111,9 +130,95 @@ class ProjectController extends Controller
     {
         $this->ensureOwner($request, $project);
 
+        Storage::deleteDirectory("project-files/{$project->id}");
+        $project->files()->delete();
         $project->delete();
 
         return redirect()->route('projects.index');
+    }
+
+    /**
+     * Add documents to the project's knowledge base. Text-extractable formats
+     * only (their content is injected into every chat in the project);
+     * unreadable files are rejected rather than silently stored.
+     */
+    public function storeFiles(Request $request, Project $project): RedirectResponse
+    {
+        $this->ensureOwner($request, $project);
+
+        $mimes = (string) config('services.anthropic.uploads.project_mimes', 'docx,xlsx,csv,txt,md');
+        $maxFiles = (int) config('services.anthropic.uploads.project_max_files', 10);
+        $maxSizeKb = (int) config('services.anthropic.uploads.max_size_kb', 10240);
+
+        $request->validate([
+            'files' => ['required', 'array', 'max:'.$maxFiles],
+            'files.*' => ['file', 'mimes:'.$mimes, 'max:'.$maxSizeKb],
+        ]);
+
+        if ($project->files()->count() + count((array) $request->file('files')) > $maxFiles) {
+            return back()->with('error', "A project holds at most {$maxFiles} files — remove one first.");
+        }
+
+        $scanner = app(UploadScanner::class);
+        $extractor = app(OfficeTextExtractor::class);
+
+        foreach ((array) $request->file('files') as $file) {
+            if (! $file instanceof UploadedFile) {
+                continue;
+            }
+
+            try {
+                $scanner->assertClean($file);
+            } catch (RuntimeException $e) {
+                return back()->with('error', $e->getMessage());
+            }
+
+            $path = $file->store("project-files/{$project->id}");
+
+            if (! is_string($path)) {
+                continue;
+            }
+
+            $mime = (string) ($file->getMimeType() ?? $file->getClientMimeType());
+            $text = $extractor->supports($mime)
+                ? $extractor->extract(
+                    Storage::path($path),
+                    $mime,
+                    (int) config('services.anthropic.uploads.extract_max_chars', 50000),
+                )
+                : null;
+
+            if ($text === null) {
+                Storage::delete($path);
+
+                return back()->with('error', "Couldn't read any text from {$file->getClientOriginalName()} — it wasn't added.");
+            }
+
+            Storage::put($path.'.extracted.txt', $text);
+
+            $project->files()->create([
+                'name' => $file->getClientOriginalName(),
+                'mime' => $mime,
+                'size' => (int) $file->getSize(),
+                'path' => $path,
+            ]);
+        }
+
+        return back()->with('success', 'File(s) added to the project.');
+    }
+
+    /**
+     * Remove one document from the knowledge base.
+     */
+    public function destroyFile(Request $request, Project $project, ProjectFile $file): RedirectResponse
+    {
+        $this->ensureOwner($request, $project);
+        abort_unless($file->project_id === $project->id, 404);
+
+        Storage::delete([$file->path, $file->path.'.extracted.txt']);
+        $file->delete();
+
+        return back()->with('success', 'File removed.');
     }
 
     private function ensureOwner(Request $request, Project $project): void

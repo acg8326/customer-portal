@@ -214,6 +214,10 @@ return [
         'title_model' => env('ANTHROPIC_TITLE_MODEL', 'claude-haiku-4-5'),
         'title_prompt' => env('ANTHROPIC_TITLE_PROMPT', 'Generate a concise 2-5 word title for this conversation, in the language of the conversation. Reply with the title only — no quotes and no trailing punctuation.'),
 
+        // Languages offered in Settings -> Profile as AiMe's reply language
+        // ("Auto" = match the user's message). Comma-separated, edit freely.
+        'languages' => env('ANTHROPIC_CHAT_LANGUAGES', 'English,Tagalog,Cebuano,Spanish,Chinese,Japanese,Korean'),
+
         // Automatic memory (like claude.ai's): a cheap background call
         // periodically distills durable facts about the user from their chats
         // into a memory list injected into the system prompt. Fully visible
@@ -427,6 +431,15 @@ return [
             // Cap (characters) on text extracted from one Office/text upload —
             // a big spreadsheet would otherwise flood the context every turn.
             'extract_max_chars' => (int) env('ANTHROPIC_UPLOADS_EXTRACT_MAX_CHARS', 50000),
+
+            // Project knowledge base: text-extractable formats only (their
+            // content is injected into the system prompt — images/PDFs can't
+            // be, so those stay per-message attachments).
+            'project_mimes' => env('ANTHROPIC_PROJECT_MIMES', 'docx,xlsx,csv,txt,md'),
+            'project_max_files' => (int) env('ANTHROPIC_PROJECT_MAX_FILES', 10),
+            // Total character budget for all project files in one prompt —
+            // files beyond it are listed by name with a "not loaded" note.
+            'project_max_chars' => (int) env('ANTHROPIC_PROJECT_MAX_CHARS', 100000),
         ],
     ],
 

@@ -20,10 +20,18 @@ return new class extends Migration
             $table->id();
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
             $table->string('account_id'); // realm, e.g. 1234567 or 1234567_SB1
-            $table->text('consumer_key');
-            $table->text('consumer_secret');
-            $table->text('token_id');
-            $table->text('token_secret');
+            // 'tba' (Token-Based Auth) or 'oauth2'. TBA secrets only exist for
+            // TBA connections; OAuth 2.0 fields only for oauth2 (all encrypted).
+            $table->string('auth_type')->default('tba');
+            $table->text('consumer_key')->nullable();
+            $table->text('consumer_secret')->nullable();
+            $table->text('token_id')->nullable();
+            $table->text('token_secret')->nullable();
+            $table->text('client_id')->nullable();
+            $table->text('client_secret')->nullable();
+            $table->text('access_token')->nullable();
+            $table->text('refresh_token')->nullable();
+            $table->timestamp('token_expires_at')->nullable();
             $table->string('status')->default('active'); // active | error
             $table->text('last_error')->nullable();
             $table->timestamp('last_used_at')->nullable();

@@ -170,13 +170,8 @@ function runImport() {
             <div
                 v-for="skill in skills"
                 :key="skill.id"
-                class="flex items-start gap-3 rounded-lg border p-4"
+                class="flex items-start gap-3 rounded-xl border bg-card p-4 transition-colors hover:border-brand-gold/40"
             >
-                <div
-                    class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-lg"
-                >
-                    {{ skill.icon || '✨' }}
-                </div>
                 <div class="min-w-0 flex-1">
                     <p class="font-medium">{{ skill.name }}</p>
                     <p
@@ -235,42 +230,39 @@ function runImport() {
                 title="Starter library"
                 description="Add a ready-made skill to your account, then customise it."
             />
-            <div class="grid gap-3 sm:grid-cols-2">
+            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <div
                     v-for="t in library"
                     :key="t.name"
-                    class="flex items-start gap-3 rounded-lg border p-4"
+                    class="group flex flex-col rounded-xl border bg-card p-4 transition-all hover:border-brand-gold/40 hover:shadow-sm"
                 >
-                    <div
-                        class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-lg"
-                    >
-                        {{ t.icon }}
+                    <div class="flex items-start justify-between gap-3">
+                        <p class="font-medium tracking-tight">{{ t.name }}</p>
+                        <Button
+                            v-if="alreadyAdded(t.name)"
+                            variant="ghost"
+                            size="sm"
+                            class="-mt-1 -mr-1 shrink-0 text-muted-foreground"
+                            disabled
+                        >
+                            Added
+                        </Button>
+                        <Button
+                            v-else
+                            variant="ghost"
+                            size="sm"
+                            class="-mt-1 -mr-1 shrink-0 text-brand-gold opacity-70 transition-opacity group-hover:opacity-100 hover:bg-brand-gold/10 hover:text-brand-gold"
+                            @click="addFromLibrary(t)"
+                        >
+                            <Plus class="size-4" />
+                            Add
+                        </Button>
                     </div>
-                    <div class="min-w-0 flex-1">
-                        <p class="font-medium">{{ t.name }}</p>
-                        <p class="text-sm text-muted-foreground">
-                            {{ t.description }}
-                        </p>
-                    </div>
-                    <Button
-                        v-if="alreadyAdded(t.name)"
-                        variant="ghost"
-                        size="sm"
-                        class="shrink-0 text-muted-foreground"
-                        disabled
+                    <p
+                        class="mt-1 text-sm leading-relaxed text-muted-foreground"
                     >
-                        Added
-                    </Button>
-                    <Button
-                        v-else
-                        variant="outline"
-                        size="sm"
-                        class="shrink-0"
-                        @click="addFromLibrary(t)"
-                    >
-                        <Plus class="size-4" />
-                        Add
-                    </Button>
+                        {{ t.description }}
+                    </p>
                 </div>
             </div>
         </section>
@@ -285,26 +277,15 @@ function runImport() {
                 }}</DialogTitle>
             </DialogHeader>
             <form class="space-y-4" @submit.prevent="save">
-                <div class="flex gap-3">
-                    <div class="w-20 space-y-2">
-                        <Label for="skill-icon">Icon</Label>
-                        <Input
-                            id="skill-icon"
-                            v-model="form.icon"
-                            placeholder="✨"
-                            maxlength="8"
-                        />
-                    </div>
-                    <div class="flex-1 space-y-2">
-                        <Label for="skill-name">Name</Label>
-                        <Input
-                            id="skill-name"
-                            v-model="form.name"
-                            placeholder="e.g. RMA evaluator"
-                            autofocus
-                        />
-                        <InputError :message="form.errors.name" />
-                    </div>
+                <div class="space-y-2">
+                    <Label for="skill-name">Name</Label>
+                    <Input
+                        id="skill-name"
+                        v-model="form.name"
+                        placeholder="e.g. RMA evaluator"
+                        autofocus
+                    />
+                    <InputError :message="form.errors.name" />
                 </div>
                 <div class="space-y-2">
                     <Label for="skill-desc">Description</Label>

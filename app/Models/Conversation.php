@@ -22,6 +22,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * @property bool $auto_approve
  * @property bool $starred
  * @property int|null $memory_through_id
+ * @property string|null $share_token
  * @property array<string, mixed>|null $pending_tool_state
  */
 #[Fillable(['title', 'model', 'project_id'])]

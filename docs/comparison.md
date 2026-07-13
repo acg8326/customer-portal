@@ -3,6 +3,14 @@
 Why building **AiMe** in-house beats renting a per-seat AI SaaS like
 toppfive.net ($250 / $500 / $1000 **per user, per month**).
 
+> Updated 2026-07-14. Since the first version of this doc, AiMe shipped:
+> native NetSuite (TBA + SuiteQL), Office-file understanding
+> (DOCX/XLSX/CSV/TXT/MD), Word/CSV/XLSX export, web search + fetch with cited
+> sources, extended thinking, automatic memory, a hard approval gate on
+> destructive tool actions, per-user token budgets **settable live from the
+> dashboard**, per-user usage reporting, answer feedback analytics, and
+> three-tier roles (super admin / admin / user).
+
 ## 1. Pricing model — the big one
 
 toppfive charges **per user, per month**. AiMe is an **internal application**:
@@ -37,12 +45,14 @@ for a vendor roadmap, no feature request queue, no "Enterprise-tier only" gate.
 
 ## 3. Native tool use via MCP — connect the tools you actually run
 
-AiMe supports the **Model Context Protocol (MCP)**: connect a server (Slack,
-GitHub, Notion, …) and the assistant **calls that tool's functions natively**,
-streaming, with a live "Using &lt;tool&gt;…" indicator. For tools without MCP,
-the **n8n** connector bridges to virtually anything via webhooks/workflows.
-That's an **open, extensible** integration story rather than a fixed connector
-list.
+AiMe connects to real business systems four ways: a **native NetSuite**
+integration (Token-Based Auth, SuiteTalk REST + SuiteQL — query records and
+run reports from chat), **Composio** toolkits (Slack, GitHub, HubSpot,
+Airtable), the **Model Context Protocol (MCP)** for any MCP server, and the
+**n8n** connector bridging virtually anything else via webhooks/workflows.
+Destructive tool actions pause at a **hard approval gate** (Approve/Cancel in
+the chat) before anything runs. That's an **open, extensible, governed**
+integration story rather than a fixed connector list.
 
 ## 4. Your data stays internal
 
@@ -59,25 +69,30 @@ toppfive's advertised features, and where AiMe stands today:
 | toppfive feature                         | AiMe status |
 | ---------------------------------------- | ----------- |
 | AI workspace for any business question   | ✅ Chat + Projects (scoped workspaces) |
-| Document processing (PDF / CSV / Excel)  | ⚙️ Images + **PDF** today; DOCX/CSV/Excel text-extraction on the roadmap |
-| Data syncing across connected integrations | ✅ via **MCP** (native tools) + **n8n** |
+| Document processing (PDF / CSV / Excel)  | ✅ Images + PDF natively; **DOCX / XLSX / CSV / TXT / MD** text-extracted server-side |
+| Data syncing across connected integrations | ✅ **native NetSuite** (TBA + SuiteQL), Slack/GitHub/HubSpot/Airtable (Composio), **MCP**, **n8n** |
 | Email monitoring & inbox triage          | 🔜 Roadmap (buildable via n8n/MCP) |
 | Scheduled workflows & recurring analysis | ✅ via **n8n** (webhooks/schedules) |
-| Business intelligence, reports & charts  | 🔜 Roadmap |
-| Higher query capacity / priority         | ✅ You control limits & model choice (no artificial tiers) |
+| Business intelligence, reports & charts  | ⚙️ Usage + answer-feedback dashboards today; business-data charts on the roadmap |
+| Higher query capacity / priority         | ✅ You control limits & model choice — token limits settable **live from the dashboard** |
 | Morning briefings & daily summaries      | 🔜 Roadmap (buildable via n8n schedules) |
 | SMS alerts for critical events           | 🔜 Roadmap (buildable via n8n/MCP) |
-| Team member access                       | ✅ Multi-user, per-user scoping |
+| Team member access                       | ✅ Multi-user, three-tier roles (super admin / admin / user), per-user budgets & usage reporting |
 | Custom workflow automation               | ✅ n8n + MCP + **direct code changes** |
 | Dedicated support & onboarding           | ✅ It's your team's own app |
 | SLA guarantees                           | ✅ Set by your own ops, not a vendor contract |
 
-**Honest take:** toppfive ships some polished features AiMe hasn't built **yet**
-(BI dashboards, inbox triage, SMS, Office-doc extraction). The difference is that
-with AiMe those are a **backlog we control**, not a paywall — and several already
-have a clear path through n8n/MCP. Meanwhile AiMe already delivers the core
-(streaming chat, projects, uploads, native tools, automation, usage governance)
-with **no per-seat cost and full ownership**.
+And two things toppfive doesn't advertise at any tier: a **hard approval gate**
+(destructive tool actions pause for an explicit Approve/Cancel in the chat) and
+**exports** of any answer to PDF / Word / Markdown / CSV / XLSX.
+
+**Honest take:** toppfive still ships a few things AiMe hasn't built **yet**
+(inbox triage, morning briefings, SMS alerts, business-data BI charts). The
+difference is that with AiMe those are a **backlog we control**, not a paywall
+— and each has a clear path through the n8n/scheduler infrastructure already in
+place. Meanwhile AiMe delivers the core — streaming chat, projects, Office-file
+understanding, native NetSuite, web research with sources, exports, memory,
+automation, and usage governance — with **no per-seat cost and full ownership**.
 
 ## Bottom line
 
