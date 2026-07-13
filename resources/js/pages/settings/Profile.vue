@@ -101,5 +101,42 @@ const user = computed(() => page.props.auth.user);
         </Form>
     </div>
 
+    <div class="mt-10 flex flex-col space-y-6">
+        <Heading
+            variant="small"
+            title="Chat preferences"
+            description="Standing instructions for AiMe BOT — applied to every conversation"
+        />
+
+        <Form
+            action="/settings/chat-preferences"
+            method="patch"
+            class="space-y-6"
+            v-slot="{ errors, processing }"
+        >
+            <div class="grid gap-2">
+                <Label for="chat-preferences">Preferences</Label>
+                <textarea
+                    id="chat-preferences"
+                    name="chat_preferences"
+                    rows="4"
+                    maxlength="2000"
+                    placeholder="e.g. Always answer in Tagalog. Keep answers short. Use metric units."
+                    class="w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                    :value="user.chat_preferences ?? ''"
+                />
+                <p class="text-xs text-muted-foreground">
+                    These adjust tone and format only — they can't override the
+                    assistant's safety rules. Leave empty to clear.
+                </p>
+                <InputError class="mt-2" :message="errors.chat_preferences" />
+            </div>
+
+            <div class="flex items-center gap-4">
+                <Button :disabled="processing">Save preferences</Button>
+            </div>
+        </Form>
+    </div>
+
     <DeleteUser />
 </template>

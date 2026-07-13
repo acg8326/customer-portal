@@ -111,6 +111,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->middleware('throttle:chat')
         ->name('chat.export.sheet');
     Route::get('chat/conversations/{conversation}', [ChatController::class, 'show'])->name('chat.show');
+    Route::post('chat/messages/{message}/feedback', [ChatController::class, 'feedback'])->name('chat.feedback');
     Route::post('chat/conversations/{conversation}/compact', [ChatController::class, 'compact'])
         ->middleware('throttle:chat')
         ->name('chat.compact');

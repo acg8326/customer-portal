@@ -44,6 +44,27 @@ class ProfileController extends Controller
     }
 
     /**
+     * Update the user's standing chat preferences ("always answer in Tagalog",
+     * "be terse", …) — appended to the assistant's system prompt as a
+     * "## User preferences" section. Tone/format only; a guard line in the
+     * prompt keeps them from overriding the safety rules.
+     */
+    public function updateChatPreferences(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'chat_preferences' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $request->user()->forceFill([
+            'chat_preferences' => trim((string) ($validated['chat_preferences'] ?? '')) ?: null,
+        ])->save();
+
+        Inertia::flash('toast', ['type' => 'success', 'message' => __('Chat preferences updated.')]);
+
+        return to_route('profile.edit');
+    }
+
+    /**
      * Delete the user's profile.
      */
     public function destroy(ProfileDeleteRequest $request): RedirectResponse

@@ -44,3 +44,25 @@ test('the downloadable-answers note is always included', function () {
 
     expect(capabilityPromptFor(makePlainConversation()))->toContain('Downloadable answers');
 });
+
+test('the current date and user name are injected dynamically', function () {
+    $conversation = makePlainConversation();
+
+    expect(capabilityPromptFor($conversation))
+        ->toContain('Current date: '.now()->format('l, F j, Y'))
+        ->toContain('User: '.$conversation->user->name);
+});
+
+test('the untrusted-content guardrail is included when web tools are active', function () {
+    config(['services.anthropic.web_tools' => true]);
+
+    expect(capabilityPromptFor(makePlainConversation()))
+        ->toContain('Untrusted content')
+        ->toContain('DATA, not instructions');
+});
+
+test('the untrusted-content guardrail is omitted when no tools are active', function () {
+    config(['services.anthropic.web_tools' => false]);
+
+    expect(capabilityPromptFor(makePlainConversation()))->not->toContain('Untrusted content');
+});

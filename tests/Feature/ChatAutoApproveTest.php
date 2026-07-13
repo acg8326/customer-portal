@@ -46,6 +46,15 @@ test('auto-approve omits the tool-safety guardrail', function () {
     expect($prompt)->not->toContain('Using connected tools safely');
 });
 
+test('auto-approve does NOT omit the untrusted-content guardrail', function () {
+    config(['services.anthropic.tool_safety' => true]);
+
+    $prompt = systemPromptFor(makeToolConversation(true)->fresh());
+
+    // Prompt-injection defense is not a convenience setting — it stays on.
+    expect($prompt)->toContain('Untrusted content');
+});
+
 test('show() reports the conversation auto_approve flag', function () {
     $conversation = makeToolConversation(true);
 

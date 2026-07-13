@@ -2,6 +2,7 @@
 import { usePage } from '@inertiajs/vue3';
 import {
     ArrowUp,
+    Brain,
     Copy,
     Download,
     FileText,
@@ -10,9 +11,13 @@ import {
     Image as ImageIcon,
     Menu,
     Paperclip,
+    Pencil,
+    RefreshCw,
     Sheet as SheetIcon,
     ShieldCheck,
     Sparkles,
+    ThumbsDown,
+    ThumbsUp,
     X,
     Zap,
 } from '@lucide/vue';
@@ -46,8 +51,11 @@ type Attachment = {
 };
 
 type ChatMessage = {
+    id?: number;
     role: 'user' | 'assistant';
     content: string;
+    thinking?: string | null;
+    feedback?: number | null;
     attachments?: Attachment[];
 };
 
@@ -79,6 +87,7 @@ const props = withDefaults(
         uploads?: UploadConfig;
         skills?: SkillOption[];
         mcpEnabled?: boolean;
+        continuePrompt?: string;
     }>(),
     {
         projectId: null,
@@ -91,6 +100,8 @@ const props = withDefaults(
         }),
         skills: () => [],
         mcpEnabled: false,
+        continuePrompt:
+            'Continue exactly where you left off — do not repeat what you already wrote.',
     },
 );
 
@@ -170,6 +181,24 @@ function confirmAutoApprove() {
     setAutoApprove(true);
     showAutoApproveConfirm.value = false;
 }
+
+// Extended thinking toggle (like claude.ai's thinking mode). Persisted in the
+// browser; sent with every message. The server only enables it on models that
+// support adaptive thinking.
+const THINKING_KEY = 'chat:thinking';
+const thinkingOn = ref(localStorage.getItem(THINKING_KEY) === '1');
+
+function toggleThinking() {
+    thinkingOn.value = !thinkingOn.value;
+    localStorage.setItem(THINKING_KEY, thinkingOn.value ? '1' : '0');
+}
+
+// stop_reason of the last completed reply — 'max_tokens' shows "Continue".
+const lastStopReason = ref<string | null>(null);
+
+// Edit-and-resend state (pencil on the last user message).
+const editingIndex = ref<number | null>(null);
+const editDraft = ref('');
 const skillId = ref<number | null>(null);
 const skillValue = computed(() =>
     skillId.value === null ? 'none' : String(skillId.value),
@@ -437,6 +466,8 @@ function newChat() {
     completionTokens.value = 0;
     pendingFiles.value = [];
     compacted.value = false;
+    lastStopReason.value = null;
+    editingIndex.value = null;
 }
 
 async function selectConversation(id: number) {
@@ -464,6 +495,8 @@ async function selectConversation(id: number) {
         completionTokens.value = data.completion_tokens ?? 0;
         skillId.value = data.skill_id ?? null;
         compacted.value = data.compacted ?? false;
+        lastStopReason.value = null;
+        editingIndex.value = null;
 
         if (typeof data.model === 'string') {
             model.value = data.model;
@@ -482,24 +515,63 @@ function bumpToTop(id: number, title: string) {
     ];
 }
 
-async function send() {
-    const text = draft.value.trim();
-    const files = pendingFiles.value;
+type SendOptions = {
+    // Regenerate the last assistant reply (no new user message).
+    retry?: boolean;
+    // Edit-and-resend: replace the last exchange with this text.
+    replaceLast?: boolean;
+    // Send this text instead of the composer draft (e.g. "Continue").
+    text?: string;
+};
 
-    if ((!text && files.length === 0) || loading.value) {
+async function send(opts: SendOptions = {}) {
+    const isRetry = opts.retry === true;
+    const text = isRetry ? '' : (opts.text ?? draft.value).trim();
+    const files = isRetry || opts.text != null ? [] : pendingFiles.value;
+
+    if ((!text && files.length === 0 && !isRetry) || loading.value) {
         return;
     }
 
     error.value = null;
-    messages.value.push({
-        role: 'user',
-        content: text,
-        attachments: files.length
-            ? files.map((f) => ({ name: f.name, mime: f.type }))
-            : undefined,
-    });
-    draft.value = '';
-    pendingFiles.value = [];
+    lastStopReason.value = null;
+    editingIndex.value = null;
+
+    if (isRetry) {
+        // Drop the last assistant bubble locally; the server does the same.
+        const last = messages.value[messages.value.length - 1];
+
+        if (last?.role === 'assistant') {
+            messages.value.pop();
+        }
+    } else {
+        if (opts.replaceLast) {
+            // Drop the last exchange locally; the server does the same.
+            if (
+                messages.value[messages.value.length - 1]?.role === 'assistant'
+            ) {
+                messages.value.pop();
+            }
+
+            if (messages.value[messages.value.length - 1]?.role === 'user') {
+                messages.value.pop();
+            }
+        }
+
+        messages.value.push({
+            role: 'user',
+            content: text,
+            attachments: files.length
+                ? files.map((f) => ({ name: f.name, mime: f.type }))
+                : undefined,
+        });
+    }
+
+    if (opts.text == null && !isRetry) {
+        draft.value = '';
+        pendingFiles.value = [];
+    }
+
     loading.value = true;
     streaming.value = false;
     await scrollToBottom();
@@ -527,6 +599,7 @@ async function send() {
             form.append('content', text);
             form.append('model', model.value);
             form.append('auto_approve', autoApprove.value ? '1' : '0');
+            form.append('thinking', thinkingOn.value ? '1' : '0');
 
             if (skillId.value != null) {
                 form.append('skill_id', String(skillId.value));
@@ -550,6 +623,9 @@ async function send() {
                     model: model.value,
                     skill_id: skillId.value,
                     auto_approve: autoApprove.value,
+                    thinking: thinkingOn.value,
+                    retry: isRetry,
+                    replace_last: opts.replaceLast === true,
                 }),
             });
         }
@@ -603,6 +679,8 @@ async function send() {
                     title?: string;
                     text?: string;
                     message?: string;
+                    message_id?: number;
+                    stop_reason?: string | null;
                     name?: string;
                     server?: string;
                     usage?: {
@@ -622,10 +700,22 @@ async function send() {
                         activeId.value = payload.conversation_id;
                         bumpToTop(payload.conversation_id, payload.title ?? '');
                     }
+                } else if (evt === 'title') {
+                    // Auto-generated title after the first exchange.
+                    if (activeId.value != null && payload.title) {
+                        bumpToTop(activeId.value, payload.title);
+                    }
                 } else if (evt === 'tool') {
                     // An MCP tool is being called server-side.
                     streamingTool.value =
                         payload.server ?? payload.name ?? 'a tool';
+                } else if (evt === 'thinking') {
+                    // Extended thinking: fills the collapsible block.
+                    streaming.value = true;
+                    messages.value[assistantIndex].thinking =
+                        (messages.value[assistantIndex].thinking ?? '') +
+                        (payload.text ?? '');
+                    await scrollToBottom();
                 } else if (evt === 'delta') {
                     streaming.value = true;
                     streamingTool.value = null;
@@ -640,6 +730,9 @@ async function send() {
                             payload.usage.completion_tokens ??
                             completionTokens.value;
                     }
+
+                    messages.value[assistantIndex].id = payload.message_id;
+                    lastStopReason.value = payload.stop_reason ?? null;
                 } else if (evt === 'error') {
                     throw new Error(
                         payload.message ?? 'The assistant could not respond.',
@@ -662,6 +755,71 @@ async function send() {
         streaming.value = false;
         streamingTool.value = null;
         await scrollToBottom();
+    }
+}
+
+// Regenerate the last assistant reply (like claude.ai's retry).
+function retryLast() {
+    if (loading.value || activeId.value == null) {
+        return;
+    }
+
+    send({ retry: true });
+}
+
+// Resume a reply that was cut off at the max-token cap.
+function continueReply() {
+    if (loading.value) {
+        return;
+    }
+
+    send({ text: props.continuePrompt });
+}
+
+function startEdit(index: number) {
+    editingIndex.value = index;
+    editDraft.value = messages.value[index]?.content ?? '';
+}
+
+function cancelEdit() {
+    editingIndex.value = null;
+    editDraft.value = '';
+}
+
+function submitEdit() {
+    const text = editDraft.value.trim();
+
+    if (!text || loading.value) {
+        return;
+    }
+
+    editDraft.value = '';
+    send({ replaceLast: true, text });
+}
+
+// Thumbs on an assistant reply — clicking the active rating clears it.
+async function rateMessage(m: ChatMessage, rating: 'up' | 'down') {
+    if (m.id == null) {
+        return;
+    }
+
+    const target = m.feedback === (rating === 'up' ? 1 : -1) ? 'none' : rating;
+
+    try {
+        const res = await fetch(`/chat/messages/${m.id}/feedback`, {
+            method: 'POST',
+            headers: jsonHeaders(),
+            body: JSON.stringify({ rating: target }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            throw new Error('Could not save your feedback.');
+        }
+
+        m.feedback = data.feedback ?? null;
+    } catch (e) {
+        error.value = e instanceof Error ? e.message : 'Something went wrong.';
     }
 }
 
@@ -825,6 +983,24 @@ onMounted(() => {
                 </div>
 
                 <div class="flex items-center gap-2">
+                    <button
+                        type="button"
+                        class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors"
+                        :class="
+                            thinkingOn
+                                ? 'border-brand-gold/50 bg-brand-gold/10 text-brand-gold'
+                                : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
+                        "
+                        :title="
+                            thinkingOn
+                                ? 'Extended thinking is ON — the thought process shows in a collapsible block. Click to turn off.'
+                                : 'Turn on extended thinking — the assistant reasons longer and shows its thought process.'
+                        "
+                        @click="toggleThinking"
+                    >
+                        <Brain class="size-3.5" />
+                        Thinking
+                    </button>
                     <div
                         v-if="mcpEnabled"
                         class="inline-flex h-8 items-center gap-2 rounded-md border px-2.5 transition-colors"
@@ -976,6 +1152,7 @@ onMounted(() => {
                             v-if="
                                 m.role !== 'assistant' ||
                                 m.content ||
+                                m.thinking ||
                                 m.attachments?.length
                             "
                             class="message-row flex items-start gap-3"
@@ -1028,7 +1205,57 @@ onMounted(() => {
                                         }}</span>
                                     </span>
                                 </div>
-                                <template v-if="m.content">
+                                <!-- Extended thinking: collapsible thought process -->
+                                <details
+                                    v-if="m.role === 'assistant' && m.thinking"
+                                    class="mb-2 rounded-lg border border-border/60 bg-background/60"
+                                    :open="!m.content"
+                                >
+                                    <summary
+                                        class="flex cursor-pointer items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-muted-foreground select-none"
+                                    >
+                                        <Brain class="size-3.5" />
+                                        Thought process
+                                    </summary>
+                                    <div
+                                        class="border-t border-border/60 px-2.5 py-2 text-xs whitespace-pre-wrap text-muted-foreground"
+                                    >
+                                        {{ m.thinking }}
+                                    </div>
+                                </details>
+
+                                <!-- Edit-and-resend (last user message) -->
+                                <div
+                                    v-if="editingIndex === i"
+                                    class="min-w-[18rem]"
+                                >
+                                    <textarea
+                                        v-model="editDraft"
+                                        rows="3"
+                                        class="w-full resize-y rounded-md border border-white/30 bg-white/10 px-2.5 py-1.5 text-sm text-primary-foreground outline-none placeholder:text-primary-foreground/50"
+                                        @keydown.enter.exact.prevent="
+                                            submitEdit()
+                                        "
+                                        @keydown.esc="cancelEdit()"
+                                    />
+                                    <div class="mt-1.5 flex justify-end gap-2">
+                                        <button
+                                            type="button"
+                                            class="rounded px-2 py-0.5 text-xs hover:bg-white/15"
+                                            @click="cancelEdit"
+                                        >
+                                            Cancel
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="rounded bg-white/20 px-2 py-0.5 text-xs font-medium hover:bg-white/30"
+                                            @click="submitEdit"
+                                        >
+                                            Send
+                                        </button>
+                                    </div>
+                                </div>
+                                <template v-else-if="m.content">
                                     <div
                                         v-if="m.role === 'assistant'"
                                         class="md"
@@ -1100,8 +1327,86 @@ onMounted(() => {
                                             <SheetIcon class="size-3.5" /> XLSX
                                         </button>
                                     </template>
+
+                                    <span class="mx-0.5 h-4 w-px bg-border" />
+
+                                    <button
+                                        v-if="i === messages.length - 1"
+                                        type="button"
+                                        class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-background hover:text-foreground"
+                                        title="Regenerate this reply"
+                                        :disabled="loading"
+                                        @click="retryLast"
+                                    >
+                                        <RefreshCw class="size-3.5" /> Retry
+                                    </button>
+                                    <button
+                                        v-if="m.id != null"
+                                        type="button"
+                                        class="inline-flex items-center rounded px-1.5 py-0.5 hover:bg-background"
+                                        :class="
+                                            m.feedback === 1
+                                                ? 'text-emerald-500'
+                                                : 'hover:text-foreground'
+                                        "
+                                        title="Good reply"
+                                        @click="rateMessage(m, 'up')"
+                                    >
+                                        <ThumbsUp class="size-3.5" />
+                                    </button>
+                                    <button
+                                        v-if="m.id != null"
+                                        type="button"
+                                        class="inline-flex items-center rounded px-1.5 py-0.5 hover:bg-background"
+                                        :class="
+                                            m.feedback === -1
+                                                ? 'text-destructive'
+                                                : 'hover:text-foreground'
+                                        "
+                                        title="Bad reply"
+                                        @click="rateMessage(m, 'down')"
+                                    >
+                                        <ThumbsDown class="size-3.5" />
+                                    </button>
+                                </div>
+
+                                <!-- Continue a reply cut off at the token cap -->
+                                <div
+                                    v-if="
+                                        m.role === 'assistant' &&
+                                        i === messages.length - 1 &&
+                                        lastStopReason === 'max_tokens' &&
+                                        !loading
+                                    "
+                                    class="mt-2"
+                                >
+                                    <button
+                                        type="button"
+                                        class="inline-flex items-center gap-1.5 rounded-md border border-brand-gold/50 bg-brand-gold/10 px-2.5 py-1 text-xs font-medium text-brand-gold hover:bg-brand-gold/20"
+                                        @click="continueReply"
+                                    >
+                                        <ArrowUp class="size-3.5 rotate-90" />
+                                        Continue — the reply was cut off at the
+                                        length limit
+                                    </button>
                                 </div>
                             </div>
+
+                            <!-- Edit-and-resend pencil (last user message) -->
+                            <button
+                                v-if="
+                                    m.role === 'user' &&
+                                    i >= messages.length - 2 &&
+                                    editingIndex === null &&
+                                    !loading
+                                "
+                                type="button"
+                                class="mt-2 self-start rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                                title="Edit and resend"
+                                @click="startEdit(i)"
+                            >
+                                <Pencil class="size-3.5" />
+                            </button>
 
                             <div
                                 v-if="m.role === 'user'"
@@ -1246,7 +1551,7 @@ onMounted(() => {
                                 "
                                 class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
                                 aria-label="Send message"
-                                @click="send"
+                                @click="send()"
                             >
                                 <ArrowUp class="size-5" />
                             </button>

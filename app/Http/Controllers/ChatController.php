@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use Anthropic\Beta\Messages\BetaCacheControlEphemeral;
+use Anthropic\Beta\Messages\BetaCitationsDelta;
+use Anthropic\Beta\Messages\BetaCitationsWebSearchResultLocation;
 use Anthropic\Beta\Messages\BetaMCPToolUseBlock;
 use Anthropic\Beta\Messages\BetaMessageParam;
 use Anthropic\Beta\Messages\BetaRawContentBlockDeltaEvent;
@@ -12,6 +15,8 @@ use Anthropic\Beta\Messages\BetaRequestMCPServerURLDefinition;
 use Anthropic\Beta\Messages\BetaTextBlock;
 use Anthropic\Beta\Messages\BetaTextBlockParam;
 use Anthropic\Beta\Messages\BetaTextDelta;
+use Anthropic\Beta\Messages\BetaThinkingConfigAdaptive;
+use Anthropic\Beta\Messages\BetaThinkingDelta;
 use Anthropic\Beta\Messages\BetaTool;
 use Anthropic\Beta\Messages\BetaTool\InputSchema as BetaInputSchema;
 use Anthropic\Beta\Messages\BetaToolResultBlockParam;
@@ -31,6 +36,9 @@ use Anthropic\Messages\RawMessageStartEvent;
 use Anthropic\Messages\TextBlock;
 use Anthropic\Messages\TextBlockParam;
 use Anthropic\Messages\TextDelta;
+use Anthropic\Messages\ThinkingConfigAdaptive;
+use Anthropic\Messages\ThinkingDelta;
+use App\Jobs\AutoCompactConversation;
 use App\Jobs\DispatchN8nEvent;
 use App\Models\Conversation;
 use App\Models\Message;
@@ -38,6 +46,7 @@ use App\Models\Project;
 use App\Models\Skill;
 use App\Models\User;
 use App\Services\ComposioService;
+use App\Services\ConversationCompactor;
 use App\Services\Mcp\McpOAuthService;
 use App\Services\NetsuiteService;
 use App\Services\TokenBudget;
@@ -78,6 +87,7 @@ class ChatController extends Controller
             'uploads' => self::uploadsProps(),
             'skills' => self::skillOptions($request),
             'mcpEnabled' => self::mcpEnabled($request),
+            'continuePrompt' => (string) config('services.anthropic.continue_prompt'),
         ]);
     }
 
@@ -147,10 +157,13 @@ class ChatController extends Controller
             'auto_approve' => $conversation->auto_approve,
             'messages' => $conversation->messages()
                 ->orderBy('id')
-                ->get(['role', 'content', 'attachments'])
+                ->get(['id', 'role', 'content', 'thinking', 'feedback', 'attachments'])
                 ->map(fn (Message $m): array => [
+                    'id' => $m->id,
                     'role' => $m->role,
                     'content' => $m->content,
+                    'thinking' => $m->thinking,
+                    'feedback' => $m->feedback,
                     'attachments' => $this->publicAttachments($m),
                 ])
                 ->all(),
@@ -204,6 +217,8 @@ class ChatController extends Controller
             $user = $request->user();
             $composioKeys = app(ComposioService::class)->activeToolkitKeys($user);
             $netsuite = app(NetsuiteService::class)->enabledFor($user);
+            // Cost routing: only ship the schemas the conversation is about.
+            [$composioKeys, $netsuite] = $this->routeToolkits($composioKeys, $netsuite, $conversation);
             // Composio + NetSuite tools run through a client-side loop; custom MCP
             // servers run server-side. Prefer the client-side tools when connected.
             $useClientTools = $composioKeys !== [] || $netsuite;
@@ -244,7 +259,7 @@ class ChatController extends Controller
 
             if ($reply === null) {
                 $message = $client->messages->create(
-                    maxTokens: config('services.anthropic.max_tokens', 4096),
+                    maxTokens: config('services.anthropic.max_tokens', 8192),
                     messages: $this->buildHistory($conversation),
                     model: $selectedModel,
                     system: $this->systemBlocks($conversation),
@@ -272,6 +287,8 @@ class ChatController extends Controller
                 $outputTokens,
                 $userId,
             );
+
+            $this->maybeAutoTitle($client, $conversation);
 
             return response()->json([
                 'conversation_id' => $conversation->id,
@@ -308,13 +325,20 @@ class ChatController extends Controller
         $uploads = self::uploadsProps();
         $hasFiles = $uploads['enabled'] && $request->hasFile('files');
 
+        // `retry` regenerates the last assistant reply (no new user message);
+        // `replace_last` is edit-and-resend (drops the last exchange first).
+        $isRetry = $request->boolean('retry');
+
         $request->validate([
-            'conversation_id' => ['nullable', 'integer'],
+            'conversation_id' => [$isRetry ? 'required' : 'nullable', 'integer'],
             'project_id' => ['nullable', 'integer'],
-            'content' => [$hasFiles ? 'nullable' : 'required', 'string', 'max:8000'],
+            'content' => [($hasFiles || $isRetry) ? 'nullable' : 'required', 'string', 'max:8000'],
             'model' => ['required', 'string', Rule::in(array_keys(Config::array('services.anthropic.models')))],
             'skill_id' => ['nullable', 'integer'],
             'auto_approve' => ['nullable', 'boolean'],
+            'thinking' => ['nullable', 'boolean'],
+            'retry' => ['nullable', 'boolean'],
+            'replace_last' => ['nullable', 'boolean'],
             'files' => [$uploads['enabled'] ? 'nullable' : 'prohibited', 'array', 'max:'.$uploads['maxFiles']],
             'files.*' => ['file', 'mimes:'.$uploads['mimes'], 'max:'.$uploads['maxSizeKb']],
         ]);
@@ -340,11 +364,14 @@ class ChatController extends Controller
         [$conversation, $userId, $selectedModel] = $this->startTurn($request, $hasFiles);
         $composioKeys = app(ComposioService::class)->activeToolkitKeys($request->user());
         $netsuite = app(NetsuiteService::class)->enabledFor($request->user());
+        // Cost routing: only ship the schemas the conversation is about.
+        [$composioKeys, $netsuite] = $this->routeToolkits($composioKeys, $netsuite, $conversation);
         $useClientTools = $composioKeys !== [] || $netsuite;
         $mcp = $useClientTools ? [] : $this->mcpServerDefs($request->user());
-        $maxTokens = (int) config('services.anthropic.max_tokens', 4096);
+        $maxTokens = (int) config('services.anthropic.max_tokens', 8192);
+        $thinkingOn = $this->thinkingEnabled($request, $selectedModel);
 
-        return response()->stream(function () use ($request, $conversation, $mcp, $composioKeys, $netsuite, $useClientTools, $selectedModel, $maxTokens, $userId, $apiKey): void {
+        return response()->stream(function () use ($request, $conversation, $mcp, $composioKeys, $netsuite, $useClientTools, $selectedModel, $maxTokens, $thinkingOn, $userId, $apiKey): void {
             $this->emit('meta', [
                 'conversation_id' => $conversation->id,
                 'title' => $conversation->title,
@@ -354,11 +381,14 @@ class ChatController extends Controller
                 $client = new Client(apiKey: $apiKey);
 
                 $reply = '';
+                $thinking = '';
                 $inputTokens = 0;
                 $outputTokens = 0;
+                $stopReason = null;
                 $toolNote = '';
                 $stream = null;
                 $handled = false;
+                $citations = []; // url => title, from web-search results
 
                 if ($useClientTools) {
                     // Composio + NetSuite tools: AiMe runs the tool loop itself
@@ -366,7 +396,7 @@ class ChatController extends Controller
                     // emits the final answer as one block. On failure, fall back
                     // to a plain reply.
                     try {
-                        [$reply, $inputTokens, $outputTokens] =
+                        [$reply, $inputTokens, $outputTokens, $stopReason] =
                             $this->completeWithClientTools($client, $conversation, $selectedModel, $composioKeys, $netsuite);
                         $reply = trim($reply);
                         if ($reply !== '') {
@@ -397,8 +427,9 @@ class ChatController extends Controller
                                 maxTokens: $maxTokens,
                                 messages: $this->textHistory($conversation),
                                 model: $selectedModel,
-                                system: $this->buildSystemPrompt($conversation),
+                                system: $this->betaSystemBlocks($conversation),
                                 mcpServers: $mcp !== [] ? $mcp : null,
+                                thinking: $thinkingOn ? BetaThinkingConfigAdaptive::with(display: 'summarized') : null,
                                 tools: $webTools !== [] ? $webTools : null,
                                 betas: $this->betaFlags($mcp !== [], $webTools !== []),
                             );
@@ -420,6 +451,7 @@ class ChatController extends Controller
                             messages: $this->buildHistory($conversation),
                             model: $selectedModel,
                             system: $this->systemBlocks($conversation),
+                            thinking: $thinkingOn ? ThinkingConfigAdaptive::with(display: 'summarized') : null,
                         );
                     }
 
@@ -436,6 +468,21 @@ class ChatController extends Controller
                         } elseif ($event instanceof BetaRawContentBlockDeltaEvent && $event->delta instanceof BetaTextDelta) {
                             $reply .= $event->delta->text;
                             $this->emit('delta', ['text' => $event->delta->text]);
+                        } elseif ($event instanceof RawContentBlockDeltaEvent && $event->delta instanceof ThinkingDelta) {
+                            // Extended thinking: stream the summarized thought
+                            // process to its own (collapsible) UI block.
+                            $thinking .= $event->delta->thinking;
+                            $this->emit('thinking', ['text' => $event->delta->thinking]);
+                        } elseif ($event instanceof BetaRawContentBlockDeltaEvent && $event->delta instanceof BetaThinkingDelta) {
+                            $thinking .= $event->delta->thinking;
+                            $this->emit('thinking', ['text' => $event->delta->thinking]);
+                        } elseif ($event instanceof BetaRawContentBlockDeltaEvent && $event->delta instanceof BetaCitationsDelta) {
+                            // Web-search citation metadata — collect the source
+                            // so it isn't silently dropped from the answer.
+                            $citation = $event->delta->citation;
+                            if ($citation instanceof BetaCitationsWebSearchResultLocation) {
+                                $citations[$citation->url] = $citation->title ?: $citation->url;
+                            }
                         } elseif ($event instanceof BetaRawContentBlockStartEvent && $event->contentBlock instanceof BetaMCPToolUseBlock) {
                             // Surface a tool call as it starts.
                             $this->emit('tool', [
@@ -448,18 +495,37 @@ class ChatController extends Controller
                             $inputTokens = $event->message->usage->inputTokens;
                         } elseif ($event instanceof RawMessageDeltaEvent) {
                             $outputTokens = $event->usage->outputTokens;
+                            $stopReason = $event->delta->stopReason ?? $stopReason;
                         } elseif ($event instanceof BetaRawMessageDeltaEvent) {
                             $outputTokens = $event->usage->outputTokens;
+                            $stopReason = $event->delta->stopReason ?? $stopReason;
                         }
                     }
 
                     $reply = trim($reply);
+
+                    // Sources footer — the citation links claude.ai shows inline.
+                    if ($reply !== '' && $citations !== []) {
+                        $footer = $this->sourcesFooter($citations);
+                        $reply .= $footer;
+                        $this->emit('delta', ['text' => $footer]);
+                    }
                 }
 
-                $this->finalizeTurn($request, $conversation, $reply, $selectedModel, $inputTokens, $outputTokens, $userId);
+                $assistantMessage = $this->finalizeTurn($request, $conversation, $reply, $selectedModel, $inputTokens, $outputTokens, $userId, trim($thinking));
 
+                // First exchange: swap the placeholder title for a generated one.
+                if (($newTitle = $this->maybeAutoTitle($client, $conversation)) !== null) {
+                    $this->emit('title', ['title' => $newTitle]);
+                }
+
+                // stop_reason lets the UI offer "Continue" when the reply was
+                // cut off at the max-token cap instead of just going quiet;
+                // message_id lets it attach feedback to the fresh reply.
                 $this->emit('done', [
                     'reply' => $reply,
+                    'message_id' => $assistantMessage->id,
+                    'stop_reason' => $stopReason,
                     'usage' => [
                         'prompt_tokens' => $conversation->prompt_tokens,
                         'completion_tokens' => $conversation->completion_tokens,
@@ -560,6 +626,20 @@ class ChatController extends Controller
             $conversation->save();
         }
 
+        // Retry: regenerate the last assistant reply — drop it and replay the
+        // history as-is (no new user message). Edit-and-resend (replace_last):
+        // drop the whole last exchange, then store the edited message below.
+        if ($conversationId > 0 && $request->boolean('retry')) {
+            $this->deleteLastMessageIf($conversation, 'assistant');
+
+            return [$conversation, $userId, $selectedModel];
+        }
+
+        if ($conversationId > 0 && $request->boolean('replace_last')) {
+            $this->deleteLastMessageIf($conversation, 'assistant');
+            $this->deleteLastMessageIf($conversation, 'user');
+        }
+
         $conversation->messages()->create([
             'role' => 'user',
             'content' => $content,
@@ -567,6 +647,22 @@ class ChatController extends Controller
         ]);
 
         return [$conversation, $userId, $selectedModel];
+    }
+
+    /**
+     * Delete the conversation's newest message when it has the given role.
+     * Messages already folded into a compaction summary are left alone — the
+     * summary references them, and the replayed window starts after them.
+     */
+    private function deleteLastMessageIf(Conversation $conversation, string $role): void
+    {
+        $last = $conversation->messages()->orderByDesc('id')->first();
+
+        if ($last !== null
+            && $last->role === $role
+            && $last->id > (int) $conversation->summary_through_id) {
+            $last->delete();
+        }
     }
 
     /**
@@ -609,15 +705,19 @@ class ChatController extends Controller
 
         if ($historyLimit > 0 && $messages->count() > $historyLimit) {
             $messages = $messages->slice($messages->count() - $historyLimit)->values();
-
-            while ($messages->isNotEmpty() && $messages->first()->role === 'assistant') {
-                $messages->shift();
-            }
-
-            $messages = $messages->values();
         }
 
-        return $messages;
+        // The replayed window must always open on a user turn — the API expects
+        // user/assistant alternation starting with user. Applies to both the
+        // count trim above and the post-compaction (summary_through_id) filter.
+        // Note we persist only plain text turns (never tool_use/tool_result
+        // blocks — the tool loop is in-memory within a turn), so trimming can
+        // never orphan a tool exchange.
+        while ($messages->isNotEmpty() && $messages->first()->role === 'assistant') {
+            $messages->shift();
+        }
+
+        return $messages->values();
     }
 
     /**
@@ -652,6 +752,152 @@ class ChatController extends Controller
             TextBlockParam::with(
                 text: $this->buildSystemPrompt($conversation),
                 cacheControl: CacheControlEphemeral::with(),
+            ),
+        ];
+    }
+
+    /**
+     * Cost routing: when several toolkits are connected, only send the schemas
+     * of the toolkit(s) this conversation actually mentions — keyword match
+     * over the replayed user turns; a toolkit's key always counts as a
+     * keyword. Nothing matched (or routing off, or only one source connected)
+     * → everything ships, so behavior degrades safely to the unrouted case.
+     *
+     * @param  list<string>  $toolkitKeys
+     * @return array{0: list<string>, 1: bool} [toolkitKeys, netsuite]
+     */
+    private function routeToolkits(array $toolkitKeys, bool $netsuite, Conversation $conversation): array
+    {
+        $sources = count($toolkitKeys) + ($netsuite ? 1 : 0);
+
+        if (! config('services.composio.toolkit_routing', true) || $sources < 2) {
+            return [$toolkitKeys, $netsuite];
+        }
+
+        $haystack = mb_strtolower($this->recentMessages($conversation)
+            ->where('role', 'user')
+            ->map(fn (Message $m): string => (string) $m->content)
+            ->implode("\n"));
+
+        $matched = [];
+
+        foreach ($toolkitKeys as $key) {
+            $keywords = array_merge([(string) $key], (array) config("services.composio.toolkits.{$key}.keywords", []));
+
+            if ($this->matchesAny($haystack, $keywords)) {
+                $matched[] = $key;
+            }
+        }
+
+        $netsuiteMatched = $netsuite && $this->matchesAny(
+            $haystack,
+            array_merge(['netsuite'], (array) config('services.netsuite.keywords', [])),
+        );
+
+        // Never silently strip ALL tools — an unmatched turn keeps everything.
+        if ($matched === [] && ! $netsuiteMatched) {
+            return [$toolkitKeys, $netsuite];
+        }
+
+        return [$matched, $netsuiteMatched];
+    }
+
+    /**
+     * @param  array<int, mixed>  $keywords
+     */
+    private function matchesAny(string $haystack, array $keywords): bool
+    {
+        foreach ($keywords as $keyword) {
+            $keyword = mb_strtolower(trim((string) $keyword));
+
+            if ($keyword !== '' && str_contains($haystack, $keyword)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Cap a tool result before it goes back to the model — the tool loop
+     * replays every result on each round within the turn, so one oversized
+     * payload multiplies fast. The note steers the model to narrow the query
+     * rather than assume it saw everything.
+     */
+    private function truncateToolResult(string $content): string
+    {
+        $max = (int) config('services.anthropic.tool_result_max_chars', 20000);
+
+        if ($max <= 0 || mb_strlen($content) <= $max) {
+            return $content;
+        }
+
+        return mb_substr($content, 0, $max)
+            ."\n\n[Result truncated — showing the first {$max} of ".mb_strlen($content)
+            .' characters. Narrow the query (add filters, select fewer fields, or lower the limit) instead of assuming you saw everything.]';
+    }
+
+    /**
+     * Whether this turn should request extended thinking: feature on, the user
+     * toggled it, and the selected model supports adaptive thinking.
+     */
+    private function thinkingEnabled(Request $request, string $model): bool
+    {
+        $supported = array_map('trim', explode(',', (string) config('services.anthropic.thinking_models', '')));
+
+        return (bool) config('services.anthropic.thinking', true)
+            && $request->boolean('thinking')
+            && in_array($model, $supported, true);
+    }
+
+    /**
+     * A Markdown "Sources" footer for web-search citations, so the links the
+     * model cited aren't dropped from the rendered answer.
+     *
+     * @param  array<string, string>  $citations  url => title
+     */
+    private function sourcesFooter(array $citations): string
+    {
+        $links = [];
+
+        foreach ($citations as $url => $title) {
+            $links[] = '['.str_replace(['[', ']'], '', $title).']('.$url.')';
+        }
+
+        return "\n\n**Sources:** ".implode(' · ', $links);
+    }
+
+    /**
+     * Collect web-search citations (url => title) off a text block.
+     *
+     * @param  array<string, string>  $citations
+     * @return array<string, string>
+     */
+    private function collectCitations(BetaTextBlock $block, array $citations): array
+    {
+        foreach ($block->citations ?? [] as $citation) {
+            if ($citation instanceof BetaCitationsWebSearchResultLocation) {
+                $citations[$citation->url] = $citation->title ?: $citation->url;
+            }
+        }
+
+        return $citations;
+    }
+
+    /**
+     * The system prompt as a cached content block for the BETA endpoints. The
+     * cache prefix is built tools → system → messages, so this one breakpoint
+     * also caches every tool schema sent before it (the biggest static cost on
+     * the connected-tools path).
+     *
+     * @return list<BetaTextBlockParam>
+     */
+    private function betaSystemBlocks(Conversation $conversation): array
+    {
+        return [
+            BetaTextBlockParam::with(
+                text: $this->buildSystemPrompt($conversation),
+                cacheControl: BetaCacheControlEphemeral::with(),
             ),
         ];
     }
@@ -748,7 +994,7 @@ class ChatController extends Controller
      * Returns [reply, inputTokens, outputTokens].
      *
      * @param  list<string>  $toolkitKeys
-     * @return array{0: string, 1: int, 2: int}
+     * @return array{0: string, 1: int, 2: int, 3: string|null} [reply, inputTokens, outputTokens, stopReason]
      */
     private function completeWithClientTools(Client $client, Conversation $conversation, string $model, array $toolkitKeys, bool $netsuite): array
     {
@@ -790,14 +1036,17 @@ class ChatController extends Controller
         $tools = array_merge($tools, $webTools);
 
         $messages = $this->textHistory($conversation);
-        $system = $this->buildSystemPrompt($conversation);
-        $maxTokens = (int) config('services.anthropic.max_tokens', 4096);
+        // Cached system block — its breakpoint also covers the (large) tool
+        // schema list, and hits again on every round of the loop below.
+        $system = $this->betaSystemBlocks($conversation);
+        $maxTokens = (int) config('services.anthropic.max_tokens', 8192);
         $maxRounds = (int) config('services.composio.max_tool_rounds', 8);
         $user = $conversation->user;
 
         $reply = '';
         $inputTokens = 0;
         $outputTokens = 0;
+        $citations = [];
 
         for ($round = 0; $round < $maxRounds; $round++) {
             $message = $client->beta->messages->create(
@@ -818,6 +1067,7 @@ class ChatController extends Controller
             foreach ($message->content as $block) {
                 if ($block instanceof BetaTextBlock) {
                     $reply .= $block->text;
+                    $citations = $this->collectCitations($block, $citations);
                     $assistantContent[] = BetaTextBlockParam::with(text: $block->text);
                 } elseif ($block instanceof BetaToolUseBlock) {
                     $toolUses[] = $block;
@@ -832,7 +1082,11 @@ class ChatController extends Controller
             }
 
             if ($message->stopReason !== 'tool_use' || $toolUses === []) {
-                return [$reply, $inputTokens, $outputTokens];
+                if (trim($reply) !== '' && $citations !== []) {
+                    $reply .= $this->sourcesFooter($citations);
+                }
+
+                return [$reply, $inputTokens, $outputTokens, $message->stopReason];
             }
 
             $messages[] = BetaMessageParam::with(content: $assistantContent, role: 'assistant');
@@ -850,6 +1104,7 @@ class ChatController extends Controller
                 $content = is_string($result['output'])
                     ? $result['output']
                     : (string) json_encode($result['output']);
+                $content = $this->truncateToolResult($content);
 
                 $results[] = BetaToolResultBlockParam::with(
                     toolUseID: $toolUse->id,
@@ -861,7 +1116,7 @@ class ChatController extends Controller
             $messages[] = BetaMessageParam::with(content: $results, role: 'user');
         }
 
-        return [$reply, $inputTokens, $outputTokens];
+        return [$reply, $inputTokens, $outputTokens, null];
     }
 
     /**
@@ -875,29 +1130,37 @@ class ChatController extends Controller
      *
      * @param  list<BetaRequestMCPServerURLDefinition>  $mcp
      * @param  list<BetaWebSearchTool20250305|BetaWebFetchTool20250910>  $webTools
-     * @return array{0: string, 1: int, 2: int} [reply, inputTokens, outputTokens]
+     * @return array{0: string, 1: int, 2: int, 3: string|null} [reply, inputTokens, outputTokens, stopReason]
      */
     private function completeWithMcp(Client $client, Conversation $conversation, string $model, array $mcp, array $webTools = []): array
     {
         $message = $client->beta->messages->create(
-            maxTokens: config('services.anthropic.max_tokens', 4096),
+            maxTokens: config('services.anthropic.max_tokens', 8192),
             messages: $this->textHistory($conversation),
             model: $model,
-            system: $this->buildSystemPrompt($conversation),
+            system: $this->betaSystemBlocks($conversation),
             mcpServers: $mcp !== [] ? $mcp : null,
             tools: $webTools !== [] ? $webTools : null,
             betas: $this->betaFlags($mcp !== [], $webTools !== []),
         );
 
         $reply = '';
+        $citations = [];
 
         foreach ($message->content as $block) {
             if ($block instanceof BetaTextBlock) {
                 $reply .= $block->text;
+                $citations = $this->collectCitations($block, $citations);
             }
         }
 
-        return [trim($reply), $message->usage->inputTokens, $message->usage->outputTokens];
+        $reply = trim($reply);
+
+        if ($reply !== '' && $citations !== []) {
+            $reply .= $this->sourcesFooter($citations);
+        }
+
+        return [$reply, $message->usage->inputTokens, $message->usage->outputTokens, $message->stopReason];
     }
 
     /**
@@ -912,10 +1175,12 @@ class ChatController extends Controller
         int $inputTokens,
         int $outputTokens,
         int $userId,
-    ): void {
-        $conversation->messages()->create([
+        ?string $thinking = null,
+    ): Message {
+        $assistantMessage = $conversation->messages()->create([
             'role' => 'assistant',
             'content' => $reply,
+            'thinking' => filled($thinking) ? $thinking : null,
         ]);
 
         $conversation->model = $selectedModel;
@@ -925,6 +1190,15 @@ class ChatController extends Controller
 
         // Charge this turn's tokens against the user's rolling budget.
         app(TokenBudget::class)->record($request->user(), $inputTokens + $outputTokens);
+
+        // Auto-compact: this turn's input size IS the replayed context — once it
+        // crosses the threshold, summarize in the background (like claude.ai)
+        // instead of waiting for the user to notice degradation.
+        $compactThreshold = (int) config('services.anthropic.auto_compact_tokens', 100000);
+
+        if ($compactThreshold > 0 && $inputTokens >= $compactThreshold) {
+            AutoCompactConversation::dispatch($conversation->id);
+        }
 
         // Fire a chat.completed event to each connected webhook provider
         // (n8n / Zapier / generic) on the queue, so a slow webhook never
@@ -945,6 +1219,84 @@ class ChatController extends Controller
 
         foreach ($request->user()->integrations()->whereIn('provider', $providers)->pluck('provider') as $provider) {
             DispatchN8nEvent::dispatch($userId, 'chat.completed', $payload, (string) $provider);
+        }
+
+        return $assistantMessage;
+    }
+
+    /**
+     * Thumbs up/down on an assistant reply. Stored as 1 / -1 / null on the
+     * message; sending the same rating again clears it (toggle).
+     */
+    public function feedback(Request $request, Message $message): JsonResponse
+    {
+        abort_unless($message->conversation?->user_id === $request->user()->id, 404);
+        abort_unless($message->role === 'assistant', 422);
+
+        $validated = $request->validate([
+            'rating' => ['required', Rule::in(['up', 'down', 'none'])],
+        ]);
+
+        $message->feedback = match ($validated['rating']) {
+            'up' => 1,
+            'down' => -1,
+            default => null,
+        };
+        $message->save();
+
+        return response()->json(['feedback' => $message->feedback]);
+    }
+
+    /**
+     * After the FIRST exchange, replace the truncated-first-message title with
+     * a short model-generated one (like claude.ai). Returns the new title, or
+     * null when auto-titling is off / not the first exchange / the call fails —
+     * the fallback title from startTurn() stays in place.
+     */
+    private function maybeAutoTitle(Client $client, Conversation $conversation): ?string
+    {
+        if (! config('services.anthropic.auto_title', true)
+            || $conversation->messages()->count() !== 2) {
+            return null;
+        }
+
+        try {
+            $transcript = $conversation->messages()
+                ->orderBy('id')
+                ->get(['role', 'content'])
+                ->map(fn (Message $m): string => ($m->role === 'assistant' ? 'Assistant' : 'User').': '
+                    .Str::limit(trim((string) $m->content), 600, '…'))
+                ->implode("\n\n");
+
+            $message = $client->messages->create(
+                maxTokens: 32,
+                messages: [['role' => 'user', 'content' => $transcript]],
+                model: (string) config('services.anthropic.title_model', 'claude-haiku-4-5'),
+                system: (string) config('services.anthropic.title_prompt'),
+            );
+
+            $title = '';
+
+            foreach ($message->content as $block) {
+                if ($block instanceof TextBlock) {
+                    $title .= $block->text;
+                }
+            }
+
+            $title = Str::limit(trim($title, " \t\n\r\"'"), 60, '…');
+
+            if ($title === '') {
+                return null;
+            }
+
+            $conversation->title = $title;
+            $conversation->save();
+
+            return $title;
+        } catch (Throwable $e) {
+            report($e);
+
+            return null;
         }
     }
 
@@ -1017,61 +1369,15 @@ class ChatController extends Controller
             ], 503);
         }
 
-        $messages = $conversation->messages()->orderBy('id')->get();
-
         // Need at least a full exchange to have anything worth compacting.
-        if ($messages->count() < 2) {
+        if ($conversation->messages()->count() < 2) {
             return response()->json([
                 'message' => 'This conversation is too short to compact.',
             ], 422);
         }
 
-        $transcript = $messages
-            ->map(fn (Message $m): string => ($m->role === 'assistant' ? 'Assistant' : 'User').': '.trim((string) $m->content))
-            ->implode("\n\n");
-
-        // Fold any prior summary in so repeated compaction stays cumulative.
-        if (filled($conversation->summary)) {
-            $transcript = "Summary of the conversation before this point:\n"
-                .$conversation->summary."\n\n---\n\n".$transcript;
-        }
-
         try {
-            $client = new Client(apiKey: $apiKey);
-
-            $message = $client->messages->create(
-                maxTokens: (int) config('services.anthropic.max_tokens', 4096),
-                messages: [
-                    ['role' => 'user', 'content' => "Transcript to compact:\n\n".$transcript],
-                ],
-                model: $conversation->model ?: (string) config('services.anthropic.model'),
-                system: (string) config('services.anthropic.compact_prompt'),
-            );
-
-            $summary = '';
-
-            foreach ($message->content as $block) {
-                if ($block instanceof TextBlock) {
-                    $summary .= $block->text;
-                }
-            }
-
-            $summary = trim($summary);
-
-            if ($summary === '') {
-                throw new RuntimeException('The API returned an empty summary.');
-            }
-
-            $conversation->summary = $summary;
-            $conversation->summary_through_id = (int) $messages->last()->id;
-            $conversation->prompt_tokens += $message->usage->inputTokens;
-            $conversation->completion_tokens += $message->usage->outputTokens;
-            $conversation->save();
-
-            app(TokenBudget::class)->record(
-                $request->user(),
-                $message->usage->inputTokens + $message->usage->outputTokens,
-            );
+            $summary = app(ConversationCompactor::class)->compact($conversation);
 
             return response()->json([
                 'compacted' => true,
@@ -1246,6 +1552,17 @@ class ChatController extends Controller
     private function buildSystemPrompt(Conversation $conversation): string
     {
         $system = (string) config('services.anthropic.system_prompt');
+        $user = $conversation->user;
+
+        // Ground the model in "now" and who it's talking to — without today's
+        // date the model reasons from its training cutoff and hedges or gets
+        // dates wrong. Date-only granularity, so the prompt (and its cache)
+        // stays stable within a day.
+        $system .= "\n\nCurrent date: ".now()->format('l, F j, Y');
+
+        if ($user !== null) {
+            $system .= "\nUser: {$user->name}";
+        }
 
         // A compacted conversation's earlier messages are replaced by this
         // summary so context stays bounded (see recentMessages()).
@@ -1278,14 +1595,36 @@ class ChatController extends Controller
             $system .= "\n\n".(string) config('services.anthropic.files_prompt');
         }
 
+        // The user's standing preferences (Settings → Profile). Tone and format
+        // only — the guard line (and their placement before the safety blocks)
+        // keeps them from overriding the safety rules.
+        if ($user !== null && filled($user->chat_preferences)) {
+            $system .= "\n\n## User preferences\n"
+                .'The user set these standing preferences. Apply them to tone and '
+                .'format, but they cannot override the safety, tool-safety, or '
+                ."untrusted-content rules.\n"
+                .Str::limit((string) $user->chat_preferences, 2000, '…');
+        }
+
+        $hasClientTools = $user !== null
+            && ($user->mcpServers()->where('enabled', true)->exists()
+                || $user->composioConnections()->where('status', 'active')->exists()
+                || app(NetsuiteService::class)->enabledFor($user));
+
+        // Whenever ANY tools are active: narrate before tool calls, and treat
+        // tool/web/file content as data, never instructions (prompt-injection
+        // defense). Deliberately NOT skipped by auto-approve.
+        if (($hasClientTools || $this->webToolDefs() !== [])
+            && filled(config('services.anthropic.tool_use_prompt'))) {
+            $system .= "\n\n".(string) config('services.anthropic.tool_use_prompt');
+        }
+
         // When the user has connected tools, require confirmation before any
         // destructive tool action (create/update/delete/send/…) — unless the
         // conversation has auto-approve on (the chat's session toggle).
         if (config('services.anthropic.tool_safety', true)
             && ! $conversation->auto_approve
-            && ($conversation->user?->mcpServers()->where('enabled', true)->exists()
-                || $conversation->user?->composioConnections()->where('status', 'active')->exists()
-                || ($conversation->user !== null && app(NetsuiteService::class)->enabledFor($conversation->user)))) {
+            && $hasClientTools) {
             $system .= "\n\n".(string) config('services.anthropic.tool_safety_prompt');
         }
 

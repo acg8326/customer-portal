@@ -71,6 +71,7 @@ class ProjectController extends Controller
             'uploads' => ChatController::uploadsProps(),
             'skills' => ChatController::skillOptions($request),
             'mcpEnabled' => ChatController::mcpEnabled($request),
+            'continuePrompt' => (string) config('services.anthropic.continue_prompt'),
             'conversations' => $project->conversations()
                 ->latest('updated_at')
                 ->get(['id', 'title', 'updated_at'])

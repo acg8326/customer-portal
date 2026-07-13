@@ -33,6 +33,7 @@ return Application::configure(basePath: dirname(__DIR__))
                 || $request->is('chat/stream')
                 || $request->is('chat/search')
                 || $request->is('chat/conversations/*')
+                || $request->is('chat/messages/*')
                 || $request->is('chat/export/*')
                 // NetSuite connect/test are called via fetch and expect JSON
                 // (validation errors included), not a web redirect.

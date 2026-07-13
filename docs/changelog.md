@@ -3,6 +3,115 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Chat: cost routing — per-toolkit schema activation + tool-result caps
+
+- **Per-toolkit routing.** Tool schemas are the silent cost: every connected
+  toolkit's full schema list was serialized into the prompt on every turn, so a
+  user with Slack + NetSuite connected paid for both even when asking about only
+  one. Now, when **several** sources are connected, only the toolkit(s) the
+  conversation mentions ship their schemas (keyword match over the replayed
+  user turns; the toolkit key itself always matches; keywords are
+  `.env`-overridable per toolkit). No match → everything ships, one source →
+  routing bypassed, `COMPOSIO_TOOLKIT_ROUTING=false` → off. Matching scans the
+  whole replayed window, so "now send that to the team" keeps Slack active
+  from an earlier turn. Note routing changes the tools list, which invalidates
+  the cache prefix on the *switch* turn — within a focused conversation the set
+  stays stable and caching still wins.
+- **Tool-result truncation.** A single tool result fed back to the model is now
+  capped at `ANTHROPIC_TOOL_RESULT_MAX_CHARS` (default 20k chars, 0 disables) —
+  within a turn the tool loop replays every result on each round, so one
+  oversized payload multiplied fast. Truncated results end with a note telling
+  the model it saw a partial result and should **narrow the query** instead of
+  assuming completeness. (Tool results are never persisted — history is
+  text-only — so cross-turn replay of bulky results was already impossible;
+  SuiteQL rows were already capped at `NETSUITE_SUITEQL_MAX_ROWS`, and
+  NetSuite's own `totalResults`/`hasMore` fields tell the model the full count.)
+
+## Chat: claude.ai parity — thinking mode, auto-titles, auto-compact, continue, retry/edit/feedback, preferences, citations
+
+- **Extended thinking (visible).** A **Thinking** toggle in the chat header
+  requests adaptive thinking (summarized display) on supported models
+  (`ANTHROPIC_THINKING_MODELS`); the thought process streams into a collapsible
+  "Thought process" block above the answer and is persisted per message
+  (`messages.thinking`). Skipped silently on non-supporting models and on the
+  connected-tools loop (thinking + client tool replay is a follow-up).
+- **Auto-generated titles.** After the first exchange, a cheap
+  `ANTHROPIC_TITLE_MODEL` (Haiku) call replaces the truncated-first-message
+  title; the sidebar updates live via a new `title` SSE event. Off with
+  `ANTHROPIC_AUTO_TITLE=false`.
+- **Auto-compact.** When a turn's replayed context crosses
+  `ANTHROPIC_AUTO_COMPACT_TOKENS` (default 100k), the conversation is compacted
+  on the queue ([`AutoCompactConversation`](../app/Jobs/AutoCompactConversation.php))
+  using the same summarizer as the manual button (extracted to
+  [`ConversationCompactor`](../app/Services/ConversationCompactor.php)).
+- **Longer replies + Continue.** `ANTHROPIC_MAX_TOKENS` default raised
+  4096 → 8192; the stream's `done` event now carries `stop_reason`, and when a
+  reply hits the cap the UI shows a **Continue** button that resumes it
+  (`ANTHROPIC_CONTINUE_PROMPT`). Assistant prefill isn't supported on 4.6+
+  models, so Continue sends a normal follow-up turn.
+- **Message affordances.** **Retry** (regenerate the last reply — the server
+  drops it and replays history), **edit-and-resend** (pencil on the last user
+  message; server drops the last exchange via `replace_last`), and **thumbs
+  up/down** stored on `messages.feedback`
+  (`POST /chat/messages/{id}/feedback`, toggleable).
+- **User preferences.** New `users.chat_preferences` + a "Chat preferences"
+  section under Settings → Profile; appended to the system prompt as
+  `## User preferences` with a guard line (tone/format only, can't override
+  safety rules).
+- **Web citations surfaced.** Web-search citation metadata (previously dropped)
+  is now collected on every path and appended as a **Sources:** footer of
+  Markdown links.
+- **History-window hardening.** The replayed window now always opens on a user
+  turn (also after compaction), and messages already folded into a compaction
+  summary can't be deleted by retry/edit. (Tool_use/tool_result blocks are never
+  persisted, so trimming could never orphan a tool exchange — verified.)
+
+## Chat: date grounding, prompt-injection defense, wider prompt caching & model check
+
+- **Current date + user injected at runtime.** `buildSystemPrompt()` now appends
+  `Current date: …` (day-level) and the user's name — the model stops reasoning
+  from its training cutoff, and the web-tools note explicitly says to **search
+  instead of mentioning a "knowledge cutoff"** for anything recent.
+- **Untrusted-content guardrail.** New always-on note when any tools are active:
+  tool/web/file content is **data, not instructions** (prompt-injection defense
+  for a portal wired into NetSuite/Slack/web), plus brief natural narration
+  before each tool call. Not skipped by auto-approve; override with
+  `ANTHROPIC_TOOL_USE_PROMPT`.
+- **Web-answer style.** Web-search answers stay conversational prose (no
+  report-with-headers unless asked), paraphrase over quoting (quotes under ~15
+  words, one per source), sources named naturally in the sentence.
+- **Identity honesty + multilingual nuance.** AiMe BOT says it's built on Claude
+  models by Anthropic if asked (never volunteers it), and keeps code/technical
+  identifiers/table headers untranslated inside localized replies.
+- **Prompt caching on the beta paths.** The MCP/web stream, `completeWithMcp`,
+  and the connected-tools loop now send the system prompt as a **cached block**
+  (`cache_control: ephemeral`); the breakpoint also covers the tool schemas and
+  re-hits every loop round. (The plain path was already cached.)
+- **Model picker check.** Validated all 8 picker ids against the live API (all
+  valid); fixed the Fable 5 label ("Anthropic's most capable", not "creative
+  writing") and added **`php artisan chat:check-models`** to catch stale ids
+  before they 404 mid-chat. New optional `ANTHROPIC_BASE_URL`.
+
+## Chat: Claude-style persona for AiMe BOT
+
+- Rewrote the default system prompt (`config/services.php` →
+  `anthropic.system_prompt`) in the style of Claude's own chat (claude.ai) while
+  keeping the AiMe BOT identity: **response length calibrated** to the question
+  (a sentence for simple asks, organized depth for complex ones), **prose by
+  default** (bullets/headers only for genuinely multifaceted content — short
+  lists read as "x, y, and z" in prose), **honest pushback** (disagree kindly
+  when a premise is wrong instead of validating to be pleasant), **calibrated
+  uncertainty** ("I believe" / "you should verify" — never invented account
+  details or policy specifics), **grounding** (prefer connected tools over
+  general knowledge for account/policy questions, and say when an answer is
+  general rather than CW-specific), **question discipline** (at most one
+  clarifying question, and try a useful answer under a stated assumption first),
+  **graceful refusals** (a warm sentence + pivot, never a bulleted list of
+  reasons), **no engagement-bait** (no "anything else?" endings), **owned
+  mistakes** (one brief acknowledgment, no groveling), **no emojis** unless the
+  user uses them first, and answers **in the user's language**. Still
+  single-line overridable via `ANTHROPIC_SYSTEM_PROMPT`.
+
 ## Chat: UI polish — no empty "thinking" bubble, clearer auto-approve switch
 
 - **No dead space while thinking.** The empty assistant placeholder bubble that

@@ -11,9 +11,11 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int $conversation_id
  * @property string $role
  * @property string $content
+ * @property string|null $thinking
+ * @property int|null $feedback
  * @property array<int, array{name: string, mime: string, size: int, path: string}>|null $attachments
  */
-#[Fillable(['role', 'content', 'attachments'])]
+#[Fillable(['role', 'content', 'thinking', 'attachments'])]
 class Message extends Model
 {
     /**

@@ -4,6 +4,7 @@ export type User = {
     email: string;
     role: string;
     avatar?: string;
+    chat_preferences?: string | null;
     email_verified_at: string | null;
     two_factor_enabled?: boolean;
     created_at: string;
