@@ -30,12 +30,41 @@ function systemPromptFor(Conversation $conversation): string
     return (string) $method->invoke(app(ChatController::class), $conversation);
 }
 
-test('the tool-safety guardrail is included by default when tools are connected', function () {
-    config(['services.anthropic.tool_safety' => true]);
+test('the ask-in-text guardrail applies to client tools when the hard gate is off', function () {
+    config(['services.anthropic.tool_safety' => true, 'services.anthropic.tool_hard_gate' => false]);
 
     $prompt = systemPromptFor(makeToolConversation(false)->fresh());
 
     expect($prompt)->toContain('Using connected tools safely');
+});
+
+test('the hard gate replaces the ask-in-text guardrail for client tools', function () {
+    config(['services.anthropic.tool_safety' => true, 'services.anthropic.tool_hard_gate' => true]);
+
+    $prompt = systemPromptFor(makeToolConversation(false)->fresh());
+
+    // The UI approval card gates destructive calls instead — no double prompt.
+    expect($prompt)->not->toContain('Using connected tools safely');
+});
+
+test('MCP servers keep the ask-in-text guardrail even with the hard gate on', function () {
+    config(['services.anthropic.tool_safety' => true, 'services.anthropic.tool_hard_gate' => true]);
+
+    $user = User::factory()->create();
+    $user->mcpServers()->create([
+        'name' => 'Test MCP',
+        'url' => 'https://mcp.example.com',
+        'enabled' => true,
+    ]);
+
+    $conversation = new Conversation;
+    $conversation->user_id = $user->id;
+    $conversation->title = 'MCP chat';
+    $conversation->model = 'claude-opus-4-8';
+    $conversation->save();
+
+    // MCP tools execute at Anthropic and can't be gated client-side.
+    expect(systemPromptFor($conversation->fresh()))->toContain('Using connected tools safely');
 });
 
 test('auto-approve omits the tool-safety guardrail', function () {

@@ -298,6 +298,20 @@ return [
         // the text with ANTHROPIC_TOOL_SAFETY_PROMPT.
         'tool_safety' => (bool) env('ANTHROPIC_TOOL_SAFETY', true),
 
+        // HARD approval gate for the connected-tools loop (Composio + NetSuite):
+        // a destructive tool call pauses the turn and the chat shows an
+        // Approve / Cancel card — the tool does NOT run until the user clicks
+        // Approve. Stronger than the prompt guardrail above (which only asks
+        // the model to ask); when the gate is on, the ask-in-text guardrail is
+        // dropped for these tools so the user isn't prompted twice. MCP servers
+        // run server-side at Anthropic and can't be gated — they keep the text
+        // guardrail. Auto-approve (per-session toggle) bypasses the gate.
+        'tool_hard_gate' => (bool) env('ANTHROPIC_TOOL_HARD_GATE', true),
+
+        // A tool call is "destructive" when its name contains one of these verb
+        // tokens (split on _/-). Reads (get/list/search/suiteql) never match.
+        'tool_gate_verbs' => env('ANTHROPIC_TOOL_GATE_VERBS', 'create,update,delete,remove,send,post,write,add,move,archive,set,edit,upload,invite,kick,ban,schedule,cancel,publish,merge,close,assign'),
+
         'tool_safety_prompt' => env('ANTHROPIC_TOOL_SAFETY_PROMPT', <<<'PROMPT'
             ## Using connected tools safely
             You may freely READ, search, list, or fetch data with connected tools.

@@ -64,6 +64,12 @@ type ConversationSummary = {
     title: string;
 };
 
+// A tool call awaiting Approve/Cancel at the hard gate.
+type PendingCall = {
+    name: string;
+    input: Record<string, unknown>;
+};
+
 type UploadConfig = {
     enabled: boolean;
     maxFiles: number;
@@ -195,6 +201,9 @@ function toggleThinking() {
 
 // stop_reason of the last completed reply — 'max_tokens' shows "Continue".
 const lastStopReason = ref<string | null>(null);
+
+// Tool calls paused at the hard gate, awaiting Approve / Cancel.
+const pendingApproval = ref<PendingCall[] | null>(null);
 
 // Edit-and-resend state (pencil on the last user message).
 const editingIndex = ref<number | null>(null);
@@ -468,6 +477,7 @@ function newChat() {
     compacted.value = false;
     lastStopReason.value = null;
     editingIndex.value = null;
+    pendingApproval.value = null;
 }
 
 async function selectConversation(id: number) {
@@ -497,6 +507,7 @@ async function selectConversation(id: number) {
         compacted.value = data.compacted ?? false;
         lastStopReason.value = null;
         editingIndex.value = null;
+        pendingApproval.value = data.pending_approval ?? null;
 
         if (typeof data.model === 'string') {
             model.value = data.model;
@@ -536,6 +547,8 @@ async function send(opts: SendOptions = {}) {
     error.value = null;
     lastStopReason.value = null;
     editingIndex.value = null;
+    // A new turn supersedes any paused tool approval (the server drops it too).
+    pendingApproval.value = null;
 
     if (isRetry) {
         // Drop the last assistant bubble locally; the server does the same.
@@ -638,118 +651,190 @@ async function send(opts: SendOptions = {}) {
             throw new Error(data.message ?? 'The assistant could not respond.');
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        for (;;) {
-            const { done, value } = await reader.read();
-
-            if (done) {
-                break;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-
-            // SSE frames are separated by a blank line.
-            let sep = buffer.indexOf('\n\n');
-
-            while (sep !== -1) {
-                const frame = buffer.slice(0, sep).trim();
-                buffer = buffer.slice(sep + 2);
-                sep = buffer.indexOf('\n\n');
-
-                if (frame === '') {
-                    continue;
-                }
-
-                let evt = 'message';
-                let dataStr = '';
-
-                for (const line of frame.split('\n')) {
-                    if (line.startsWith('event:')) {
-                        evt = line.slice(6).trim();
-                    } else if (line.startsWith('data:')) {
-                        dataStr += line.slice(5).trim();
-                    }
-                }
-
-                let payload: {
-                    conversation_id?: number;
-                    title?: string;
-                    text?: string;
-                    message?: string;
-                    message_id?: number;
-                    stop_reason?: string | null;
-                    name?: string;
-                    server?: string;
-                    usage?: {
-                        prompt_tokens?: number;
-                        completion_tokens?: number;
-                    };
-                } = {};
-
-                try {
-                    payload = dataStr ? JSON.parse(dataStr) : {};
-                } catch {
-                    payload = {};
-                }
-
-                if (evt === 'meta') {
-                    if (payload.conversation_id != null) {
-                        activeId.value = payload.conversation_id;
-                        bumpToTop(payload.conversation_id, payload.title ?? '');
-                    }
-                } else if (evt === 'title') {
-                    // Auto-generated title after the first exchange.
-                    if (activeId.value != null && payload.title) {
-                        bumpToTop(activeId.value, payload.title);
-                    }
-                } else if (evt === 'tool') {
-                    // An MCP tool is being called server-side.
-                    streamingTool.value =
-                        payload.server ?? payload.name ?? 'a tool';
-                } else if (evt === 'thinking') {
-                    // Extended thinking: fills the collapsible block.
-                    streaming.value = true;
-                    messages.value[assistantIndex].thinking =
-                        (messages.value[assistantIndex].thinking ?? '') +
-                        (payload.text ?? '');
-                    await scrollToBottom();
-                } else if (evt === 'delta') {
-                    streaming.value = true;
-                    streamingTool.value = null;
-                    streamed += payload.text ?? '';
-                    messages.value[assistantIndex].content = streamed;
-                    await scrollToBottom();
-                } else if (evt === 'done') {
-                    if (payload.usage) {
-                        promptTokens.value =
-                            payload.usage.prompt_tokens ?? promptTokens.value;
-                        completionTokens.value =
-                            payload.usage.completion_tokens ??
-                            completionTokens.value;
-                    }
-
-                    messages.value[assistantIndex].id = payload.message_id;
-                    lastStopReason.value = payload.stop_reason ?? null;
-                } else if (evt === 'error') {
-                    throw new Error(
-                        payload.message ?? 'The assistant could not respond.',
-                    );
-                }
-            }
-        }
+        streamed = await consumeStream(res, assistantIndex);
     } catch (e) {
         error.value = e instanceof Error ? e.message : 'Something went wrong.';
 
-        // Drop the empty assistant bubble if nothing streamed before failing.
+        // Drop the assistant bubble if nothing arrived before failing.
         if (
             streamed === '' &&
+            !messages.value[assistantIndex]?.thinking &&
             messages.value[assistantIndex]?.role === 'assistant'
         ) {
             messages.value.splice(assistantIndex, 1);
         }
+    } finally {
+        loading.value = false;
+        streaming.value = false;
+        streamingTool.value = null;
+        await scrollToBottom();
+    }
+}
+
+// Read a chat SSE stream (from /chat/stream or the tool-decision endpoint)
+// into the assistant bubble at assistantIndex. Returns the streamed text.
+async function consumeStream(
+    res: Response,
+    assistantIndex: number,
+): Promise<string> {
+    if (!res.body) {
+        return '';
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let streamed = '';
+
+    for (;;) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+            break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE frames are separated by a blank line.
+        let sep = buffer.indexOf('\n\n');
+
+        while (sep !== -1) {
+            const frame = buffer.slice(0, sep).trim();
+            buffer = buffer.slice(sep + 2);
+            sep = buffer.indexOf('\n\n');
+
+            if (frame === '') {
+                continue;
+            }
+
+            let evt = 'message';
+            let dataStr = '';
+
+            for (const line of frame.split('\n')) {
+                if (line.startsWith('event:')) {
+                    evt = line.slice(6).trim();
+                } else if (line.startsWith('data:')) {
+                    dataStr += line.slice(5).trim();
+                }
+            }
+
+            let payload: {
+                conversation_id?: number;
+                title?: string;
+                text?: string;
+                message?: string;
+                message_id?: number;
+                stop_reason?: string | null;
+                name?: string;
+                server?: string;
+                calls?: PendingCall[];
+                usage?: {
+                    prompt_tokens?: number;
+                    completion_tokens?: number;
+                };
+            } = {};
+
+            try {
+                payload = dataStr ? JSON.parse(dataStr) : {};
+            } catch {
+                payload = {};
+            }
+
+            if (evt === 'meta') {
+                if (payload.conversation_id != null) {
+                    activeId.value = payload.conversation_id;
+                    bumpToTop(payload.conversation_id, payload.title ?? '');
+                }
+            } else if (evt === 'title') {
+                // Auto-generated title after the first exchange.
+                if (activeId.value != null && payload.title) {
+                    bumpToTop(activeId.value, payload.title);
+                }
+            } else if (evt === 'tool') {
+                // An MCP tool is being called server-side.
+                streamingTool.value =
+                    payload.server ?? payload.name ?? 'a tool';
+            } else if (evt === 'approval') {
+                // Hard gate: the turn paused before a destructive tool call.
+                pendingApproval.value = payload.calls ?? [];
+            } else if (evt === 'thinking') {
+                // Extended thinking: fills the collapsible block.
+                streaming.value = true;
+                messages.value[assistantIndex].thinking =
+                    (messages.value[assistantIndex].thinking ?? '') +
+                    (payload.text ?? '');
+                await scrollToBottom();
+            } else if (evt === 'delta') {
+                streaming.value = true;
+                streamingTool.value = null;
+                streamed += payload.text ?? '';
+                messages.value[assistantIndex].content = streamed;
+                await scrollToBottom();
+            } else if (evt === 'done') {
+                if (payload.usage) {
+                    promptTokens.value =
+                        payload.usage.prompt_tokens ?? promptTokens.value;
+                    completionTokens.value =
+                        payload.usage.completion_tokens ??
+                        completionTokens.value;
+                }
+
+                if (payload.message_id != null) {
+                    messages.value[assistantIndex].id = payload.message_id;
+                }
+
+                lastStopReason.value = payload.stop_reason ?? null;
+            } else if (evt === 'error') {
+                throw new Error(
+                    payload.message ?? 'The assistant could not respond.',
+                );
+            }
+        }
+    }
+
+    return streamed;
+}
+
+// Approve or cancel the tool calls paused at the hard gate. The decision
+// endpoint streams the continuation (or the cancellation note) as SSE.
+async function decideTools(approve: boolean) {
+    if (loading.value || activeId.value == null || !pendingApproval.value) {
+        return;
+    }
+
+    pendingApproval.value = null;
+    error.value = null;
+    loading.value = true;
+    streaming.value = false;
+    streamingTool.value = null;
+
+    // Continue into the last assistant bubble, or open a fresh one.
+    let assistantIndex = messages.value.length - 1;
+
+    if (messages.value[assistantIndex]?.role !== 'assistant') {
+        assistantIndex =
+            messages.value.push({ role: 'assistant', content: '' }) - 1;
+    }
+
+    try {
+        const res = await fetch(
+            `/chat/conversations/${activeId.value}/tools/decision`,
+            {
+                method: 'POST',
+                headers: jsonHeaders(),
+                body: JSON.stringify({ approve }),
+            },
+        );
+
+        if (!res.ok || !res.body) {
+            const data = await res.json().catch(() => ({}));
+
+            throw new Error(data.message ?? 'Could not apply your decision.');
+        }
+
+        await consumeStream(res, assistantIndex);
+    } catch (e) {
+        error.value = e instanceof Error ? e.message : 'Something went wrong.';
     } finally {
         loading.value = false;
         streaming.value = false;
@@ -1416,6 +1501,68 @@ onMounted(() => {
                             </div>
                         </div>
                     </template>
+
+                    <!-- Tool approval card (hard gate): the turn is paused
+                         before a destructive tool call until the user decides. -->
+                    <div
+                        v-if="pendingApproval?.length && !loading"
+                        class="flex items-start gap-3"
+                    >
+                        <div
+                            class="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-navy to-brand-gold text-white shadow-sm"
+                        >
+                            <ShieldCheck class="size-4" />
+                        </div>
+                        <div
+                            class="max-w-[80%] rounded-2xl rounded-tl-sm border border-brand-gold/50 bg-brand-gold/5 px-4 py-3 text-sm"
+                        >
+                            <p class="flex items-center gap-1.5 font-medium">
+                                <ShieldCheck class="size-4 text-brand-gold" />
+                                Approval needed
+                            </p>
+                            <p class="mt-1 text-xs text-muted-foreground">
+                                AiMe wants to run
+                                {{ pendingApproval.length }}
+                                action{{
+                                    pendingApproval.length > 1 ? 's' : ''
+                                }}
+                                that will change external data:
+                            </p>
+                            <ul class="mt-2 space-y-1.5">
+                                <li
+                                    v-for="(c, ci) in pendingApproval"
+                                    :key="ci"
+                                    class="rounded-lg border border-border bg-background px-2.5 py-1.5"
+                                >
+                                    <p class="font-mono text-xs font-medium">
+                                        {{ c.name }}
+                                    </p>
+                                    <pre
+                                        class="mt-1 max-h-32 overflow-auto text-[11px] break-all whitespace-pre-wrap text-muted-foreground"
+                                        >{{
+                                            JSON.stringify(c.input, null, 2)
+                                        }}</pre
+                                    >
+                                </li>
+                            </ul>
+                            <div class="mt-3 flex gap-2">
+                                <button
+                                    type="button"
+                                    class="rounded-md bg-brand-gold px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-gold/90"
+                                    @click="decideTools(true)"
+                                >
+                                    Approve &amp; run
+                                </button>
+                                <button
+                                    type="button"
+                                    class="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+                                    @click="decideTools(false)"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    </div>
 
                     <!-- Typing / working indicator. Stays visible while a tool
                          runs (streamingTool set), even after text has started,

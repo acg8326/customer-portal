@@ -50,6 +50,7 @@ use App\Services\ConversationCompactor;
 use App\Services\Mcp\McpOAuthService;
 use App\Services\NetsuiteService;
 use App\Services\TokenBudget;
+use App\Services\UploadScanner;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -155,6 +156,7 @@ class ChatController extends Controller
             'completion_tokens' => $conversation->completion_tokens,
             'compacted' => filled($conversation->summary),
             'auto_approve' => $conversation->auto_approve,
+            'pending_approval' => $this->pendingCalls($conversation) ?: null,
             'messages' => $conversation->messages()
                 ->orderBy('id')
                 ->get(['id', 'role', 'content', 'thinking', 'feedback', 'attachments'])
@@ -230,8 +232,19 @@ class ChatController extends Controller
 
             if ($useClientTools) {
                 try {
-                    [$reply, $inputTokens, $outputTokens] =
+                    [$reply, $inputTokens, $outputTokens, $stopReason] =
                         $this->completeWithClientTools($client, $conversation, $selectedModel, $composioKeys, $netsuite);
+
+                    // Hard gate: nothing persists until the user decides via
+                    // the toolDecision endpoint (the chat UI shows the card).
+                    if ($stopReason === 'approval_required') {
+                        return response()->json([
+                            'conversation_id' => $conversation->id,
+                            'title' => $conversation->title,
+                            'reply' => trim((string) $reply),
+                            'pending_approval' => $this->pendingCalls($conversation),
+                        ]);
+                    }
                 } catch (Throwable $e) {
                     report($e);
                     Log::warning('Connected tools unavailable; answering without tools', [
@@ -398,6 +411,30 @@ class ChatController extends Controller
                     try {
                         [$reply, $inputTokens, $outputTokens, $stopReason] =
                             $this->completeWithClientTools($client, $conversation, $selectedModel, $composioKeys, $netsuite);
+
+                        // Hard gate: the turn paused before a destructive tool
+                        // call. Surface the approval card and stop — nothing is
+                        // persisted until the user decides (see toolDecision).
+                        if ($stopReason === 'approval_required') {
+                            $reply = trim($reply);
+
+                            if ($reply !== '') {
+                                $this->emit('delta', ['text' => $reply]);
+                            }
+
+                            $this->emit('approval', ['calls' => $this->pendingCalls($conversation)]);
+                            $this->emit('done', [
+                                'reply' => $reply,
+                                'stop_reason' => 'approval_required',
+                                'usage' => [
+                                    'prompt_tokens' => $conversation->prompt_tokens,
+                                    'completion_tokens' => $conversation->completion_tokens,
+                                ],
+                            ]);
+
+                            return;
+                        }
+
                         $reply = trim($reply);
                         if ($reply !== '') {
                             $this->emit('delta', ['text' => $reply]);
@@ -613,6 +650,9 @@ class ChatController extends Controller
         // Session toggle: when on, skip the confirm-before-destructive-actions
         // guardrail (applied per turn from the chat UI).
         $conversation->auto_approve = $request->boolean('auto_approve');
+        // A new turn supersedes any tool call still paused at the approval
+        // gate — the user moved on, so the stale pending state is dropped.
+        $conversation->pending_tool_state = null;
         $conversation->save();
 
         $attachments = $this->storeAttachments($request, $conversation, $hasFiles);
@@ -993,10 +1033,16 @@ class ChatController extends Controller
      * MCP connector can't send, and NetSuite needs OAuth 1.0a request signing.
      * Returns [reply, inputTokens, outputTokens].
      *
+     * A destructive tool call (see isDestructiveTool) pauses the loop at the
+     * HARD GATE: state is persisted on the conversation and stopReason comes
+     * back as 'approval_required'. Pass that state back as $resume (via the
+     * toolDecision endpoint) to execute the approved calls and continue.
+     *
      * @param  list<string>  $toolkitKeys
+     * @param  array<string, mixed>|null  $resume
      * @return array{0: string, 1: int, 2: int, 3: string|null} [reply, inputTokens, outputTokens, stopReason]
      */
-    private function completeWithClientTools(Client $client, Conversation $conversation, string $model, array $toolkitKeys, bool $netsuite): array
+    private function completeWithClientTools(Client $client, Conversation $conversation, string $model, array $toolkitKeys, bool $netsuite, ?array $resume = null): array
     {
         $composio = app(ComposioService::class);
         $netsuiteService = app(NetsuiteService::class);
@@ -1035,18 +1081,36 @@ class ChatController extends Controller
         $webTools = $this->webToolDefs();
         $tools = array_merge($tools, $webTools);
 
-        $messages = $this->textHistory($conversation);
         // Cached system block — its breakpoint also covers the (large) tool
         // schema list, and hits again on every round of the loop below.
         $system = $this->betaSystemBlocks($conversation);
         $maxTokens = (int) config('services.anthropic.max_tokens', 8192);
         $maxRounds = (int) config('services.composio.max_tool_rounds', 8);
-        $user = $conversation->user;
 
-        $reply = '';
-        $inputTokens = 0;
-        $outputTokens = 0;
-        $citations = [];
+        // Alongside the live param list we keep a JSON-safe mirror ($plain) of
+        // the same messages, so the loop can PAUSE at the hard approval gate
+        // (state persisted on the conversation) and resume after the user's
+        // Approve/Cancel decision.
+        if ($resume !== null) {
+            $plain = array_values((array) ($resume['messages'] ?? []));
+            $messages = $this->betaMessagesFromPlain($plain);
+            $reply = (string) ($resume['reply'] ?? '');
+            $inputTokens = (int) ($resume['input_tokens'] ?? 0);
+            $outputTokens = (int) ($resume['output_tokens'] ?? 0);
+            $citations = (array) ($resume['citations'] ?? []);
+
+            // The user approved: run the paused calls, then rejoin the loop.
+            [$messages, $plain] = $this->applyToolResults(
+                $conversation, $this->normalizedCalls((array) ($resume['pending'] ?? [])), $messages, $plain,
+            );
+        } else {
+            $plain = $this->textHistory($conversation);
+            $messages = $plain;
+            $reply = '';
+            $inputTokens = 0;
+            $outputTokens = 0;
+            $citations = [];
+        }
 
         for ($round = 0; $round < $maxRounds; $round++) {
             $message = $client->beta->messages->create(
@@ -1062,6 +1126,7 @@ class ChatController extends Controller
             $outputTokens += $message->usage->outputTokens;
 
             $assistantContent = [];
+            $assistantPlain = [];
             $toolUses = [];
 
             foreach ($message->content as $block) {
@@ -1069,6 +1134,7 @@ class ChatController extends Controller
                     $reply .= $block->text;
                     $citations = $this->collectCitations($block, $citations);
                     $assistantContent[] = BetaTextBlockParam::with(text: $block->text);
+                    $assistantPlain[] = ['type' => 'text', 'text' => $block->text];
                 } elseif ($block instanceof BetaToolUseBlock) {
                     $toolUses[] = $block;
                     $assistantContent[] = BetaToolUseBlockParam::with(
@@ -1076,6 +1142,12 @@ class ChatController extends Controller
                         input: (array) $block->input,
                         name: $block->name,
                     );
+                    $assistantPlain[] = [
+                        'type' => 'tool_use',
+                        'id' => $block->id,
+                        'name' => $block->name,
+                        'input' => (array) $block->input,
+                    ];
                 }
                 // Server-side web tool blocks resolve within the same response;
                 // they need no client handling and aren't replayed.
@@ -1090,33 +1162,219 @@ class ChatController extends Controller
             }
 
             $messages[] = BetaMessageParam::with(content: $assistantContent, role: 'assistant');
+            $plain[] = ['role' => 'assistant', 'content' => $assistantPlain];
 
-            $results = [];
-            foreach ($toolUses as $toolUse) {
-                if ($user === null) {
-                    $result = ['ok' => false, 'output' => 'No user context.'];
-                } elseif ($netsuiteService->isNetsuiteTool($toolUse->name)) {
-                    $result = $netsuiteService->execute($user, $toolUse->name, (array) $toolUse->input);
-                } else {
-                    $result = $composio->execute($user, $toolUse->name, (array) $toolUse->input);
-                }
+            // HARD GATE: a destructive call pauses the whole round — nothing
+            // executes until the user clicks Approve in the chat. The paused
+            // state (encrypted) carries everything needed to resume exactly.
+            if ($this->gateActive($conversation) && $this->anyDestructive($toolUses)) {
+                $conversation->pending_tool_state = [
+                    'model' => $model,
+                    'toolkits' => $toolkitKeys,
+                    'netsuite' => $netsuite,
+                    'reply' => $reply,
+                    'input_tokens' => $inputTokens,
+                    'output_tokens' => $outputTokens,
+                    'citations' => $citations,
+                    'messages' => $plain,
+                    'pending' => array_map(fn (BetaToolUseBlock $t): array => [
+                        'id' => $t->id,
+                        'name' => $t->name,
+                        'input' => (array) $t->input,
+                    ], $toolUses),
+                ];
+                $conversation->save();
 
-                $content = is_string($result['output'])
-                    ? $result['output']
-                    : (string) json_encode($result['output']);
-                $content = $this->truncateToolResult($content);
-
-                $results[] = BetaToolResultBlockParam::with(
-                    toolUseID: $toolUse->id,
-                    content: $content !== '' ? $content : '(no output)',
-                    isError: ! $result['ok'],
-                );
+                return [$reply, $inputTokens, $outputTokens, 'approval_required'];
             }
 
-            $messages[] = BetaMessageParam::with(content: $results, role: 'user');
+            [$messages, $plain] = $this->applyToolResults(
+                $conversation,
+                array_map(fn (BetaToolUseBlock $t): array => [
+                    'id' => $t->id,
+                    'name' => $t->name,
+                    'input' => (array) $t->input,
+                ], $toolUses),
+                $messages,
+                $plain,
+            );
         }
 
         return [$reply, $inputTokens, $outputTokens, null];
+    }
+
+    /**
+     * Execute a batch of tool calls and append the results to both the live
+     * param list and its JSON-safe mirror. Shared by the normal loop and the
+     * post-approval resume.
+     *
+     * @param  list<array{id: string, name: string, input: array<string, mixed>}>  $calls
+     * @param  list<mixed>  $messages
+     * @param  list<mixed>  $plain
+     * @return array{0: list<mixed>, 1: list<mixed>}
+     */
+    private function applyToolResults(Conversation $conversation, array $calls, array $messages, array $plain): array
+    {
+        $composio = app(ComposioService::class);
+        $netsuiteService = app(NetsuiteService::class);
+        $user = $conversation->user;
+
+        $results = [];
+        $resultsPlain = [];
+
+        foreach ($calls as $call) {
+            if ($user === null) {
+                $result = ['ok' => false, 'output' => 'No user context.'];
+            } elseif ($netsuiteService->isNetsuiteTool($call['name'])) {
+                $result = $netsuiteService->execute($user, $call['name'], (array) $call['input']);
+            } else {
+                $result = $composio->execute($user, $call['name'], (array) $call['input']);
+            }
+
+            $content = is_string($result['output'])
+                ? $result['output']
+                : (string) json_encode($result['output']);
+            $content = $this->truncateToolResult($content);
+            $content = $content !== '' ? $content : '(no output)';
+
+            $results[] = BetaToolResultBlockParam::with(
+                toolUseID: $call['id'],
+                content: $content,
+                isError: ! $result['ok'],
+            );
+            $resultsPlain[] = [
+                'type' => 'tool_result',
+                'tool_use_id' => $call['id'],
+                'content' => $content,
+                'is_error' => ! $result['ok'],
+            ];
+        }
+
+        $messages[] = BetaMessageParam::with(content: $results, role: 'user');
+        $plain[] = ['role' => 'user', 'content' => $resultsPlain];
+
+        return [$messages, $plain];
+    }
+
+    /**
+     * Normalize raw pending-call entries from stored gate state.
+     *
+     * @param  array<int|string, mixed>  $raw
+     * @return list<array{id: string, name: string, input: array<string, mixed>}>
+     */
+    private function normalizedCalls(array $raw): array
+    {
+        $calls = [];
+
+        foreach ($raw as $call) {
+            if (! is_array($call)) {
+                continue;
+            }
+
+            $input = $call['input'] ?? [];
+
+            $calls[] = [
+                'id' => (string) ($call['id'] ?? ''),
+                'name' => (string) ($call['name'] ?? ''),
+                'input' => is_array($input) ? $input : [],
+            ];
+        }
+
+        return $calls;
+    }
+
+    /**
+     * Rebuild live SDK params from the JSON-safe mirror stored while paused at
+     * the approval gate.
+     *
+     * @param  list<mixed>  $plain
+     * @return list<mixed>
+     */
+    private function betaMessagesFromPlain(array $plain): array
+    {
+        $out = [];
+
+        foreach ($plain as $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            $role = ($entry['role'] ?? 'user') === 'assistant' ? 'assistant' : 'user';
+            $content = $entry['content'] ?? '';
+
+            if (is_string($content)) {
+                $out[] = ['role' => $role, 'content' => $content];
+
+                continue;
+            }
+
+            $blocks = [];
+
+            foreach ((array) $content as $block) {
+                if (! is_array($block)) {
+                    continue;
+                }
+
+                $blocks[] = match ((string) ($block['type'] ?? '')) {
+                    'tool_use' => BetaToolUseBlockParam::with(
+                        id: (string) ($block['id'] ?? ''),
+                        input: is_array($block['input'] ?? null) ? $block['input'] : [],
+                        name: (string) ($block['name'] ?? ''),
+                    ),
+                    'tool_result' => BetaToolResultBlockParam::with(
+                        toolUseID: (string) ($block['tool_use_id'] ?? ''),
+                        content: (string) ($block['content'] ?? ''),
+                        isError: (bool) ($block['is_error'] ?? false),
+                    ),
+                    default => BetaTextBlockParam::with(text: (string) ($block['text'] ?? '')),
+                };
+            }
+
+            $out[] = BetaMessageParam::with(content: $blocks, role: $role);
+        }
+
+        return $out;
+    }
+
+    /**
+     * The hard approval gate applies when the feature (and tool safety) is on
+     * and the conversation hasn't opted into auto-approve.
+     */
+    private function gateActive(Conversation $conversation): bool
+    {
+        return (bool) config('services.anthropic.tool_hard_gate', true)
+            && (bool) config('services.anthropic.tool_safety', true)
+            && ! $conversation->auto_approve;
+    }
+
+    /**
+     * @param  list<BetaToolUseBlock>  $toolUses
+     */
+    private function anyDestructive(array $toolUses): bool
+    {
+        foreach ($toolUses as $toolUse) {
+            if ($this->isDestructiveTool($toolUse->name)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * A tool is destructive when its name contains one of the configured verb
+     * tokens (name split on _/-/whitespace) — SLACK_SEND_MESSAGE matches
+     * "send"; netsuite_suiteql and GET/LIST/SEARCH tools never match.
+     */
+    private function isDestructiveTool(string $name): bool
+    {
+        $verbs = array_filter(array_map(
+            static fn (string $v): string => mb_strtolower(trim($v)),
+            explode(',', (string) config('services.anthropic.tool_gate_verbs', '')),
+        ));
+        $tokens = preg_split('/[_\-\s]+/', mb_strtolower($name)) ?: [];
+
+        return array_intersect($verbs, $tokens) !== [];
     }
 
     /**
@@ -1245,6 +1503,148 @@ class ChatController extends Controller
         $message->save();
 
         return response()->json(['feedback' => $message->feedback]);
+    }
+
+    /**
+     * The user's Approve / Cancel decision for a turn paused at the hard tool
+     * gate. Consumes the pending state exactly once (a double click can't run
+     * the tools twice), then either resumes the loop (approve) or finalizes
+     * the turn with a cancellation note (cancel). Streams the outcome as SSE,
+     * same shape as stream().
+     */
+    public function toolDecision(Request $request, Conversation $conversation): JsonResponse|StreamedResponse
+    {
+        $this->ensureOwner($request, $conversation);
+
+        $request->validate(['approve' => ['required', 'boolean']]);
+
+        $state = $conversation->pending_tool_state;
+
+        abort_unless(is_array($state) && ($state['pending'] ?? []) !== [], 404);
+
+        $apiKey = config('services.anthropic.key');
+
+        if (blank($apiKey)) {
+            return response()->json([
+                'message' => 'The chat is not configured yet. Add ANTHROPIC_API_KEY to your .env file.',
+            ], 503);
+        }
+
+        // Consume the pending state before doing anything with it.
+        $conversation->pending_tool_state = null;
+        $conversation->save();
+
+        $approve = $request->boolean('approve');
+        $userId = $request->user()->id;
+        $model = (string) ($state['model'] ?? $conversation->model);
+
+        return response()->stream(function () use ($request, $conversation, $state, $approve, $model, $userId, $apiKey): void {
+            try {
+                if (! $approve) {
+                    // Cancelled: no tool runs, no model call. Persist what the
+                    // assistant said so far plus an explicit cancellation note,
+                    // and charge the tokens already spent.
+                    $names = implode(', ', array_map(
+                        static fn (array $c): string => (string) ($c['name'] ?? ''),
+                        (array) $state['pending'],
+                    ));
+                    $reply = trim((string) ($state['reply'] ?? ''));
+                    $reply .= ($reply !== '' ? "\n\n" : '')."_Action cancelled — I did not run: {$names}._";
+
+                    $assistantMessage = $this->finalizeTurn(
+                        $request, $conversation, $reply, $model,
+                        (int) ($state['input_tokens'] ?? 0), (int) ($state['output_tokens'] ?? 0), $userId,
+                    );
+
+                    $this->emit('delta', ['text' => $reply]);
+                    $this->emit('done', [
+                        'reply' => $reply,
+                        'message_id' => $assistantMessage->id,
+                        'stop_reason' => 'cancelled',
+                        'usage' => [
+                            'prompt_tokens' => $conversation->prompt_tokens,
+                            'completion_tokens' => $conversation->completion_tokens,
+                        ],
+                    ]);
+
+                    return;
+                }
+
+                $client = new Client(apiKey: $apiKey);
+
+                $toolkits = array_values(array_filter((array) ($state['toolkits'] ?? []), 'is_string'));
+
+                [$reply, $inputTokens, $outputTokens, $stopReason] = $this->completeWithClientTools(
+                    $client, $conversation, $model,
+                    $toolkits, (bool) ($state['netsuite'] ?? false), $state,
+                );
+
+                // The continuation hit ANOTHER destructive call — gate again.
+                if ($stopReason === 'approval_required') {
+                    $this->emit('approval', ['calls' => $this->pendingCalls($conversation->fresh() ?? $conversation)]);
+                    $this->emit('done', [
+                        'reply' => trim($reply),
+                        'stop_reason' => 'approval_required',
+                        'usage' => [
+                            'prompt_tokens' => $conversation->prompt_tokens,
+                            'completion_tokens' => $conversation->completion_tokens,
+                        ],
+                    ]);
+
+                    return;
+                }
+
+                $reply = trim($reply);
+
+                if ($reply !== '') {
+                    $this->emit('delta', ['text' => $reply]);
+                }
+
+                $assistantMessage = $this->finalizeTurn($request, $conversation, $reply, $model, $inputTokens, $outputTokens, $userId);
+
+                $this->emit('done', [
+                    'reply' => $reply,
+                    'message_id' => $assistantMessage->id,
+                    'stop_reason' => $stopReason,
+                    'usage' => [
+                        'prompt_tokens' => $conversation->prompt_tokens,
+                        'completion_tokens' => $conversation->completion_tokens,
+                    ],
+                ]);
+            } catch (Throwable $e) {
+                Log::error('Tool decision failed', [
+                    'user_id' => $userId,
+                    'conversation_id' => $conversation->id,
+                    'error' => $e->getMessage(),
+                ]);
+                report($e);
+
+                $this->emit('error', [
+                    'message' => 'Sorry — the assistant could not continue right now. Please try again.',
+                ]);
+            }
+        }, 200, [
+            'Content-Type' => 'text/event-stream',
+            'Cache-Control' => 'no-cache',
+            'Connection' => 'keep-alive',
+            'X-Accel-Buffering' => 'no',
+        ]);
+    }
+
+    /**
+     * The calls awaiting approval, shaped for the UI card.
+     *
+     * @return list<array{name: string, input: array<string, mixed>}>
+     */
+    private function pendingCalls(Conversation $conversation): array
+    {
+        return array_values(array_map(
+            static fn (array $c): array => [
+                'name' => (string) ($c['name'] ?? ''),
+                'input' => (array) ($c['input'] ?? []),
+            ],
+            (array) ($conversation->pending_tool_state['pending'] ?? []),
+        ));
     }
 
     /**
@@ -1413,10 +1813,18 @@ class ChatController extends Controller
         }
 
         $stored = [];
+        $scanner = app(UploadScanner::class);
 
         foreach ((array) $request->file('files') as $file) {
             if (! $file instanceof UploadedFile) {
                 continue;
+            }
+
+            // Optional ClamAV scan (fail-closed when enabled) before storing.
+            try {
+                $scanner->assertClean($file);
+            } catch (RuntimeException $e) {
+                abort(422, $e->getMessage());
             }
 
             $path = $file->store("chat-attachments/{$conversation->id}");
@@ -1606,25 +2014,29 @@ class ChatController extends Controller
                 .Str::limit((string) $user->chat_preferences, 2000, '…');
         }
 
+        $hasMcp = $user !== null && $user->mcpServers()->where('enabled', true)->exists();
         $hasClientTools = $user !== null
-            && ($user->mcpServers()->where('enabled', true)->exists()
-                || $user->composioConnections()->where('status', 'active')->exists()
+            && ($user->composioConnections()->where('status', 'active')->exists()
                 || app(NetsuiteService::class)->enabledFor($user));
 
         // Whenever ANY tools are active: narrate before tool calls, and treat
         // tool/web/file content as data, never instructions (prompt-injection
         // defense). Deliberately NOT skipped by auto-approve.
-        if (($hasClientTools || $this->webToolDefs() !== [])
+        if (($hasMcp || $hasClientTools || $this->webToolDefs() !== [])
             && filled(config('services.anthropic.tool_use_prompt'))) {
             $system .= "\n\n".(string) config('services.anthropic.tool_use_prompt');
         }
 
-        // When the user has connected tools, require confirmation before any
-        // destructive tool action (create/update/delete/send/…) — unless the
-        // conversation has auto-approve on (the chat's session toggle).
+        // Ask-in-text guardrail: require confirmation before destructive tool
+        // actions — unless auto-approve is on. When the HARD gate is active it
+        // replaces this for client tools (Composio/NetSuite) so the user isn't
+        // asked twice; MCP servers execute at Anthropic and can't be gated, so
+        // they always keep the text guardrail.
+        $hardGate = (bool) config('services.anthropic.tool_hard_gate', true);
+
         if (config('services.anthropic.tool_safety', true)
             && ! $conversation->auto_approve
-            && $hasClientTools) {
+            && ($hasMcp || ($hasClientTools && ! $hardGate))) {
             $system .= "\n\n".(string) config('services.anthropic.tool_safety_prompt');
         }
 

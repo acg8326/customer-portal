@@ -3,6 +3,42 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Security hardening: hard tool-approval gate, CSP, upload scanning + new docs
+
+- **Hard approval gate (the big one).** Destructive Composio/NetSuite tool
+  calls now **pause the turn before executing**: the tool loop's state is
+  persisted (encrypted, `conversations.pending_tool_state`) and the chat shows
+  an **Approve & run / Cancel** card listing each call and its exact input.
+  Approve resumes the loop exactly where it paused; Cancel finalizes with a
+  note and runs nothing. Consumed exactly once (double-click can't double-run);
+  a new message supersedes a stale card; the card survives reloads (returned by
+  `show()`). Destructive = verb token in the tool name
+  (`ANTHROPIC_TOOL_GATE_VERBS`); reads never gate. With the gate on, the
+  ask-in-text guardrail is dropped for client tools (no double prompt) but
+  kept for MCP servers, which execute at Anthropic and can't be gated.
+  (`ANTHROPIC_TOOL_HARD_GATE`, default on;
+  `POST /chat/conversations/{id}/tools/decision`.)
+- **Security headers + CSP.** New [`SecurityHeaders`](../app/Http/Middleware/SecurityHeaders.php)
+  middleware: `Content-Security-Policy` (defense-in-depth over DOMPurify),
+  `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`.
+  The CSP is production-only: it ships with a per-request script **nonce**
+  (`Vite::useCspNonce()`) so the layout's inline theme script runs under a
+  strict `script-src`, and is skipped while `npm run dev` runs — browsers
+  reject IPv6 CSP sources like the `[::1]` origin Vite binds (which broke the
+  dev UI), and dev tooling (Vite HMR, Boost logger) injects nonce-less inline
+  scripts. Config in new `config/security.php` (`SECURITY_HEADERS`,
+  `SECURITY_CSP`, `SECURITY_CSP_POLICY`).
+- **Optional upload virus scanning.** [`UploadScanner`](../app/Services/UploadScanner.php)
+  runs ClamAV over chat uploads when `SECURITY_UPLOAD_SCAN=true` —
+  **fail-closed**: a missing/broken scanner rejects uploads loudly instead of
+  silently skipping. Off by default (Laravel's `mimes:` already content-sniffs).
+- **Feedback route throttled** (was the one unthrottled chat write).
+- **New docs:** [security.md](security.md) (every control, layer by layer),
+  [performance.md](performance.md) (the cost/perf levers + tuning
+  cheat-sheet), [netsuite.md](netsuite.md) (TBA + OAuth 2.0 setup, role
+  permissions, the troubleshooting table from real debugging). Docs index +
+  READMEs refreshed (PostgreSQL, sidebar, current feature set).
+
 ## Chat: cost routing — per-toolkit schema activation + tool-result caps
 
 - **Per-toolkit routing.** Tool schemas are the silent cost: every connected

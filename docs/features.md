@@ -387,16 +387,25 @@ Automation, ERP & business systems, Productivity & data). Each card has a
   the model **together** in one turn, the assistant can move/compare data across
   connected apps — e.g. "compare HubSpot deals to the Airtable `Deals` table and
   add the missing ones." No extra wiring; connect both and ask.
-- **Destructive-action guardrail.** When the user has tools connected, a policy is
-  appended to the system prompt requiring the assistant to **confirm before any
-  create / update / delete / send** and wait for explicit approval; reads and
-  searches are unrestricted. Toggle with `ANTHROPIC_TOOL_SAFETY`, override the text
-  with `ANTHROPIC_TOOL_SAFETY_PROMPT`. **Note:** this is a *policy* guardrail (the
-  model complies), not a hard gate — Anthropic's MCP connector executes tools
-  server-side within the turn, so there is no per-call approval interrupt. For a
-  hard gate, pair it with **least-privilege OAuth scopes** (`MCP_OAUTH_SCOPES`) or
-  read-only tokens; a true click-to-approve interrupt would require running tools
-  client-side (a larger change, on the roadmap).
+- **Hard approval gate (destructive tool calls).** In the connected-tools loop
+  (Composio + NetSuite), a tool call whose name contains a destructive verb
+  (`ANTHROPIC_TOOL_GATE_VERBS`: create/update/delete/send/…) **pauses the turn
+  before executing**: the loop state is persisted encrypted on
+  `conversations.pending_tool_state` and the chat shows an **Approve & run /
+  Cancel** card listing each call with its exact input. Nothing runs until
+  Approve; Cancel finalizes the turn with a note and runs nothing; the pending
+  state is consumed exactly once (no double-run), and a new message supersedes
+  it. Reads (get/list/search/suiteql) never gate. Toggle with
+  `ANTHROPIC_TOOL_HARD_GATE` (default on).
+  (`POST /chat/conversations/{id}/tools/decision`.)
+- **Destructive-action guardrail (ask-in-text).** For **MCP servers** — which
+  Anthropic executes server-side and therefore can't be gated client-side — a
+  policy is appended to the system prompt requiring the assistant to **confirm
+  before any create / update / delete / send** in text first; reads and
+  searches are unrestricted. Toggle with `ANTHROPIC_TOOL_SAFETY`, override the
+  text with `ANTHROPIC_TOOL_SAFETY_PROMPT`. When the hard gate is on it
+  replaces this for Composio/NetSuite (no double prompt); pair MCP with
+  **least-privilege OAuth scopes** (`MCP_OAUTH_SCOPES`) or read-only tokens.
 - **Prompt-injection defense (untrusted content).** Whenever **any** tools are
   active (web, MCP, Composio, NetSuite) a second, always-on note is appended:
   content returned by tools, web pages, or files is **data, not instructions** —

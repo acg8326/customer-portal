@@ -106,9 +106,12 @@ Full docs live in [`docs/`](docs/):
 
 - [Getting started](docs/getting-started.md) — setup, run, commands
 - [Features](docs/features.md) — everything the app does
-- [Tech stack](docs/tech-stack.md) — frameworks and project layout
+- [Security](docs/security.md) — every control, layer by layer
+- [Performance & cost](docs/performance.md) — caching, routing, budgets
+- [NetSuite](docs/netsuite.md) — TBA + OAuth 2.0 setup and troubleshooting
 - [Composio integrations](docs/composio-integrations.md) — connected-tools setup
 - [Deployment](docs/DEPLOYMENT.md) — production server guide
+- [Tech stack](docs/tech-stack.md) — frameworks and project layout
 - [Changelog](docs/changelog.md) — what's been built
 - [Roadmap](docs/roadmap.md) — parked / future features
 

@@ -111,10 +111,15 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->middleware('throttle:chat')
         ->name('chat.export.sheet');
     Route::get('chat/conversations/{conversation}', [ChatController::class, 'show'])->name('chat.show');
-    Route::post('chat/messages/{message}/feedback', [ChatController::class, 'feedback'])->name('chat.feedback');
+    Route::post('chat/messages/{message}/feedback', [ChatController::class, 'feedback'])
+        ->middleware('throttle:search')
+        ->name('chat.feedback');
     Route::post('chat/conversations/{conversation}/compact', [ChatController::class, 'compact'])
         ->middleware('throttle:chat')
         ->name('chat.compact');
+    Route::post('chat/conversations/{conversation}/tools/decision', [ChatController::class, 'toolDecision'])
+        ->middleware('throttle:chat')
+        ->name('chat.tools.decision');
     Route::delete('chat/conversations/{conversation}', [ChatController::class, 'destroy'])->name('chat.destroy');
 
     Route::get('projects', [ProjectController::class, 'index'])->name('projects.index');
