@@ -22,6 +22,7 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property string $email
  * @property string $role
  * @property string|null $chat_preferences
+ * @property bool $memory_enabled
  * @property Carbon|null $email_verified_at
  * @property string $password
  * @property string|null $two_factor_secret
@@ -74,6 +75,7 @@ class User extends Authenticatable implements PasskeyUser
     {
         return [
             'email_verified_at' => 'datetime',
+            'memory_enabled' => 'boolean',
             'password' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
             'token_budget_started_at' => 'datetime',
@@ -102,6 +104,14 @@ class User extends Authenticatable implements PasskeyUser
     public function skills(): HasMany
     {
         return $this->hasMany(Skill::class);
+    }
+
+    /**
+     * @return HasMany<Memory, $this>
+     */
+    public function memories(): HasMany
+    {
+        return $this->hasMany(Memory::class);
     }
 
     /**

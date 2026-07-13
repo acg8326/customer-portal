@@ -12,6 +12,10 @@ Route::middleware(['auth'])->group(function () {
     Route::get('settings/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('settings/profile', [ProfileController::class, 'update'])->name('profile.update');
     Route::patch('settings/chat-preferences', [ProfileController::class, 'updateChatPreferences'])->name('chat-preferences.update');
+    Route::patch('settings/memory', [ProfileController::class, 'updateMemorySettings'])->name('memory.update');
+    Route::patch('settings/memories/{memory}', [ProfileController::class, 'updateMemory'])->name('memories.update');
+    Route::delete('settings/memories/{memory}', [ProfileController::class, 'destroyMemory'])->name('memories.destroy');
+    Route::delete('settings/memories', [ProfileController::class, 'clearMemories'])->name('memories.clear');
 });
 
 Route::middleware(['auth', 'verified'])->group(function () {

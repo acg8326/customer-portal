@@ -28,3 +28,6 @@ yarn-error.log
 /.nova
 /.vscode
 /.zed
+
+# Review PDFs are generated locally (php artisan docs:pdf) and stay local
+docs/*.pdf

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Settings;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Settings\ProfileDeleteRequest;
 use App\Http\Requests\Settings\ProfileUpdateRequest;
+use App\Models\Memory;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -22,7 +23,68 @@ class ProfileController extends Controller
         return Inertia::render('settings/Profile', [
             'mustVerifyEmail' => $request->user() instanceof MustVerifyEmail,
             'status' => $request->session()->get('status'),
+            'memoryEnabled' => $request->user()->memory_enabled,
+            'memories' => $request->user()->memories()
+                ->orderBy('id')
+                ->get(['id', 'content'])
+                ->map(fn (Memory $m): array => ['id' => $m->id, 'content' => $m->content])
+                ->all(),
         ]);
+    }
+
+    /**
+     * Toggle automatic memory for this user. Turning it off stops new
+     * extraction and stops injecting existing memories (they are kept,
+     * not wiped, so re-enabling restores them).
+     */
+    public function updateMemorySettings(Request $request): RedirectResponse
+    {
+        $validated = $request->validate(['enabled' => ['required', 'boolean']]);
+
+        $request->user()->forceFill(['memory_enabled' => (bool) $validated['enabled']])->save();
+
+        Inertia::flash('toast', ['type' => 'success', 'message' => __('Memory settings updated.')]);
+
+        return to_route('profile.edit');
+    }
+
+    /**
+     * Edit one memory's text.
+     */
+    public function updateMemory(Request $request, Memory $memory): RedirectResponse
+    {
+        abort_unless($memory->user_id === $request->user()->id, 404);
+
+        $validated = $request->validate(['content' => ['required', 'string', 'max:500']]);
+
+        $memory->content = trim($validated['content']);
+        $memory->save();
+
+        return to_route('profile.edit');
+    }
+
+    /**
+     * Delete one memory.
+     */
+    public function destroyMemory(Request $request, Memory $memory): RedirectResponse
+    {
+        abort_unless($memory->user_id === $request->user()->id, 404);
+
+        $memory->delete();
+
+        return to_route('profile.edit');
+    }
+
+    /**
+     * Forget everything at once.
+     */
+    public function clearMemories(Request $request): RedirectResponse
+    {
+        $request->user()->memories()->delete();
+
+        Inertia::flash('toast', ['type' => 'success', 'message' => __('Memory cleared.')]);
+
+        return to_route('profile.edit');
     }
 
     /**

@@ -4,14 +4,37 @@ How to set up, run, and log in to the Customer Portal locally.
 
 ## Requirements
 
-- PHP **8.3+**
+- PHP **8.3+** (with `pdo_pgsql` for PostgreSQL)
 - Composer
 - Node.js + npm
-- MySQL / MariaDB running locally (the project currently uses MariaDB 11.8)
+- **PostgreSQL** (what production runs) — or MySQL/MariaDB/SQLite for quick
+  local work; the codebase supports all of them.
 
 ## Database
 
-The app is configured for **MySQL** in `.env`:
+**Production runs PostgreSQL** (see [DEPLOYMENT.md](DEPLOYMENT.md)), so
+matching it locally is recommended:
+
+```env
+DB_CONNECTION=pgsql
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_DATABASE=customerportal
+DB_USERNAME=customerportal
+DB_PASSWORD=customerportal
+```
+
+Create the database and user (requires `sudo`):
+
+```bash
+sudo -u postgres psql <<'SQL'
+CREATE USER customerportal WITH PASSWORD 'customerportal';
+CREATE DATABASE customerportal OWNER customerportal;
+SQL
+```
+
+**MySQL / MariaDB also works** (case-insensitive chat search adapts
+automatically — `ILIKE` on Postgres, `LIKE` elsewhere):
 
 ```env
 DB_CONNECTION=mysql
@@ -21,9 +44,6 @@ DB_DATABASE=customerportal
 DB_USERNAME=customerportal
 DB_PASSWORD=customerportal
 ```
-
-The `customerportal` database and user must exist. If you ever need to recreate
-them (requires DB admin / `sudo`):
 
 ```bash
 sudo mariadb <<'SQL'
@@ -63,11 +83,17 @@ npm run build
 
 ## Login
 
-The seeder creates one account:
+The seeder creates three accounts (change the passwords after first login):
 
-| Email               | Password   |
-| ------------------- | ---------- |
-| `admin@example.com` | `password` |
+| Email                                 | Password   | Role                   |
+| ------------------------------------- | ---------- | ---------------------- |
+| `alex.gordo@cwglobalpeople.com`       | `password` | super admin            |
+| `dennies.salenga@cwglobalpeople.com`  | `password` | admin                  |
+| `admin@example.com`                   | `password` | user (local dev only)  |
+
+Admins add members at `/users` — there is no public registration. The super
+admin additionally sees org-wide insights (the dashboard's answer-feedback
+card) and can manage other admins.
 
 Re-running `php artisan db:seed` is safe — it uses `updateOrCreate`, so it won't
 create duplicates.

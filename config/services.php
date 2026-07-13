@@ -213,6 +213,40 @@ return [
         'title_model' => env('ANTHROPIC_TITLE_MODEL', 'claude-haiku-4-5'),
         'title_prompt' => env('ANTHROPIC_TITLE_PROMPT', 'Generate a concise 2-5 word title for this conversation, in the language of the conversation. Reply with the title only — no quotes and no trailing punctuation.'),
 
+        // Automatic memory (like claude.ai's): a cheap background call
+        // periodically distills durable facts about the user from their chats
+        // into a memory list injected into the system prompt. Fully visible
+        // and editable by the user (Settings → Profile), per-user opt-out.
+        'memory' => [
+            'enabled' => (bool) env('ANTHROPIC_MEMORY', true),
+            'model' => env('ANTHROPIC_MEMORY_MODEL', 'claude-haiku-4-5'),
+            // Re-extract after this many new messages in a conversation.
+            'every_messages' => (int) env('ANTHROPIC_MEMORY_EVERY', 10),
+            // Bounds keep the injected block small (and the prompt cache warm).
+            'max_items' => (int) env('ANTHROPIC_MEMORY_MAX_ITEMS', 15),
+            'max_item_chars' => (int) env('ANTHROPIC_MEMORY_MAX_ITEM_CHARS', 200),
+            // Max transcript characters fed to one extraction call.
+            'max_transcript_chars' => (int) env('ANTHROPIC_MEMORY_MAX_TRANSCRIPT_CHARS', 12000),
+            'prompt' => env('ANTHROPIC_MEMORY_PROMPT', <<<'PROMPT'
+                You maintain a short list of durable facts about a user of a work
+                assistant, learned from their conversations. You are given the current
+                memory list and a new conversation excerpt. Return the REVISED full
+                list: keep facts that still hold, update ones that changed, drop ones
+                that are now wrong, and add genuinely new durable facts.
+
+                Only keep facts useful across future conversations: their role and
+                responsibilities, recurring projects or clients, standing preferences
+                (tools, formats, language), and important context they stated about
+                their work. Do NOT store one-off task details, anything sensitive
+                (health, beliefs, personal life), passwords or secrets, or guesses —
+                only what the user actually said or clearly demonstrated.
+
+                Output rules: one fact per line, each a short plain sentence (max ~25
+                words), no numbering, no bullets, no commentary. If nothing is worth
+                keeping, output exactly: NONE
+                PROMPT),
+        ],
+
         // Auto-compact: when the context replayed to the API for a turn crosses
         // this many tokens, the conversation is compacted in the background
         // (same summarizer as the manual Compact button). 0 disables.
@@ -292,6 +326,24 @@ return [
             naturally when the answer is complete.
             PROMPT),
 
+        // What the company/portal actually is — appended right after the
+        // persona. Without this the model infers from the company NAME alone
+        // ("Global People" reads as HR) and wrongly frames every answer around
+        // HR. Edit freely to describe the business; single-line override via
+        // ANTHROPIC_COMPANY_CONTEXT.
+        'company_context' => env('ANTHROPIC_COMPANY_CONTEXT', <<<'PROMPT'
+            ## About this portal
+            This portal is CW Global People's company-wide work assistant — it is
+            NOT an HR-only tool, and you should not assume a question is about HR
+            from the company name. People across departments (finance, operations,
+            sales, management, HR) use it for whatever their work needs: querying
+            business data through connected tools (e.g. NetSuite records and
+            SuiteQL, Slack, HubSpot), drafting documents and reports, analyzing
+            data and files, researching on the web, and general day-to-day tasks.
+            Treat each question on its own terms and let the user's words — not
+            the company name — set the topic.
+            PROMPT),
+
         // Guardrail appended to the system prompt when the user has connected
         // tools (MCP servers). Makes the assistant confirm before it changes
         // external data. Set ANTHROPIC_TOOL_SAFETY=false to disable, or override
@@ -364,7 +416,13 @@ return [
             'max_files' => (int) env('ANTHROPIC_UPLOADS_MAX_FILES', 5),
             'max_size_kb' => (int) env('ANTHROPIC_UPLOADS_MAX_SIZE_KB', 10240),
             // Comma-separated file extensions accepted by the picker + validator.
-            'mimes' => env('ANTHROPIC_UPLOADS_MIMES', 'jpg,jpeg,png,gif,webp,pdf'),
+            // Images + PDFs go to Claude natively; Office/text formats
+            // (docx/xlsx/csv/txt/md) are text-extracted server-side at upload
+            // (OfficeTextExtractor) and sent as labeled text blocks.
+            'mimes' => env('ANTHROPIC_UPLOADS_MIMES', 'jpg,jpeg,png,gif,webp,pdf,docx,xlsx,csv,txt,md'),
+            // Cap (characters) on text extracted from one Office/text upload —
+            // a big spreadsheet would otherwise flood the context every turn.
+            'extract_max_chars' => (int) env('ANTHROPIC_UPLOADS_EXTRACT_MAX_CHARS', 50000),
         ],
     ],
 

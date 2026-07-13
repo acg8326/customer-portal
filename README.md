@@ -106,6 +106,7 @@ Full docs live in [`docs/`](docs/):
 
 - [Getting started](docs/getting-started.md) — setup, run, commands
 - [Features](docs/features.md) — everything the app does
+- [Prompts](docs/prompts.md) — every prompt AiMe is given, verbatim
 - [Security](docs/security.md) — every control, layer by layer
 - [Performance & cost](docs/performance.md) — caching, routing, budgets
 - [NetSuite](docs/netsuite.md) — TBA + OAuth 2.0 setup and troubleshooting

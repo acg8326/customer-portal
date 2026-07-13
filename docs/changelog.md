@@ -3,6 +3,56 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Office file understanding, automatic memory + company-context prompt
+
+- **Office file understanding.** Chat uploads now accept **DOCX / XLSX / CSV /
+  TXT / MD** alongside images and PDFs. Text is extracted server-side ONCE at
+  upload ([`OfficeTextExtractor`](../app/Services/OfficeTextExtractor.php) —
+  plain `ZipArchive` + XML, no parsing libraries, mirroring the export
+  writers; XXE-safe, sheets labeled by name, sidecar-cached, capped via
+  `ANTHROPIC_UPLOADS_EXTRACT_MAX_CHARS`) and sent as labeled text blocks.
+- **Automatic memory (like claude.ai).** Every `ANTHROPIC_MEMORY_EVERY`
+  messages a background Haiku call
+  ([`MemoryCurator`](../app/Services/MemoryCurator.php) + `UpdateUserMemory`
+  job) revises a short list of durable facts about the user, injected into the
+  system prompt as `## Memory` with the same can't-override-safety guard line
+  as preferences. Fully transparent: **Settings → Profile → Assistant memory**
+  lists every item with edit/delete/"Forget everything" and a per-user off
+  switch (off = stop learning AND stop injecting; items kept). The extraction
+  prompt forbids sensitive topics and secrets; list bounded
+  (`ANTHROPIC_MEMORY_MAX_ITEMS`); extraction cost charged to the user budget.
+- **Company-context prompt block.** AiMe framed everything as HR because the
+  prompt only gave the company NAME ("CW Global People") and the model
+  inferred the rest. New `## About this portal` block
+  (`ANTHROPIC_COMPANY_CONTEXT`) states it's a company-wide assistant (finance/
+  NetSuite, ops, sales, docs, web) — not HR-only. prompts.md updated (+ PDF
+  regenerated) with the two new blocks and the memory extraction prompt.
+
+## Docs: prompts.md — the complete prompt reference (+ PDF)
+
+- **New [prompts.md](prompts.md):** every prompt AiMe is given, verbatim —
+  the persona, web access, downloadable answers, tool narration + injection
+  defense, and the tool-safety guardrail (with the exact conditions for when
+  each block ships, including the hard-gate/MCP/auto-approve interplay), the
+  dynamic blocks built in code (date/user, summary, project, skill, user
+  preferences + guard line), and the task prompts (auto-title, compaction,
+  Continue). Ends with the prompt-adjacent `.env` table and the caching
+  rationale for the block order. `prompts.pdf` generated for review
+  (`php artisan docs:pdf docs/prompts.md`); indexed in both READMEs.
+
+## Docs refresh: stale pages corrected + features.pdf regenerated
+
+- **getting-started.md** now leads with **PostgreSQL** (what production runs;
+  MySQL/MariaDB/SQLite still documented as working) and lists all three seeded
+  logins with roles — it still claimed MySQL-only and a single seeded account.
+- **tech-stack.md**: database row corrected (PostgreSQL), project layout tree
+  updated to the real codebase (models, services, configs), and the layout
+  section fixed — the app uses the **sidebar** layout, not the top header.
+- **roadmap.md**: streaming marked ✅ shipped (SSE, thinking deltas,
+  citations), with the connected-tools single-block edge noted.
+- **features.pdf** regenerated from the current features.md via
+  `php artisan docs:pdf` (comparison.pdf intentionally left as-is).
+
 ## Super admin role + Starred/Recents sidebar sections
 
 - **New `super_admin` role** above `admin`: everything an admin can do, plus

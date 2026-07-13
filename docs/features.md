@@ -176,14 +176,28 @@ the **Claude API**.
   history. The server is the source of truth — each turn sends only the new
   message + conversation id, and history is loaded from the DB. All endpoints
   are scoped to the authenticated user.
-- **File uploads (images + PDFs):** attach files with the composer paperclip
-  **or paste an image straight into the composer with Ctrl/Cmd+V** (a screenshot
-  or copied image becomes an attachment; plain-text pastes are unaffected).
-  Claude reads them natively. Files are **re-sent every turn** (stored on the
-  message), so follow-up questions keep the document in view. Configurable in
-  `.env` (`ANTHROPIC_UPLOADS_*`): enable/disable, max files, max size, and
-  allowed extensions. Word/Excel are **not** supported yet (would need text
-  extraction) — see [roadmap.md](roadmap.md).
+- **File uploads (images, PDFs + Office files):** attach files with the
+  composer paperclip **or paste an image straight into the composer with
+  Ctrl/Cmd+V** (a screenshot or copied image becomes an attachment; plain-text
+  pastes are unaffected). Images/PDFs go to Claude natively; **DOCX / XLSX /
+  CSV / TXT / MD** are text-extracted server-side at upload
+  ([`OfficeTextExtractor`](../app/Services/OfficeTextExtractor.php) — plain
+  `ZipArchive` + XML parsing, no heavy libraries, sheets labeled by name,
+  capped at `ANTHROPIC_UPLOADS_EXTRACT_MAX_CHARS`) and sent as labeled text
+  blocks. Content survives; layout/charts don't. Files are **re-sent every
+  turn** (stored on the message), so follow-up questions keep the document in
+  view. Configurable in `.env` (`ANTHROPIC_UPLOADS_*`).
+- **Automatic memory (like claude.ai):** every `ANTHROPIC_MEMORY_EVERY`
+  messages, a cheap background call
+  ([`MemoryCurator`](../app/Services/MemoryCurator.php), Haiku by default)
+  distills durable facts about the user — role, recurring projects/clients,
+  standing preferences — into a memory list injected into the system prompt as
+  `## Memory`. Fully transparent: the user sees, **edits, deletes, or wipes**
+  every memory under **Settings → Profile → Assistant memory**, and can turn
+  automatic memory off entirely (per-user; memories are kept but unused while
+  off). Bounded (`ANTHROPIC_MEMORY_MAX_ITEMS`), never stores sensitive topics
+  (extraction prompt forbids it), and — like user preferences — can't override
+  the safety blocks.
 - **Token usage:** each reply's input/output tokens (from the Claude API `usage`)
   accumulate on the conversation and show as a small **"N tokens"** pill in the
   composer footer (hover for the in/out breakdown). Resets on New chat.
@@ -520,11 +534,8 @@ Automation, ERP & business systems, Productivity & data). Each card has a
 
 ## What's NOT built yet
 
-- **Office document uploads** (Word/Excel/CSV) — chat now accepts **images +
-  PDFs** natively (§7), but Office formats would need server-side text
-  extraction. Also **project-level files** (a persistent per-project knowledge
-  base, vs. per-message attachments) and **auto-updating memory** — see
-  [roadmap.md](roadmap.md).
+- **Project-level files** — a persistent per-project knowledge base, vs. the
+  per-message attachments the chat has today. See [roadmap.md](roadmap.md).
 - **Token-by-token streaming during connected-tools turns** — plain and MCP
   chats stream live, but when the Composio/NetSuite tool loop runs, the final
   answer arrives as one block after the tools finish.

@@ -21,6 +21,7 @@ starter kit, then extended and rebranded for CW Global People.
 | ---------------------------------------- | -------------------------------------------------------------------- |
 | [getting-started.md](getting-started.md) | How to set up, run, and log in                                       |
 | [features.md](features.md)               | Every feature currently in the app                                   |
+| [prompts.md](prompts.md)                 | Every prompt AiMe is given, verbatim, and when each block is sent    |
 | [security.md](security.md)               | Every security control, layer by layer, and how to tune it           |
 | [performance.md](performance.md)         | Cost & performance levers — caching, routing, compaction, budgets    |
 | [netsuite.md](netsuite.md)               | NetSuite setup (TBA + OAuth 2.0), role permissions, troubleshooting  |
@@ -32,8 +33,8 @@ starter kit, then extended and rebranded for CW Global People.
 
 ## TL;DR — current state
 
-- **Auth:** Login only (Fortify) + 2FA + passkeys. `admin`/`user` roles;
-  member management at `/users`.
+- **Auth:** Login only (Fortify) + 2FA + passkeys. `super_admin`/`admin`/`user`
+  roles; member management at `/users`.
 - **Chat:** streaming Claude assistant — model picker, extended thinking,
   web search/fetch with sources, file/image uploads, PDF/Word/CSV/XLSX export,
   auto-titles, manual + auto compaction, retry/edit/feedback, per-user
@@ -42,8 +43,8 @@ starter kit, then extended and rebranded for CW Global People.
   (TBA + OAuth 2.0), custom MCP servers, n8n/Zapier/Make webhooks — with a
   **hard approval gate** on destructive tool calls.
 - **Database:** PostgreSQL (`cwgp_aime`).
-- **Seeded logins:** `alex.gordo@cwglobalpeople.com`,
-  `dennies.salenga@cwglobalpeople.com` (admins), `admin@example.com`
+- **Seeded logins:** `alex.gordo@cwglobalpeople.com` (super admin),
+  `dennies.salenga@cwglobalpeople.com` (admin), `admin@example.com`
   (local-dev user) — all `password`, change after first login.
 
 ## Quick start

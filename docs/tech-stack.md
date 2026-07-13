@@ -15,7 +15,7 @@
 | Icons               | lucide (`@lucide/vue`)          | —       |
 | Typed routes        | Laravel Wayfinder               | —       |
 | Build tool          | Vite (Rolldown)                 | —       |
-| Database            | MySQL / MariaDB                 | —       |
+| Database            | PostgreSQL (prod) — MySQL/MariaDB/SQLite also work | — |
 | AI chat             | Claude API (`anthropic-ai/sdk`) | 0.30.x  |
 | Tests               | Pest                            | 4.x     |
 
@@ -34,21 +34,25 @@
 ```
 app/
   Actions/Fortify/        # auth actions (create user, reset password)
-  Http/Controllers/       # incl. Settings/ (Profile, Security)
-  Models/User.php         # the only domain model right now
-  Providers/FortifyServiceProvider.php   # auth views, features
+  Console/Commands/       # chat:check-models, docs:pdf, …
+  Http/Controllers/       # Chat, Dashboard, Project, User, Integration, Settings/, …
+  Http/Middleware/        # SecurityHeaders, EnsureUserIsAdmin, …
+  Jobs/ Services/         # auto-compaction, Composio/NetSuite, upload scanner, …
+  Models/                 # User, Conversation, Message, Project, Skill,
+                          # McpServer, ComposioConnection, NetsuiteConnection, …
 config/
-  fortify.php             # enabled auth features + (disabled) limiters
+  services.php            # Claude/Composio/NetSuite tunables (.env-driven)
+  security.php dashboard.php ratelimits.php fortify.php
 database/
-  migrations/             # users, cache, jobs, passkeys, 2FA columns
-  seeders/DatabaseSeeder.php   # seeds admin@example.com
+  migrations/             # users/roles, conversations, messages, projects, …
+  seeders/DatabaseSeeder.php   # seeds the admin + super admin logins
 routes/
-  web.php                 # /, /dashboard, /chat
-  settings.php            # /settings/* (profile, security, appearance)
+  web.php                 # /, /dashboard, /chat, /projects, /integrations, /users
+  settings.php            # /settings/* (profile, security, appearance, skills)
 resources/js/
-  pages/                  # Vue pages (Dashboard, Chat, auth/*, settings/*)
-  layouts/                # AppLayout (header), AuthLayout (login scene)
-  components/             # AppHeader, AppLogo, SonarBackground, ui/*
+  pages/                  # Vue pages (Dashboard, Chat, Projects, Users, …)
+  layouts/                # AppLayout (sidebar), AuthLayout (login scene)
+  components/             # ChatPanel, ChatSidebar, AppSidebar, ui/*
   routes/                 # Wayfinder-generated typed routes
 docs/                     # you are here
 ```
@@ -58,7 +62,7 @@ docs/                     # you are here
 - `resources/js/app.ts` maps page names to layouts:
     - `auth/*` → `AuthLayout` (the custom login scene)
     - `settings/*` → `AppLayout` + settings sub-layout
-    - everything else → `AppLayout` (**top header** navigation)
-- `AppLayout` currently uses the **header** layout
-  ([`AppHeaderLayout.vue`](../resources/js/layouts/app/AppHeaderLayout.vue)).
-  A sidebar layout also exists in the codebase but is not used.
+    - everything else → `AppLayout` (**collapsible left sidebar** navigation)
+- `AppLayout` uses the **sidebar** layout
+  ([`AppSidebarLayout.vue`](../resources/js/layouts/app/AppSidebarLayout.vue));
+  a header layout also exists in the codebase but is not used.

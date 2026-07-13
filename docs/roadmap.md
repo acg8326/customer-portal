@@ -18,23 +18,23 @@ The goal is a Projects feature like Claude.ai: a named workspace with
       injected into the system prompt for every chat in it. Projects list +
       workspace UI with a settings dialog. See [features.md](features.md) §6.
 
-3. **File uploads** — ✅ _shipped for images + PDFs_ (2026-07-07)
-    - Chat accepts **images + PDFs**, sent to Claude natively and re-sent each
-      turn. Config under `services.anthropic.uploads`.
-    - _Still to do:_ **Office formats** (DOCX/XLSX/CSV) via server-side text
-      extraction (needs PHP parsing libraries) — central to the RMA-report
-      workflow; and **project-level files** (a persistent per-project knowledge
-      base rather than per-message attachments).
+3. **File uploads** — ✅ _shipped: images + PDFs (2026-07-07), Office formats
+   DOCX/XLSX/CSV/TXT/MD via dependency-free server-side text extraction
+   (2026-07-13)_
+    - _Still to do:_ **project-level files** (a persistent per-project
+      knowledge base rather than per-message attachments).
 
-4. **Streaming responses**
-    - Stream tokens from Claude to the browser (SSE) so replies appear
-      progressively instead of all at once after a wait.
-    - Backend: `client.messages.createStream(...)`; frontend reads the stream.
+4. ✅ **Streaming responses** _(shipped)_
+    - Replies stream token-by-token over SSE (`POST /chat/stream`), including
+      extended-thinking deltas and web citations. See
+      [features.md](features.md) §7.
+    - _Remaining edge:_ connected-tools turns (Composio/NetSuite loop) deliver
+      the final answer as one block after the tools finish.
 
-5. **Long-term / cross-conversation memory** _(advanced)_
-    - Auto-updating memory the assistant maintains across chats (vs the editable
-      project memory in step 2). Decide what's remembered and let the user
-      view/clear it.
+5. ✅ **Long-term / cross-conversation memory** _(shipped 2026-07-13)_
+    - Automatic memory distilled from chats every N messages (Haiku), injected
+      as `## Memory`, fully user-visible/editable/erasable in Settings →
+      Profile with a per-user off switch. See [features.md](features.md) §7.
 
 ### Notes / decisions to revisit
 
