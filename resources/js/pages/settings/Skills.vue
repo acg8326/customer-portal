@@ -159,6 +159,11 @@ function runImport() {
 
         <!-- Your skills -->
         <section class="space-y-3">
+            <p
+                class="text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+            >
+                Your skills
+            </p>
             <div
                 v-if="skills.length === 0"
                 class="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground"
@@ -225,11 +230,14 @@ function runImport() {
 
         <!-- Starter library -->
         <section class="space-y-3">
-            <Heading
-                variant="small"
-                title="Starter library"
-                description="Add a ready-made skill to your account, then customise it."
-            />
+            <p
+                class="text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+            >
+                Starter library
+            </p>
+            <p class="-mt-2 text-sm text-muted-foreground">
+                Add a ready-made skill to your account, then customise it.
+            </p>
             <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <div
                     v-for="t in library"

@@ -116,6 +116,14 @@ class User extends Authenticatable implements PasskeyUser
     }
 
     /**
+     * @return HasMany<FeedbackEntry, $this>
+     */
+    public function feedbackEntries(): HasMany
+    {
+        return $this->hasMany(FeedbackEntry::class);
+    }
+
+    /**
      * @return HasMany<UserIntegration, $this>
      */
     public function integrations(): HasMany

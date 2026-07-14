@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { Head, router } from '@inertiajs/vue3';
 import {
-    FolderOpen,
+    KeyRound,
+    Lightbulb,
     MessageSquareHeart,
-    MessagesSquare,
+    MessageSquarePlus,
     Settings2,
-    Sparkles,
     ThumbsDown,
     ThumbsUp,
     UsersRound,
@@ -31,11 +31,6 @@ const props = defineProps<{
         resets_at: string | null;
         period_days: number;
     };
-    stats: {
-        conversations: number;
-        projects: number;
-        skills: number;
-    };
     // Super admin only — null hides the card entirely.
     feedback: {
         up: number;
@@ -46,6 +41,13 @@ const props = defineProps<{
             excerpt: string;
             conversation_id: number;
             conversation: string | null;
+            user: string | null;
+            when: string | null;
+        }[];
+        entries: {
+            id: number;
+            type: 'feedback' | 'suggestion' | 'api_request';
+            message: string;
             user: string | null;
             when: string | null;
         }[];
@@ -63,6 +65,9 @@ const props = defineProps<{
         total: number;
         limit: number;
         period_days: number;
+        models: { value: string; label: string }[];
+        default_model: string | null;
+        env_default_model: string;
     } | null;
 }>();
 
@@ -106,6 +111,7 @@ const barColor = computed(() => {
 const editingUsage = ref(false);
 const limitDraft = ref(String(props.teamUsage?.limit ?? 0));
 const periodDraft = ref(String(props.teamUsage?.period_days ?? 30));
+const modelDraft = ref(props.teamUsage?.default_model ?? 'default');
 
 function saveUsageSettings() {
     router.patch(
@@ -113,6 +119,7 @@ function saveUsageSettings() {
         {
             token_limit: Number(limitDraft.value),
             period_days: Number(periodDraft.value),
+            default_model: modelDraft.value,
         },
         {
             preserveScroll: true,
@@ -132,15 +139,29 @@ function resetLabel(iso: string | null): string {
     });
 }
 
-const tiles = computed(() => [
-    {
-        label: 'Conversations',
-        value: props.stats.conversations,
-        icon: MessagesSquare,
-    },
-    { label: 'Projects', value: props.stats.projects, icon: FolderOpen },
-    { label: 'Skills', value: props.stats.skills, icon: Sparkles },
-]);
+// --- Feedback & suggestions (everyone) --------------------------------------------
+
+const fbType = ref<'feedback' | 'suggestion'>('feedback');
+const fbMessage = ref('');
+const fbSending = ref(false);
+
+function sendFeedback() {
+    if (!fbMessage.value.trim() || fbSending.value) {
+        return;
+    }
+
+    fbSending.value = true;
+
+    router.post(
+        '/feedback',
+        { type: fbType.value, message: fbMessage.value.trim() },
+        {
+            preserveScroll: true,
+            onSuccess: () => (fbMessage.value = ''),
+            onFinish: () => (fbSending.value = false),
+        },
+    );
+}
 </script>
 
 <template>
@@ -297,6 +318,30 @@ const tiles = computed(() => [
                         class="h-9 w-28 rounded-md border border-input bg-background px-3 text-sm tabular-nums outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
                     />
                 </div>
+                <div>
+                    <label
+                        class="mb-1 block text-xs font-medium text-muted-foreground"
+                        for="usage-model"
+                    >
+                        Default model (new chats)
+                    </label>
+                    <select
+                        id="usage-model"
+                        v-model="modelDraft"
+                        class="h-9 w-64 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                    >
+                        <option value="default">
+                            Server default — {{ teamUsage.env_default_model }}
+                        </option>
+                        <option
+                            v-for="m in teamUsage.models"
+                            :key="m.value"
+                            :value="m.value"
+                        >
+                            {{ m.label }}
+                        </option>
+                    </select>
+                </div>
                 <button
                     type="submit"
                     class="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
@@ -368,10 +413,11 @@ const tiles = computed(() => [
                     </div>
                     <div>
                         <h2 class="font-semibold tracking-tight">
-                            Answer feedback
+                            Team feedback
                         </h2>
                         <p class="text-xs text-muted-foreground">
-                            Thumbs left on AiMe's replies across the team
+                            Thumbs on AiMe's replies + written feedback &
+                            suggestions from the team
                         </p>
                     </div>
                 </div>
@@ -401,7 +447,7 @@ const tiles = computed(() => [
             <ul v-else class="mt-3 divide-y">
                 <li
                     v-for="item in feedback.recent"
-                    :key="item.id"
+                    :key="'thumb-' + item.id"
                     class="flex items-start gap-3 py-2.5"
                 >
                     <span
@@ -430,29 +476,121 @@ const tiles = computed(() => [
                     </div>
                 </li>
             </ul>
+
+            <!-- Written feedback & suggestions from the dashboard card -->
+            <div class="mt-5 border-t pt-4">
+                <p
+                    class="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                >
+                    Written feedback & suggestions
+                </p>
+
+                <p
+                    v-if="feedback.entries.length === 0"
+                    class="py-4 text-center text-sm text-muted-foreground"
+                >
+                    Nothing yet — what members send from their dashboard's
+                    "Feedback & suggestions" card lands here.
+                </p>
+
+                <ul v-else class="divide-y">
+                    <li
+                        v-for="entry in feedback.entries"
+                        :key="'entry-' + entry.id"
+                        class="flex items-start gap-3 py-2.5"
+                    >
+                        <span
+                            class="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full"
+                            :class="
+                                entry.type === 'feedback'
+                                    ? 'bg-muted text-muted-foreground'
+                                    : 'bg-brand-gold/10 text-brand-gold'
+                            "
+                        >
+                            <component
+                                :is="
+                                    entry.type === 'suggestion'
+                                        ? Lightbulb
+                                        : entry.type === 'api_request'
+                                          ? KeyRound
+                                          : MessageSquareHeart
+                                "
+                                class="size-3"
+                            />
+                        </span>
+                        <div class="min-w-0 flex-1">
+                            <p class="text-sm whitespace-pre-wrap">
+                                {{ entry.message }}
+                            </p>
+                            <p class="mt-0.5 text-xs text-muted-foreground">
+                                <span class="capitalize">{{
+                                    entry.type === 'api_request'
+                                        ? 'API request'
+                                        : entry.type
+                                }}</span>
+                                <template v-if="entry.user">
+                                    · {{ entry.user }}</template
+                                ><template v-if="entry.when">
+                                    · {{ entry.when }}</template
+                                >
+                            </p>
+                        </div>
+                    </li>
+                </ul>
+            </div>
         </section>
 
-        <!-- Stat tiles -->
-        <section class="grid gap-4 sm:grid-cols-3">
-            <div
-                v-for="tile in tiles"
-                :key="tile.label"
-                class="flex items-center gap-4 rounded-xl border bg-card p-5"
-            >
+        <!-- Feedback & suggestions (everyone) -->
+        <section class="rounded-xl border bg-card p-5">
+            <div class="mb-4 flex items-center gap-3">
                 <div
                     class="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground"
                 >
-                    <component :is="tile.icon" class="size-5" />
+                    <MessageSquarePlus class="size-5" />
                 </div>
                 <div>
-                    <p class="text-2xl font-semibold tabular-nums">
-                        {{ nf.format(tile.value) }}
-                    </p>
+                    <h2 class="font-semibold tracking-tight">
+                        Feedback & suggestions
+                    </h2>
                     <p class="text-xs text-muted-foreground">
-                        {{ tile.label }}
+                        Tell us what's working, what's broken, or what the
+                        portal should do next
                     </p>
                 </div>
             </div>
+
+            <form class="flex flex-col gap-3" @submit.prevent="sendFeedback">
+                <div class="flex flex-wrap items-start gap-3">
+                    <select
+                        v-model="fbType"
+                        class="h-9 w-36 shrink-0 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                        aria-label="Type"
+                    >
+                        <option value="feedback">Feedback</option>
+                        <option value="suggestion">Suggestion</option>
+                    </select>
+                    <textarea
+                        v-model="fbMessage"
+                        rows="2"
+                        maxlength="2000"
+                        :placeholder="
+                            fbType === 'suggestion'
+                                ? 'e.g. It would help if AiMe could…'
+                                : 'e.g. The export button gives me the wrong…'
+                        "
+                        class="min-w-0 flex-1 resize-y rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                    />
+                </div>
+                <div>
+                    <button
+                        type="submit"
+                        :disabled="fbSending || !fbMessage.trim()"
+                        class="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+                    >
+                        {{ fbSending ? 'Sending…' : 'Send' }}
+                    </button>
+                </div>
+            </form>
         </section>
     </div>
 </template>

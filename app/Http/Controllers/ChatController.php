@@ -46,11 +46,15 @@ use App\Models\Message;
 use App\Models\Project;
 use App\Models\Skill;
 use App\Models\User;
+use App\Services\AppSettings;
 use App\Services\ComposioService;
 use App\Services\ConversationCompactor;
 use App\Services\Mcp\McpOAuthService;
+use App\Services\ModelCatalog;
 use App\Services\NetsuiteService;
 use App\Services\OfficeTextExtractor;
+use App\Services\OpenAiCompatibleChat;
+use App\Services\OpenAiMedia;
 use App\Services\TokenBudget;
 use App\Services\UploadScanner;
 use Illuminate\Http\JsonResponse;
@@ -80,26 +84,58 @@ class ChatController extends Controller
     private bool $webToolsOff = false;
 
     /**
+     * Private chat (the header's Private toggle): the turn is answered but
+     * NOTHING touches the database — no conversation, no messages, no title,
+     * no memory extraction, no webhooks. The browser holds the transcript and
+     * replays it with each turn; only the token budget is still charged.
+     */
+    private bool $privateMode = false;
+
+    /**
+     * The client-supplied transcript for a private turn (role + content,
+     * current user message appended), standing in for the DB history.
+     *
+     * @var list<array{role: 'assistant'|'user', content: string}>
+     */
+    private array $privateHistory = [];
+
+    /**
      * Render the chat page with the user's saved conversations and model list.
      */
     public function index(Request $request): Response
     {
-        $models = [];
-
-        foreach (Config::array('services.anthropic.models') as $value => $label) {
-            $models[] = ['value' => $value, 'label' => $label];
-        }
-
         return Inertia::render('Chat', [
-            'models' => $models,
-            'defaultModel' => config('services.anthropic.model'),
+            // Grouped picker: Claude (full-featured) + OpenAI-compatible
+            // providers (plain chat); locked ones offer "request access".
+            'providers' => app(ModelCatalog::class)->providers(),
+            'defaultModel' => self::workspaceDefaultModel(),
             'conversations' => $this->conversationList($request),
             'uploads' => self::uploadsProps(),
             'skills' => self::skillOptions($request),
             'mcpEnabled' => self::mcpEnabled($request),
             'webEnabled' => self::webToolsConfigured(),
+            'imageEnabled' => OpenAiMedia::imageEnabled(),
+            'speechEnabled' => OpenAiMedia::speechEnabled(),
             'continuePrompt' => (string) config('services.anthropic.continue_prompt'),
         ]);
+    }
+
+    /**
+     * The model new chats start on: the super admin's app_settings override
+     * when set (and still in the allowed list), else ANTHROPIC_MODEL. A value
+     * that fell out of the allowed-models list is skipped, so trimming the
+     * list can't strand everyone on a retired model.
+     */
+    public static function workspaceDefaultModel(): string
+    {
+        $allowed = array_keys(Config::array('services.anthropic.models'));
+        $workspace = app(AppSettings::class)->get('chat.default_model');
+
+        if (in_array($workspace, $allowed, true)) {
+            return (string) $workspace;
+        }
+
+        return (string) config('services.anthropic.model');
     }
 
     /**
@@ -210,6 +246,8 @@ class ChatController extends Controller
             'skill_id' => ['nullable', 'integer'],
             'auto_approve' => ['nullable', 'boolean'],
             'web' => ['nullable', 'boolean'],
+            // Private chats go through the streaming endpoint only.
+            'private' => ['prohibited'],
             'files' => [$uploads['enabled'] ? 'nullable' : 'prohibited', 'array', 'max:'.$uploads['maxFiles']],
             'files.*' => ['file', 'mimes:'.$uploads['mimes'], 'max:'.$uploads['maxSizeKb']],
         ]);
@@ -364,19 +402,30 @@ class ChatController extends Controller
         // `retry` regenerates the last assistant reply (no new user message);
         // `replace_last` is edit-and-resend (drops the last exchange first).
         $isRetry = $request->boolean('retry');
+        // Private chats live entirely in the browser: no conversation row, so
+        // no conversation_id/retry/replace_last (the client edits its own
+        // transcript and resends it), no stored files, and the prior turns
+        // arrive as a `history` array instead of being loaded from the DB.
+        $isPrivate = $request->boolean('private');
 
         $request->validate([
-            'conversation_id' => [$isRetry ? 'required' : 'nullable', 'integer'],
-            'project_id' => ['nullable', 'integer'],
+            'conversation_id' => [$isPrivate ? 'prohibited' : ($isRetry ? 'required' : 'nullable'), 'integer'],
+            'project_id' => [$isPrivate ? 'prohibited' : 'nullable', 'integer'],
             'content' => [($hasFiles || $isRetry) ? 'nullable' : 'required', 'string', 'max:8000'],
-            'model' => ['required', 'string', Rule::in(array_keys(Config::array('services.anthropic.models')))],
+            // Only models whose provider has an API key are sendable — locked
+            // providers' models 422 here (the picker offers "request access").
+            'model' => ['required', 'string', Rule::in(app(ModelCatalog::class)->selectableModelIds())],
             'skill_id' => ['nullable', 'integer'],
             'auto_approve' => ['nullable', 'boolean'],
             'thinking' => ['nullable', 'boolean'],
             'web' => ['nullable', 'boolean'],
-            'retry' => ['nullable', 'boolean'],
-            'replace_last' => ['nullable', 'boolean'],
-            'files' => [$uploads['enabled'] ? 'nullable' : 'prohibited', 'array', 'max:'.$uploads['maxFiles']],
+            'retry' => [$isPrivate ? 'prohibited' : 'nullable', 'boolean'],
+            'replace_last' => [$isPrivate ? 'prohibited' : 'nullable', 'boolean'],
+            'private' => ['nullable', 'boolean'],
+            'history' => [$isPrivate ? 'nullable' : 'prohibited', 'array', 'max:100'],
+            'history.*.role' => ['required_with:history', 'string', Rule::in(['user', 'assistant'])],
+            'history.*.content' => ['required_with:history', 'string', 'max:50000'],
+            'files' => [($uploads['enabled'] && ! $isPrivate) ? 'nullable' : 'prohibited', 'array', 'max:'.$uploads['maxFiles']],
             'files.*' => ['file', 'mimes:'.$uploads['mimes'], 'max:'.$uploads['maxSizeKb']],
         ]);
 
@@ -399,16 +448,37 @@ class ChatController extends Controller
         }
 
         [$conversation, $userId, $selectedModel] = $this->startTurn($request, $hasFiles);
-        $composioKeys = app(ComposioService::class)->activeToolkitKeys($request->user());
-        $netsuite = app(NetsuiteService::class)->enabledFor($request->user());
-        // Cost routing: only ship the schemas the conversation is about.
-        [$composioKeys, $netsuite] = $this->routeToolkits($composioKeys, $netsuite, $conversation);
+
+        // Non-Claude models (OpenAI-compatible providers) get plain chat:
+        // connected tools, MCP, web search, thinking, and attachments are
+        // Claude-only features and stay off for this turn.
+        $catalog = app(ModelCatalog::class);
+        $openAiProvider = $catalog->isAnthropic($selectedModel)
+            ? null
+            : $catalog->providerConfig((string) $catalog->providerFor($selectedModel));
+
+        if ($openAiProvider !== null) {
+            $this->webToolsOff = true;
+        }
+
+        // Connected tools (Composio/NetSuite) are off in private chats — their
+        // approval gate pauses state on the conversation row, which a private
+        // chat deliberately doesn't have. Web tools + MCP stay available.
+        $plainOnly = $this->privateMode || $openAiProvider !== null;
+        $composioKeys = $plainOnly ? [] : app(ComposioService::class)->activeToolkitKeys($request->user());
+        $netsuite = ! $plainOnly && app(NetsuiteService::class)->enabledFor($request->user());
+
+        if (! $plainOnly) {
+            // Cost routing: only ship the schemas the conversation is about.
+            [$composioKeys, $netsuite] = $this->routeToolkits($composioKeys, $netsuite, $conversation);
+        }
+
         $useClientTools = $composioKeys !== [] || $netsuite;
-        $mcp = $useClientTools ? [] : $this->mcpServerDefs($request->user());
+        $mcp = ($useClientTools || $openAiProvider !== null) ? [] : $this->mcpServerDefs($request->user());
         $maxTokens = (int) config('services.anthropic.max_tokens', 8192);
         $thinkingOn = $this->thinkingEnabled($request, $selectedModel);
 
-        return response()->stream(function () use ($request, $conversation, $mcp, $composioKeys, $netsuite, $useClientTools, $selectedModel, $maxTokens, $thinkingOn, $userId, $apiKey): void {
+        return response()->stream(function () use ($request, $conversation, $mcp, $composioKeys, $netsuite, $useClientTools, $openAiProvider, $selectedModel, $maxTokens, $thinkingOn, $userId, $apiKey): void {
             $this->emit('meta', [
                 'conversation_id' => $conversation->id,
                 'title' => $conversation->title,
@@ -427,7 +497,25 @@ class ChatController extends Controller
                 $handled = false;
                 $citations = []; // url => title, from web-search results
 
-                if ($useClientTools) {
+                if ($openAiProvider !== null) {
+                    // Plain chat via an OpenAI-compatible provider — text
+                    // history + system prompt in, streamed text out.
+                    [$reply, $inputTokens, $outputTokens] = app(OpenAiCompatibleChat::class)->stream(
+                        $openAiProvider,
+                        $selectedModel,
+                        $this->buildSystemPrompt($conversation),
+                        $this->textHistory($conversation),
+                        $maxTokens,
+                        function (string $text): void {
+                            $this->emit('delta', ['text' => $text]);
+                        },
+                    );
+
+                    $stopReason = 'end_turn';
+                    $handled = true;
+                }
+
+                if (! $handled && $useClientTools) {
                     // Composio + NetSuite tools: AiMe runs the tool loop itself
                     // (non-streamed — it executes each call server-side), then
                     // emits the final answer as one block. On failure, fall back
@@ -575,8 +663,10 @@ class ChatController extends Controller
 
                 $assistantMessage = $this->finalizeTurn($request, $conversation, $reply, $selectedModel, $inputTokens, $outputTokens, $userId, trim($thinking));
 
-                // First exchange: swap the placeholder title for a generated one.
-                if (($newTitle = $this->maybeAutoTitle($client, $conversation)) !== null) {
+                // First exchange: swap the placeholder title for a generated
+                // one (skipped for private chats — there's nothing to title).
+                if (! $this->privateMode
+                    && ($newTitle = $this->maybeAutoTitle($client, $conversation)) !== null) {
                     $this->emit('title', ['title' => $newTitle]);
                 }
 
@@ -643,11 +733,53 @@ class ChatController extends Controller
         // The chat header's Web search toggle: absent defaults to ON, an
         // explicit '0' turns Claude's web tools off for this turn.
         $this->webToolsOff = $request->has('web') && ! $request->boolean('web');
+        $this->privateMode = $request->boolean('private');
 
         $userId = $request->user()->id;
         $content = (string) $request->input('content');
         $selectedModel = (string) $request->input('model');
         $conversationId = $request->integer('conversation_id');
+
+        if ($this->privateMode) {
+            // Never-saved conversation shell: gives the prompt builders their
+            // user/skill context without a single INSERT.
+            $conversation = new Conversation;
+            $conversation->user_id = $userId;
+            $conversation->title = 'Private chat';
+            $conversation->model = $selectedModel;
+
+            $skillId = $request->integer('skill_id');
+            $conversation->skill_id = $skillId > 0
+                ? Skill::query()->where('user_id', $userId)->whereKey($skillId)->value('id')
+                : null;
+
+            $history = [];
+
+            foreach ((array) $request->input('history', []) as $turn) {
+                $history[] = [
+                    'role' => (($turn['role'] ?? '') === 'assistant') ? 'assistant' : 'user',
+                    'content' => (string) ($turn['content'] ?? ''),
+                ];
+            }
+
+            $history[] = ['role' => 'user', 'content' => $content];
+
+            // Same trimming as saved chats; the replayed window must open on
+            // a user turn (the API expects user/assistant alternation).
+            $historyLimit = (int) config('services.anthropic.history_limit', 40);
+
+            if ($historyLimit > 0 && count($history) > $historyLimit) {
+                $history = array_slice($history, -$historyLimit);
+            }
+
+            while ($history !== [] && $history[0]['role'] === 'assistant') {
+                array_shift($history);
+            }
+
+            $this->privateHistory = $history;
+
+            return [$conversation, $userId, $selectedModel];
+        }
 
         if ($conversationId > 0) {
             $conversation = Conversation::query()
@@ -740,6 +872,10 @@ class ChatController extends Controller
      */
     private function buildHistory(Conversation $conversation): array
     {
+        if ($this->privateMode) {
+            return $this->privateHistory;
+        }
+
         $history = [];
 
         foreach ($this->recentMessages($conversation) as $m) {
@@ -797,6 +933,10 @@ class ChatController extends Controller
      */
     private function textHistory(Conversation $conversation): array
     {
+        if ($this->privateMode) {
+            return $this->privateHistory;
+        }
+
         $messages = [];
 
         foreach ($this->recentMessages($conversation) as $m) {
@@ -1463,6 +1603,23 @@ class ChatController extends Controller
         int $userId,
         ?string $thinking = null,
     ): Message {
+        if ($this->privateMode) {
+            // Private chat: charge the budget (usage is real), persist nothing.
+            // In-memory counters keep the UI's usage meter correct; the unsaved
+            // Message gives the caller its usual shape (id stays null).
+            $conversation->prompt_tokens += $inputTokens;
+            $conversation->completion_tokens += $outputTokens;
+
+            app(TokenBudget::class)->record($request->user(), $inputTokens + $outputTokens);
+
+            $assistantMessage = new Message;
+            $assistantMessage->role = 'assistant';
+            $assistantMessage->content = $reply;
+            $assistantMessage->thinking = filled($thinking) ? $thinking : null;
+
+            return $assistantMessage;
+        }
+
         $assistantMessage = $conversation->messages()->create([
             'role' => 'assistant',
             'content' => $reply,
@@ -1994,10 +2151,15 @@ class ChatController extends Controller
     {
         $out = [];
 
-        foreach ($m->attachments ?? [] as $att) {
+        foreach (array_values($m->attachments ?? []) as $i => $att) {
             $out[] = [
                 'name' => $att['name'],
                 'mime' => $att['mime'],
+                // Images (uploaded or generated) render inline in the chat;
+                // the serving route is owner-only.
+                'url' => str_starts_with($att['mime'], 'image/')
+                    ? route('chat.images.show', [$m->id, $i])
+                    : null,
             ];
         }
 

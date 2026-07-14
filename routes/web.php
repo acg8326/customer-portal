@@ -6,6 +6,7 @@ use App\Http\Controllers\ComposioController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\IntegrationController;
 use App\Http\Controllers\McpServerController;
+use App\Http\Controllers\MediaController;
 use App\Http\Controllers\NetsuiteController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\UserController;
@@ -19,6 +20,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('dashboard', [DashboardController::class, 'index'])->name('dashboard');
     Route::patch('dashboard/usage-settings', [DashboardController::class, 'updateUsageSettings'])
         ->name('dashboard.usage-settings');
+    Route::post('feedback', [DashboardController::class, 'storeFeedback'])
+        ->middleware('throttle:integrations')
+        ->name('feedback.store');
 
     // User management — admins only (no public registration).
     Route::middleware('admin')->group(function () {
@@ -103,6 +107,18 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('chat/stream', [ChatController::class, 'stream'])
         ->middleware('throttle:chat')
         ->name('chat.stream');
+    Route::post('chat/image', [MediaController::class, 'generateImage'])
+        ->middleware('throttle:chat')
+        ->name('chat.image');
+    Route::get('chat/images/{message}/{index}', [MediaController::class, 'showImage'])
+        ->whereNumber('index')
+        ->name('chat.images.show');
+    Route::post('chat/transcribe', [MediaController::class, 'transcribe'])
+        ->middleware('throttle:chat')
+        ->name('chat.transcribe');
+    Route::post('chat/speech', [MediaController::class, 'speak'])
+        ->middleware('throttle:chat')
+        ->name('chat.speech');
     Route::post('chat/export/pdf', [ChatExportController::class, 'pdf'])
         ->middleware('throttle:chat')
         ->name('chat.export.pdf');

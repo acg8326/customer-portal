@@ -29,7 +29,7 @@ Enforced by the `admin` middleware
 ([`EnsureUserIsAdmin`](../app/Http/Middleware/EnsureUserIsAdmin.php)) on the
 routes and by `User::isAdmin()` (true for both admin tiers) /
 `User::isSuperAdmin()`; non-admins get a 403. The super admin additionally
-sees org-wide insights — the dashboard's **Answer feedback** and **Team
+sees org-wide insights — the dashboard's **Team feedback** and **Team
 usage** cards — and can set the org-wide token limit in-app. Seeded:
 `alex.gordo@cwglobalpeople.com` (super admin, promoted by a data migration on
 deploy too), `dennies.salenga@cwglobalpeople.com` (admin).
@@ -77,23 +77,32 @@ A bespoke, modern "AI product" login:
 
 | Page                  | Route                  | Status                                                   |
 | --------------------- | ---------------------- | -------------------------------------------------------- |
-| Dashboard             | `/dashboard`           | ✅ Usage meter, team usage + limit settings (super admin), feedback card, stat tiles |
+| Dashboard             | `/dashboard`           | ✅ Usage meter, feedback & suggestions card, team usage + insights (super admin) |
 | Chat                  | `/chat`                | ✅ Working — AI chat powered by the Claude API (see §7)  |
 | Integrations          | `/integrations`        | ✅ **MCP servers + n8n live**; other cards placeholder    |
-| Settings → Profile    | `/settings/profile`    | ✅ Update name & email, delete account                   |
+| Settings → General    | `/settings/general`    | ✅ Theme, language, message font size (clean row layout) |
+| Settings → Profile    | `/settings/profile`    | ✅ Name & email, chat preferences, memory, delete account |
 | Settings → Security   | `/settings/security`   | ✅ Change password, manage 2FA & passkeys                |
-| Settings → Appearance | `/settings/appearance` | ✅ Light / dark / system theme                           |
 | Settings → Skills     | `/settings/skills`     | ✅ Create / import / manage reusable instruction presets |
 
 `/` (root) redirects: → `/dashboard` when logged in, → `/login` otherwise.
 
 ## 5. Account management (Settings)
 
-- **Profile:** change name and email; delete account (requires verified email).
+- **Search:** a **Search settings** box above the settings nav filters a
+  built-in index of every setting (theme, language, passkeys, memory, …) and
+  jumps straight to the right page.
+- **Shared style:** every tab follows the **General** page's visual language —
+  uppercase section labels over rounded bordered cards
+  ([`SettingsSection.vue`](../resources/js/components/SettingsSection.vue)).
+- **General:** theme (light/dark/system), preferred language, and message font
+  size (Small/Medium/Large, browser-stored, scales chat bubbles) — presented as
+  clean label-left/control-right rows. `/settings/appearance` redirects here.
+- **Profile:** change name and email; chat preferences; assistant memory;
+  delete account (requires verified email).
 - **Security:** change password; enable/disable two-factor auth (with QR code
   and recovery codes); register and manage passkeys. Viewing this page requires
   re-confirming your password.
-- **Appearance:** switch between light, dark, and system themes (persisted).
 - **Skills:** create reusable **instruction presets**, add ready-made ones from a
   **starter library** (config `config/skills.php`), or **import a `SKILL.md`**
   (front-matter `name`/`description` + body). Each skill = name, emoji icon,
@@ -123,14 +132,53 @@ the **Claude API**.
 - **Model switching is live:** changing the model in the header applies to the
   next message (no refresh); you can even switch models mid-conversation.
 
-> Note: the chat follows the app's light/dark theme (Settings → Appearance). The
+> Note: the chat follows the app's light/dark theme (Settings → General). The
 > dark background is dark mode, not the chat itself.
 
-- **Model:** picked by the user from a dropdown in the chat header. Ships with
-  **8 Claude models** — Opus 4.8 / 4.7 / 4.1, Sonnet 5 / 4.6 / 4.5, Haiku 4.5,
-  and Fable 5. Defaults to `ANTHROPIC_MODEL`; the choice is remembered in the
-  browser (`localStorage`). The allowlist lives in `config/services.php`
-  (`anthropic.models`) and is validated server-side — add/remove freely.
+- **Model (grouped picker, LibreChat-style):** the header's model button opens
+  a two-pane menu — providers on the left (hover/tap to preview), that
+  provider's models on the right, each with a **"when to use it" hint**
+  ("Fastest & cheapest — quick questions"). Providers: **Anthropic (Claude)**
+  — the full experience: connected tools, web search, thinking, files,
+  memory — plus **OpenAI, Google Gemini, DeepSeek, Groq, Mistral, xAI Grok**
+  via their OpenAI-compatible APIs (**plain chat only**; the Web/Thinking/
+  attach buttons grey out on them). Each provider is enabled by **one global
+  API key** in `.env` (`OPENAI_API_KEY`, `GEMINI_API_KEY`, …) so usage stays
+  inside the org budget — no per-user keys. **Locked providers** (no key)
+  still show with a 🔒; picking one opens a **"Request access"** dialog that
+  sends an `api_request` entry to the super admin's Team feedback card.
+  Model lists are validated server-side and overridable per provider
+  (`ANTHROPIC_MODELS="id:Label"`, `{PREFIX}_MODELS="id:Label|hint"`). Backed
+  by [`ModelCatalog`](../app/Services/ModelCatalog.php) +
+  [`OpenAiCompatibleChat`](../app/Services/OpenAiCompatibleChat.php)
+  (streaming, token usage recorded to the same budget).
+- **Image generation:** the composer's 🖼️ toggle turns your next message into
+  an image prompt (OpenAI `gpt-image-1` by default — Claude doesn't generate
+  images). The PNG is stored as an assistant attachment, renders inline, and
+  charges `IMAGE_TOKEN_COST` tokens (default 5 000) to your budget. Off in
+  private chats; without a key the button opens the request-access dialog.
+  ([`MediaController`](../app/Http/Controllers/MediaController.php),
+  [`OpenAiMedia`](../app/Services/OpenAiMedia.php).)
+- **Speech:** a composer 🎤 records and **transcribes dictation** into the
+  message box (`SPEECH_STT_MODEL`, audio never stored), and a **Listen**
+  button under each AiMe reply reads it aloud (`SPEECH_TTS_MODEL`/voice).
+  Both default to `OPENAI_API_KEY` and charge `SPEECH_TOKEN_COST` (default
+  500) tokens per request.
+- **Workspace default model:** where a new chat starts is resolved as
+  **workspace default → `ANTHROPIC_MODEL`**. The **super admin** sets the
+  workspace default for everyone from **Dashboard → Team usage → gear**
+  (stored in `app_settings` as `chat.default_model`, cleared = back to
+  `.env`). A per-chat pick in the header still wins for that browser
+  (`localStorage`). Values that drop off the allowlist are skipped
+  automatically.
+- **Private chat:** the header's **Private** toggle (ghost icon) starts a chat
+  that **never touches the database** — no conversation row, no messages, no
+  auto-title, no memory extraction, no webhooks. The browser holds the
+  transcript and resends it with each turn; it disappears on refresh, on
+  toggling private off, or on opening a saved chat. Token usage is still
+  charged. Attachments, retry, and connected tools (their approval gate needs
+  a conversation row) are off in private mode; web search, extended thinking,
+  skills, and MCP servers still work. A gold "not saved" pill marks the mode.
 - **Skills:** a **skill selector** above the composer applies one of your saved
   Skills (Settings → Skills, §5) to the chat — its instructions are injected into
   the system prompt (single skill at a time). The choice is stored on the
@@ -214,8 +262,8 @@ the **Claude API**.
   **Team usage** card lists every member's tokens in their current window
   (heaviest first, with per-user progress bars against the limit) plus the
   **org total**, and a gear opens inline settings to change the **token limit
-  per user** and **period days** for everyone at once. UI-set values are
-  stored in the new `app_settings` table
+  per user**, **period days**, and the **workspace default model** for everyone
+  at once. UI-set values are stored in the new `app_settings` table
   ([`AppSettings`](../app/Services/AppSettings.php)) and **override the
   `.env` defaults** immediately — no redeploy; clearing falls back to `.env`.
   (`PATCH /dashboard/usage-settings`, super admin only.)
@@ -276,15 +324,20 @@ the **Claude API**.
   user message has a **pencil** (edit and resend — replaces the last exchange),
   and every assistant reply has **thumbs up/down** stored on
   `messages.feedback` (`POST /chat/messages/{id}/feedback`). Feedback surfaces
-  on the **Dashboard**'s "Answer feedback" card — **super admin only**: the
+  on the **Dashboard**'s "Team feedback" card — **super admin only**: the
   whole team's thumbs (up/down totals + recent items with user, excerpt, and
-  chat). Everyone else gets no card (`DASHBOARD_FEEDBACK_LIMIT`, default 8
-  recent items).
+  chat) plus the **written feedback & suggestions** below. Everyone else gets
+  no card (`DASHBOARD_FEEDBACK_LIMIT`, default 8 recent items).
+- **Written feedback & suggestions:** every member's Dashboard has a
+  **Feedback & suggestions** card — pick Feedback or Suggestion, write a note
+  (max 2000 chars), Send (`POST /feedback`, `feedback_entries` table). Entries
+  land on the super admin's Team feedback card with author, type, and time —
+  the free-text complement to the thumbs.
 - **Share a chat (team-only):** the header's **Share** button creates a
   read-only link any **logged-in** member can open (`/chat/shared/{token}`) —
   never public. Copy it from the dialog; **Stop sharing** invalidates it.
   Owner-only toggle; the shared view has no composer, thinking, or feedback.
-- **Language:** Settings → Profile → **Language** sets your preferred
+- **Language:** Settings → General → **Language** sets your preferred
   language across the portal — AiMe answers in it ("Auto" = match whatever
   language you write). One system-prompt line; the list is configurable
   (`ANTHROPIC_CHAT_LANGUAGES`).

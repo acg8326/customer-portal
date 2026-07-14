@@ -1,19 +1,29 @@
 <script setup lang="ts">
-import { usePage } from '@inertiajs/vue3';
+import { router, usePage } from '@inertiajs/vue3';
 import {
     ArrowUp,
     Brain,
+    Check,
+    ChevronDown,
+    ChevronRight,
     Copy,
     Download,
     FileText,
     FileType,
     FoldVertical,
+    Ghost,
     Globe,
     Image as ImageIcon,
+    ImagePlus,
+    Loader2,
+    Lock,
     Menu,
+    Mic,
     Paperclip,
     Pencil,
     RefreshCw,
+    Square,
+    Volume2,
     Share2,
     Sheet as SheetIcon,
     ShieldCheck,
@@ -50,6 +60,8 @@ import { getInitials } from '@/composables/useInitials';
 type Attachment = {
     name: string;
     mime: string;
+    // Set for stored images (uploaded or AI-generated) — rendered inline.
+    url?: string | null;
 };
 
 type ChatMessage = {
@@ -86,9 +98,19 @@ type SkillOption = {
     icon: string | null;
 };
 
+type ProviderModel = { value: string; label: string; hint: string };
+
+type Provider = {
+    key: string;
+    name: string;
+    available: boolean;
+    blurb: string;
+    models: ProviderModel[];
+};
+
 const props = withDefaults(
     defineProps<{
-        models: { value: string; label: string }[];
+        providers: Provider[];
         defaultModel: string;
         conversations: ConversationSummary[];
         projectId?: number | null;
@@ -97,6 +119,8 @@ const props = withDefaults(
         skills?: SkillOption[];
         mcpEnabled?: boolean;
         webEnabled?: boolean;
+        imageEnabled?: boolean;
+        speechEnabled?: boolean;
         continuePrompt?: string;
     }>(),
     {
@@ -111,6 +135,8 @@ const props = withDefaults(
         skills: () => [],
         mcpEnabled: false,
         webEnabled: false,
+        imageEnabled: false,
+        speechEnabled: false,
         continuePrompt:
             'Continue exactly where you left off — do not repeat what you already wrote.',
     },
@@ -136,10 +162,25 @@ const greeting = computed(() => {
 
 const MODEL_STORAGE_KEY = 'chat:model';
 
+// Flat view of every pickable model with its provider context.
+const allModels = computed(() =>
+    props.providers.flatMap((p) =>
+        p.models.map((m) => ({
+            ...m,
+            provider: p.key,
+            providerName: p.name,
+            available: p.available,
+        })),
+    ),
+);
+
 function initialModel(): string {
     const saved = localStorage.getItem(MODEL_STORAGE_KEY);
 
-    if (saved && props.models.some((m) => m.value === saved)) {
+    if (
+        saved &&
+        allModels.value.some((m) => m.value === saved && m.available)
+    ) {
         return saved;
     }
 
@@ -214,6 +255,30 @@ function toggleWeb() {
     webOn.value = !webOn.value;
     localStorage.setItem(WEB_KEY, webOn.value ? '1' : '0');
 }
+
+// Private chat (like ChatGPT's temporary chat): nothing is saved — no
+// conversation, no messages, no memory. The transcript lives only in this
+// component and is resent with each turn; it's gone on refresh or toggle.
+// Deliberately NOT persisted across reloads: private is an in-the-moment
+// choice, not a sticky mode someone forgets they left on.
+const privateOn = ref(false);
+
+function togglePrivate() {
+    privateOn.value = !privateOn.value;
+    // Both directions start from a clean slate — a private transcript must
+    // not leak into a saved chat, and vice versa.
+    newChat();
+}
+
+// Message font size (Settings → General). Read once on mount — navigating
+// back from Settings remounts the chat page, picking up changes.
+const FONT_SIZE_KEY = 'chat:fontSize';
+const fontSizeClass =
+    {
+        sm: 'text-[0.8125rem]',
+        base: 'text-sm',
+        lg: 'text-base',
+    }[localStorage.getItem(FONT_SIZE_KEY) ?? 'base'] ?? 'text-sm';
 
 // Team share link for the active conversation (null = not shared).
 const shareUrl = ref<string | null>(null);
@@ -487,13 +552,297 @@ function formatTokens(n: number): string {
     return `${n}`;
 }
 
-function onModelChange(value: unknown) {
-    if (typeof value !== 'string') {
+// --- Grouped model picker (LibreChat-style: providers → models) -----------------
+
+const modelMenuOpen = ref(false);
+const menuProviderKey = ref(props.providers[0]?.key ?? '');
+// Locked provider the user tried to pick from — drives the request dialog.
+const requestTarget = ref<{ provider: Provider; model: ProviderModel } | null>(
+    null,
+);
+const requestSending = ref(false);
+
+const menuProvider = computed(
+    () =>
+        props.providers.find((p) => p.key === menuProviderKey.value) ??
+        props.providers[0],
+);
+
+const currentModel = computed(() =>
+    allModels.value.find((m) => m.value === model.value),
+);
+
+const currentModelLabel = computed(
+    () => currentModel.value?.label ?? model.value,
+);
+
+// Claude-only features (web, thinking, attachments, connected tools) grey
+// out when a plain-chat provider is selected.
+const modelIsClaude = computed(
+    () => (currentModel.value?.provider ?? 'anthropic') === 'anthropic',
+);
+
+function openModelMenu() {
+    modelMenuOpen.value = !modelMenuOpen.value;
+    menuProviderKey.value =
+        currentModel.value?.provider ?? props.providers[0]?.key ?? '';
+}
+
+function pickModel(provider: Provider, m: ProviderModel) {
+    if (!provider.available) {
+        requestTarget.value = { provider, model: m };
+
         return;
     }
 
-    model.value = value;
-    localStorage.setItem(MODEL_STORAGE_KEY, value);
+    model.value = m.value;
+    localStorage.setItem(MODEL_STORAGE_KEY, m.value);
+    modelMenuOpen.value = false;
+}
+
+// --- Image generation mode (composer toggle) ------------------------------------
+
+const imageMode = ref(false);
+
+function toggleImageMode() {
+    if (!props.imageEnabled) {
+        // Locked → same request-access flow as locked chat providers.
+        requestTarget.value = {
+            provider: {
+                key: 'openai',
+                name: 'OpenAI',
+                available: false,
+                blurb: '',
+                models: [],
+            },
+            model: {
+                value: 'gpt-image-1',
+                label: 'Image generation',
+                hint: '',
+            },
+        };
+
+        return;
+    }
+
+    imageMode.value = !imageMode.value;
+}
+
+async function sendImage() {
+    const prompt = draft.value.trim();
+
+    if (!prompt || loading.value) {
+        return;
+    }
+
+    error.value = null;
+    messages.value.push({ role: 'user', content: prompt });
+    draft.value = '';
+    loading.value = true;
+
+    const assistantIndex =
+        messages.value.push({ role: 'assistant', content: '' }) - 1;
+
+    await scrollToBottom();
+
+    try {
+        const res = await fetch('/chat/image', {
+            method: 'POST',
+            headers: jsonHeaders(),
+            body: JSON.stringify({ prompt, conversation_id: activeId.value }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            throw new Error(data.message ?? 'Image generation failed.');
+        }
+
+        messages.value[assistantIndex] = data.message;
+
+        if (activeId.value == null && data.conversation_id != null) {
+            activeId.value = data.conversation_id;
+            bumpToTop(data.conversation_id, data.title ?? '');
+        }
+    } catch (e) {
+        error.value =
+            e instanceof Error ? e.message : 'Image generation failed.';
+        messages.value.splice(assistantIndex, 1);
+    } finally {
+        loading.value = false;
+        await scrollToBottom();
+    }
+}
+
+// --- Speech: dictation (mic → text) + read-aloud ---------------------------------
+
+const recording = ref(false);
+const transcribing = ref(false);
+let mediaRecorder: MediaRecorder | null = null;
+let audioChunks: Blob[] = [];
+
+async function toggleRecording() {
+    if (!props.speechEnabled) {
+        requestTarget.value = {
+            provider: {
+                key: 'openai',
+                name: 'OpenAI',
+                available: false,
+                blurb: '',
+                models: [],
+            },
+            model: {
+                value: 'speech',
+                label: 'Voice dictation & read-aloud',
+                hint: '',
+            },
+        };
+
+        return;
+    }
+
+    if (recording.value) {
+        mediaRecorder?.stop();
+
+        return;
+    }
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+        });
+
+        audioChunks = [];
+        mediaRecorder = new MediaRecorder(stream);
+        mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size) {
+                audioChunks.push(e.data);
+            }
+        };
+        mediaRecorder.onstop = async () => {
+            stream.getTracks().forEach((t) => t.stop());
+            recording.value = false;
+
+            const blob = new Blob(audioChunks, {
+                type: mediaRecorder?.mimeType || 'audio/webm',
+            });
+
+            if (!blob.size) {
+                return;
+            }
+
+            transcribing.value = true;
+
+            try {
+                const form = new FormData();
+
+                form.append('audio', blob, 'recording.webm');
+
+                const res = await fetch('/chat/transcribe', {
+                    method: 'POST',
+                    headers: baseHeaders(),
+                    body: form,
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    throw new Error(data.message ?? "Couldn't transcribe.");
+                }
+
+                draft.value = draft.value
+                    ? `${draft.value.trimEnd()} ${data.text}`
+                    : data.text;
+            } catch (e) {
+                error.value =
+                    e instanceof Error ? e.message : "Couldn't transcribe.";
+            } finally {
+                transcribing.value = false;
+            }
+        };
+        mediaRecorder.start();
+        recording.value = true;
+    } catch {
+        error.value = 'Microphone unavailable — check browser permissions.';
+    }
+}
+
+const speakingId = ref<number | null>(null);
+let audioEl: HTMLAudioElement | null = null;
+
+async function toggleSpeak(m: ChatMessage) {
+    if (m.id == null) {
+        return;
+    }
+
+    // Clicking the playing message stops it.
+    if (speakingId.value === m.id) {
+        audioEl?.pause();
+        speakingId.value = null;
+
+        return;
+    }
+
+    audioEl?.pause();
+    speakingId.value = m.id;
+
+    try {
+        const res = await fetch('/chat/speech', {
+            method: 'POST',
+            headers: jsonHeaders(),
+            body: JSON.stringify({ message_id: m.id }),
+        });
+
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+
+            throw new Error(data.message ?? "Couldn't generate audio.");
+        }
+
+        const blob = await res.blob();
+
+        // The user may have clicked stop (or another message) meanwhile.
+        if (speakingId.value !== m.id) {
+            return;
+        }
+
+        audioEl = new Audio(URL.createObjectURL(blob));
+        audioEl.onended = () => {
+            if (speakingId.value === m.id) {
+                speakingId.value = null;
+            }
+        };
+        await audioEl.play();
+    } catch (e) {
+        error.value =
+            e instanceof Error ? e.message : "Couldn't generate audio.";
+        speakingId.value = null;
+    }
+}
+
+function sendApiRequest() {
+    const target = requestTarget.value;
+
+    if (!target || requestSending.value) {
+        return;
+    }
+
+    requestSending.value = true;
+
+    router.post(
+        '/feedback',
+        {
+            type: 'api_request',
+            message: `Please enable ${target.provider.name} for the chat — I'd like to use ${target.model.label} (${target.model.value}). An admin needs to add the provider's API key to the server.`,
+        },
+        {
+            preserveScroll: true,
+            preserveState: true,
+            onSuccess: () => {
+                requestTarget.value = null;
+                modelMenuOpen.value = false;
+            },
+            onFinish: () => (requestSending.value = false),
+        },
+    );
 }
 
 function readCookie(name: string): string {
@@ -543,6 +892,8 @@ function newChat() {
 
 async function selectConversation(id: number) {
     sidebarOpen.value = false;
+    // Opening a saved chat leaves private mode (and drops its transcript).
+    privateOn.value = false;
 
     if (id === activeId.value) {
         return;
@@ -641,8 +992,30 @@ type SendOptions = {
 
 async function send(opts: SendOptions = {}) {
     const isRetry = opts.retry === true;
+
+    // Image mode hijacks plain sends only — retry/edit/continue stay chat.
+    if (
+        imageMode.value &&
+        !isRetry &&
+        opts.text == null &&
+        opts.replaceLast !== true
+    ) {
+        void sendImage();
+
+        return;
+    }
+
+    // Private chats have no server-side conversation to retry against, and
+    // attachments would have to be stored — both stay off in private mode.
+    if (privateOn.value && isRetry) {
+        return;
+    }
+
     const text = isRetry ? '' : (opts.text ?? draft.value).trim();
-    const files = isRetry || opts.text != null ? [] : pendingFiles.value;
+    const files =
+        isRetry || opts.text != null || privateOn.value
+            ? []
+            : pendingFiles.value;
 
     if ((!text && files.length === 0 && !isRetry) || loading.value) {
         return;
@@ -731,21 +1104,39 @@ async function send(opts: SendOptions = {}) {
                 body: form,
             });
         } else {
+            // Private mode replays the browser-held transcript instead of a
+            // conversation id: every completed turn before the user message
+            // we just pushed (the placeholder sits at assistantIndex).
+            const body = privateOn.value
+                ? {
+                      content: text,
+                      model: model.value,
+                      skill_id: skillId.value,
+                      thinking: thinkingOn.value,
+                      web: webOn.value,
+                      private: true,
+                      history: messages.value
+                          .slice(0, assistantIndex - 1)
+                          .filter((m) => m.content)
+                          .map((m) => ({ role: m.role, content: m.content })),
+                  }
+                : {
+                      conversation_id: activeId.value,
+                      project_id: props.projectId,
+                      content: text,
+                      model: model.value,
+                      skill_id: skillId.value,
+                      auto_approve: autoApprove.value,
+                      thinking: thinkingOn.value,
+                      web: webOn.value,
+                      retry: isRetry,
+                      replace_last: opts.replaceLast === true,
+                  };
+
             res = await fetch('/chat/stream', {
                 method: 'POST',
                 headers: jsonHeaders(),
-                body: JSON.stringify({
-                    conversation_id: activeId.value,
-                    project_id: props.projectId,
-                    content: text,
-                    model: model.value,
-                    skill_id: skillId.value,
-                    auto_approve: autoApprove.value,
-                    thinking: thinkingOn.value,
-                    web: webOn.value,
-                    retry: isRetry,
-                    replace_last: opts.replaceLast === true,
-                }),
+                body: JSON.stringify(body),
             });
         }
 
@@ -1143,7 +1534,7 @@ onMounted(() => {
         <div class="flex min-w-0 flex-1 flex-col">
             <!-- Header -->
             <div
-                class="flex items-center justify-between gap-2 border-b px-4 py-3"
+                class="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3"
             >
                 <div class="flex min-w-0 items-center gap-3">
                     <button
@@ -1175,43 +1566,71 @@ onMounted(() => {
                     </slot>
                 </div>
 
-                <div class="flex items-center gap-2">
+                <!-- Toolbar: wraps under the brand row on narrow screens;
+                 labels collapse to icons below sm so nothing gets cramped -->
+                <div
+                    class="flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:gap-2"
+                >
                     <button
-                        v-if="webEnabled"
                         type="button"
                         class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors"
                         :class="
-                            webOn
+                            privateOn
                                 ? 'border-brand-gold/50 bg-brand-gold/10 text-brand-gold'
                                 : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
                         "
                         :title="
-                            webOn
-                                ? 'Web search is ON — answers can use live web results with sources. Click to turn off.'
-                                : 'Web search is OFF — answers use only the knowledge base and connected tools. Click to turn on.'
+                            privateOn
+                                ? 'Private chat is ON — nothing is saved; the conversation disappears when you leave. Click to go back to normal chats.'
+                                : 'Start a private chat — messages are not saved to your history or the database.'
+                        "
+                        @click="togglePrivate"
+                    >
+                        <Ghost class="size-3.5" />
+                        <span class="hidden sm:inline">Private</span>
+                    </button>
+                    <button
+                        v-if="webEnabled"
+                        type="button"
+                        class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                        :class="
+                            webOn && modelIsClaude
+                                ? 'border-brand-gold/50 bg-brand-gold/10 text-brand-gold'
+                                : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
+                        "
+                        :disabled="!modelIsClaude"
+                        :title="
+                            !modelIsClaude
+                                ? 'Web search works with Claude models only'
+                                : webOn
+                                  ? 'Web search is ON — answers can use live web results with sources. Click to turn off.'
+                                  : 'Web search is OFF — answers use only the knowledge base and connected tools. Click to turn on.'
                         "
                         @click="toggleWeb"
                     >
                         <Globe class="size-3.5" />
-                        Web
+                        <span class="hidden sm:inline">Web</span>
                     </button>
                     <button
                         type="button"
-                        class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors"
+                        class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                         :class="
-                            thinkingOn
+                            thinkingOn && modelIsClaude
                                 ? 'border-brand-gold/50 bg-brand-gold/10 text-brand-gold'
                                 : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
                         "
+                        :disabled="!modelIsClaude"
                         :title="
-                            thinkingOn
-                                ? 'Extended thinking is ON — the thought process shows in a collapsible block. Click to turn off.'
-                                : 'Turn on extended thinking — the assistant reasons longer and shows its thought process.'
+                            !modelIsClaude
+                                ? 'Extended thinking works with Claude models only'
+                                : thinkingOn
+                                  ? 'Extended thinking is ON — the thought process shows in a collapsible block. Click to turn off.'
+                                  : 'Turn on extended thinking — the assistant reasons longer and shows its thought process.'
                         "
                         @click="toggleThinking"
                     >
                         <Brain class="size-3.5" />
-                        Thinking
+                        <span class="hidden sm:inline">Thinking</span>
                     </button>
                     <div
                         v-if="mcpEnabled"
@@ -1237,7 +1656,7 @@ onMounted(() => {
                             "
                         />
                         <span
-                            class="text-xs font-medium"
+                            class="hidden text-xs font-medium sm:inline"
                             :class="
                                 autoApprove
                                     ? 'text-brand-gold'
@@ -1286,7 +1705,9 @@ onMounted(() => {
                         @click="showShareDialog = true"
                     >
                         <Share2 class="size-3.5" />
-                        {{ shareUrl ? 'Shared' : 'Share' }}
+                        <span class="hidden sm:inline">{{
+                            shareUrl ? 'Shared' : 'Share'
+                        }}</span>
                     </button>
                     <button
                         v-if="activeId != null && messages.length > 1"
@@ -1301,33 +1722,121 @@ onMounted(() => {
                         @click="compactConversation"
                     >
                         <FoldVertical class="size-3.5" />
-                        {{
+                        <span class="hidden sm:inline">{{
                             compacting
                                 ? 'Compacting…'
                                 : compacted
                                   ? 'Compacted'
                                   : 'Compact'
-                        }}
+                        }}</span>
                     </button>
 
-                    <Select
-                        :model-value="model"
-                        @update:model-value="onModelChange"
-                    >
-                        <SelectTrigger class="h-8 w-auto min-w-[160px] text-xs">
-                            <SelectValue placeholder="Select a model" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem
-                                v-for="m in models"
-                                :key="m.value"
-                                :value="m.value"
-                                class="text-xs"
+                    <!-- Grouped model picker: providers left, models right -->
+                    <div class="relative">
+                        <button
+                            type="button"
+                            class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium transition-colors hover:bg-accent sm:min-w-[160px]"
+                            :title="
+                                modelIsClaude
+                                    ? 'Choose a model'
+                                    : 'Plain-chat model — tools, web search, thinking & files need Claude'
+                            "
+                            @click="openModelMenu"
+                        >
+                            <span class="truncate">{{
+                                currentModelLabel
+                            }}</span>
+                            <ChevronDown
+                                class="ml-auto size-3.5 text-muted-foreground"
+                            />
+                        </button>
+
+                        <template v-if="modelMenuOpen">
+                            <div
+                                class="fixed inset-0 z-40"
+                                @click="modelMenuOpen = false"
+                            />
+                            <div
+                                class="absolute top-full right-0 z-50 mt-1 flex max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border bg-popover shadow-lg"
                             >
-                                {{ m.label }}
-                            </SelectItem>
-                        </SelectContent>
-                    </Select>
+                                <!-- Providers -->
+                                <div
+                                    class="w-40 shrink-0 border-r py-1 sm:w-48"
+                                >
+                                    <button
+                                        v-for="p in providers"
+                                        :key="p.key"
+                                        type="button"
+                                        class="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium hover:bg-accent"
+                                        :class="
+                                            menuProviderKey === p.key
+                                                ? 'bg-accent'
+                                                : ''
+                                        "
+                                        @mouseenter="menuProviderKey = p.key"
+                                        @click="menuProviderKey = p.key"
+                                    >
+                                        <span class="min-w-0 flex-1 truncate">
+                                            {{ p.name }}
+                                        </span>
+                                        <Lock
+                                            v-if="!p.available"
+                                            class="size-3 shrink-0 text-muted-foreground"
+                                        />
+                                        <ChevronRight
+                                            v-else
+                                            class="size-3 shrink-0 text-muted-foreground"
+                                        />
+                                    </button>
+                                </div>
+
+                                <!-- Models of the hovered provider -->
+                                <div
+                                    v-if="menuProvider"
+                                    class="max-h-80 w-60 overflow-y-auto py-1 sm:w-72"
+                                >
+                                    <p
+                                        class="border-b px-3 py-2 text-[11px] leading-snug text-muted-foreground"
+                                    >
+                                        {{
+                                            menuProvider.available
+                                                ? menuProvider.blurb
+                                                : 'Not enabled yet — picking a model sends an access request to your admin.'
+                                        }}
+                                    </p>
+                                    <button
+                                        v-for="m in menuProvider.models"
+                                        :key="m.value"
+                                        type="button"
+                                        class="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-accent"
+                                        @click="pickModel(menuProvider, m)"
+                                    >
+                                        <div class="min-w-0 flex-1">
+                                            <p
+                                                class="truncate text-xs font-medium"
+                                            >
+                                                {{ m.label }}
+                                            </p>
+                                            <p
+                                                v-if="m.hint"
+                                                class="truncate text-[11px] text-muted-foreground"
+                                            >
+                                                {{ m.hint }}
+                                            </p>
+                                        </div>
+                                        <Check
+                                            v-if="model === m.value"
+                                            class="mt-0.5 size-3.5 shrink-0 text-brand-gold"
+                                        />
+                                        <Lock
+                                            v-else-if="!menuProvider.available"
+                                            class="mt-0.5 size-3 shrink-0 text-muted-foreground"
+                                        />
+                                    </button>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
                 </div>
             </div>
 
@@ -1357,7 +1866,29 @@ onMounted(() => {
                                     >Hi, I'm AiMe BOT. Ask me anything.</slot
                                 >
                             </p>
+                            <span
+                                v-if="privateOn"
+                                class="mt-4 inline-flex items-center gap-1.5 rounded-full border border-brand-gold/40 bg-brand-gold/10 px-3 py-1 text-xs text-brand-gold"
+                            >
+                                <Ghost class="size-3.5" />
+                                Private chat — messages aren't saved and
+                                disappear when you leave.
+                            </span>
                         </div>
+                    </div>
+
+                    <!-- Private-chat notice -->
+                    <div
+                        v-if="privateOn && messages.length"
+                        class="flex justify-center"
+                    >
+                        <span
+                            class="inline-flex items-center gap-1.5 rounded-full border border-brand-gold/40 bg-brand-gold/10 px-3 py-1 text-xs text-brand-gold"
+                        >
+                            <Ghost class="size-3.5" />
+                            Private chat — messages aren't saved and disappear
+                            when you leave.
+                        </span>
                     </div>
 
                     <!-- Compacted notice -->
@@ -1401,20 +1932,47 @@ onMounted(() => {
                             </div>
 
                             <div
-                                class="max-w-[80%] px-4 py-2.5 text-sm"
-                                :class="
+                                class="max-w-[80%] px-4 py-2.5"
+                                :class="[
+                                    fontSizeClass,
                                     m.role === 'user'
                                         ? 'rounded-2xl rounded-tr-sm bg-primary whitespace-pre-wrap text-primary-foreground'
-                                        : 'rounded-2xl rounded-tl-sm bg-muted text-foreground'
-                                "
+                                        : 'rounded-2xl rounded-tl-sm bg-muted text-foreground',
+                                ]"
                             >
+                                <!-- Stored images (uploaded or generated) render inline -->
                                 <div
-                                    v-if="m.attachments?.length"
+                                    v-if="m.attachments?.some((a) => a.url)"
+                                    class="flex flex-wrap gap-2"
+                                    :class="m.content ? 'mb-2' : ''"
+                                >
+                                    <a
+                                        v-for="(a, ai) in m.attachments.filter(
+                                            (a) => a.url,
+                                        )"
+                                        :key="'img-' + ai"
+                                        :href="a.url ?? undefined"
+                                        target="_blank"
+                                        rel="noopener"
+                                        title="Open full size"
+                                    >
+                                        <img
+                                            :src="a.url ?? undefined"
+                                            :alt="a.name"
+                                            loading="lazy"
+                                            class="max-h-72 max-w-full rounded-lg border border-border/60"
+                                        />
+                                    </a>
+                                </div>
+                                <div
+                                    v-if="m.attachments?.some((a) => !a.url)"
                                     class="flex flex-wrap gap-1.5"
                                     :class="m.content ? 'mb-2' : ''"
                                 >
                                     <span
-                                        v-for="(a, ai) in m.attachments"
+                                        v-for="(a, ai) in m.attachments.filter(
+                                            (a) => !a.url,
+                                        )"
                                         :key="ai"
                                         class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs"
                                         :class="
@@ -1513,6 +2071,36 @@ onMounted(() => {
                                         <Copy class="size-3.5" /> Copy
                                     </button>
                                     <button
+                                        v-if="speechEnabled && m.id != null"
+                                        type="button"
+                                        class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-background hover:text-foreground"
+                                        :class="
+                                            speakingId === m.id
+                                                ? 'text-brand-gold'
+                                                : ''
+                                        "
+                                        :title="
+                                            speakingId === m.id
+                                                ? 'Stop'
+                                                : 'Read this reply aloud'
+                                        "
+                                        @click="toggleSpeak(m)"
+                                    >
+                                        <component
+                                            :is="
+                                                speakingId === m.id
+                                                    ? Square
+                                                    : Volume2
+                                            "
+                                            class="size-3.5"
+                                        />
+                                        {{
+                                            speakingId === m.id
+                                                ? 'Stop'
+                                                : 'Listen'
+                                        }}
+                                    </button>
+                                    <button
                                         type="button"
                                         class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-background hover:text-foreground"
                                         title="Download as Markdown"
@@ -1562,7 +2150,10 @@ onMounted(() => {
                                     <span class="mx-0.5 h-4 w-px bg-border" />
 
                                     <button
-                                        v-if="i === messages.length - 1"
+                                        v-if="
+                                            i === messages.length - 1 &&
+                                            !privateOn
+                                        "
                                         type="button"
                                         class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-background hover:text-foreground"
                                         title="Regenerate this reply"
@@ -1819,21 +2410,81 @@ onMounted(() => {
                             <button
                                 v-if="uploads.enabled"
                                 type="button"
-                                class="flex size-9 shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                                class="flex size-9 shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
                                 aria-label="Attach files"
-                                title="Attach images or PDFs"
+                                :disabled="privateOn || !modelIsClaude"
+                                :title="
+                                    privateOn
+                                        ? 'Attachments are off in private chats — files would have to be stored'
+                                        : !modelIsClaude
+                                          ? 'Attachments work with Claude models only'
+                                          : 'Attach images or PDFs'
+                                "
                                 @click="openFilePicker"
                             >
                                 <Paperclip class="size-5" />
                             </button>
+                            <button
+                                type="button"
+                                class="flex size-9 shrink-0 items-center justify-center rounded-xl transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                                :class="
+                                    imageMode
+                                        ? 'bg-brand-gold/10 text-brand-gold'
+                                        : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+                                "
+                                aria-label="Generate an image"
+                                :disabled="privateOn"
+                                :title="
+                                    privateOn
+                                        ? 'Image generation is off in private chats — images would have to be stored'
+                                        : imageMode
+                                          ? 'Image mode is ON — your message becomes an image prompt. Click to go back to chat.'
+                                          : imageEnabled
+                                            ? 'Generate an image from your next message'
+                                            : 'Image generation isn\'t enabled — click to request it from your admin'
+                                "
+                                @click="toggleImageMode"
+                            >
+                                <ImagePlus class="size-5" />
+                            </button>
                             <textarea
                                 v-model="draft"
                                 rows="1"
-                                placeholder="Message AiMe BOT…"
+                                :placeholder="
+                                    imageMode
+                                        ? 'Describe the image to generate…'
+                                        : 'Message AiMe BOT…'
+                                "
                                 class="max-h-40 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
                                 @keydown="onKeydown"
                                 @paste="onPaste"
                             />
+                            <button
+                                type="button"
+                                class="flex size-9 shrink-0 items-center justify-center rounded-xl transition-colors"
+                                :class="
+                                    recording
+                                        ? 'animate-pulse bg-destructive/10 text-destructive'
+                                        : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+                                "
+                                :aria-label="
+                                    recording ? 'Stop recording' : 'Dictate'
+                                "
+                                :title="
+                                    recording
+                                        ? 'Stop recording — the audio is transcribed into the message box'
+                                        : speechEnabled
+                                          ? 'Dictate your message'
+                                          : 'Speech isn\'t enabled — click to request it from your admin'
+                                "
+                                @click="toggleRecording"
+                            >
+                                <component
+                                    :is="transcribing ? Loader2 : Mic"
+                                    class="size-5"
+                                    :class="transcribing ? 'animate-spin' : ''"
+                                />
+                            </button>
                             <button
                                 type="button"
                                 :disabled="
@@ -1963,6 +2614,38 @@ onMounted(() => {
                         @click="toggleShare"
                     >
                         Stop sharing
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+
+        <!-- Locked provider → request API access from the admin -->
+        <Dialog
+            :open="requestTarget !== null"
+            @update:open="(v: boolean) => !v && (requestTarget = null)"
+        >
+            <DialogContent v-if="requestTarget">
+                <DialogHeader>
+                    <DialogTitle>
+                        {{ requestTarget.provider.name }} isn't enabled yet
+                    </DialogTitle>
+                    <DialogDescription>
+                        Using {{ requestTarget.model.label }} needs a
+                        {{ requestTarget.provider.name }} API key on the server,
+                        which only an admin can add. Send a request? It lands on
+                        the admin's dashboard with your name.
+                    </DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                    <Button variant="secondary" @click="requestTarget = null">
+                        Cancel
+                    </Button>
+                    <Button
+                        class="bg-brand-gold text-white hover:bg-brand-gold/90"
+                        :disabled="requestSending"
+                        @click="sendApiRequest"
+                    >
+                        {{ requestSending ? 'Sending…' : 'Request access' }}
                     </Button>
                 </DialogFooter>
             </DialogContent>

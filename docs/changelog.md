@@ -3,6 +3,100 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Image generation + speech (dictation & read-aloud)
+
+- **Image generation** (🖼️ button in the composer): toggle Image mode, type a
+  prompt, and AiMe generates a picture (`POST /chat/image`, OpenAI
+  `gpt-image-1` by default). The prompt is saved as your message and the PNG
+  as an assistant attachment — it renders **inline in the chat** and lives in
+  history like any other message. Off in private chats (images must be
+  stored). Each image charges `IMAGE_TOKEN_COST` (default 5 000) tokens to
+  the user's budget.
+- **Dictation** (🎤 in the composer): record, stop, and the audio is
+  transcribed into the message box (`POST /chat/transcribe`, default
+  `gpt-4o-transcribe`). The audio is never stored.
+- **Read aloud** ("Listen" under every AiMe reply): the reply is spoken via
+  TTS (`POST /chat/speech`, default `gpt-4o-mini-tts`). Each speech request
+  charges `SPEECH_TOKEN_COST` (default 500) tokens.
+- **Keys:** both features default to `OPENAI_API_KEY` (separate
+  `IMAGE_API_KEY`/`SPEECH_API_KEY` overrides exist). Without a key the
+  buttons show the same **"request access from your admin"** dialog as
+  locked chat providers.
+- **Inline images generally:** uploaded image attachments now also render
+  inline in chat bubbles (owner-only serving route `chat/images/{message}/{i}`).
+- New: [`OpenAiMedia`](../app/Services/OpenAiMedia.php),
+  [`MediaController`](../app/Http/Controllers/MediaController.php).
+
+## Multi-provider model picker (LibreChat-style)
+
+- **Grouped picker:** the chat header's model button now opens a two-pane
+  menu — providers left, models right, each model with a "when to use it"
+  hint. Claude stays first and full-featured; **OpenAI, Google Gemini,
+  DeepSeek, Groq, Mistral, and xAI Grok** join via their OpenAI-compatible
+  APIs with **plain chat only** (tools, web, thinking, attachments grey out —
+  they're Claude features).
+- **Global keys, not per-user:** one `.env` key per provider
+  (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`,
+  `MISTRAL_API_KEY`, `XAI_API_KEY`). All usage is streamed through the server
+  and **charged to the same per-user token budget**.
+- **Request access:** providers without a key show locked (🔒); picking one
+  of their models opens a dialog that sends an **API request** to the super
+  admin's Team feedback card (new `api_request` feedback type, key icon) —
+  so enabling a provider is a deliberate admin decision.
+- Model lists per provider are `.env`-overridable:
+  `{PREFIX}_MODELS="id:Label|hint,id:Label|hint"`. Server-side validation
+  rejects models from providers that aren't enabled.
+- New: [`ModelCatalog`](../app/Services/ModelCatalog.php),
+  [`OpenAiCompatibleChat`](../app/Services/OpenAiCompatibleChat.php) (SSE
+  streaming client). The old flat model dropdown is gone.
+
+## Feedback & suggestions, settings search + unified settings style
+
+- **Written feedback & suggestions:** a **Feedback & suggestions** card on
+  every member's Dashboard (type + message, `POST /feedback`, new
+  `feedback_entries` table). Entries appear on the super admin's feedback
+  card — renamed **Team feedback** — under the thumbs list, with author,
+  type (💡 suggestion / feedback), and time. Complements the thumbs up/down,
+  which stay.
+- **Dashboard cleanup:** the Conversations / Projects / Skills stat tiles are
+  gone (the sidebar already covers navigation; the numbers weren't actionable).
+- **Settings search:** a "Search settings" box above the settings nav filters
+  an index of every setting and jumps to its page — LibreChat-style.
+- **Unified settings style:** Profile, Security, and Skills now follow the
+  General page's visual language — uppercase section labels over rounded
+  bordered cards (new `SettingsSection.vue`): Account / Chat preferences /
+  Assistant memory / Danger zone, Password / Two-factor / Passkeys.
+- **Layout polish:** settings content now uses the full available width (the
+  old `max-w-xl` cap left most of the page empty); the chat header toolbar
+  wraps and collapses to icon-only buttons below the `sm` breakpoint, so
+  Private/Web/Thinking/model no longer cram on phones.
+
+## Private chats, General settings page + workspace default model
+
+- **Private chat** (chat header's **Private** toggle, ghost icon): nothing
+  touches the database — no conversation, no messages, no title, no memory
+  extraction, no webhooks. The browser holds the transcript and resends it
+  each turn (`private` + `history` params); it disappears on refresh, toggle,
+  or opening a saved chat. Token usage is still charged (usage is real).
+  Attachments, retry, and connected tools (Composio/NetSuite — their approval
+  gate needs a conversation row) are off in private mode; web search, thinking,
+  skills, and MCP still work. Gold "not saved" pill marks the mode.
+- **Settings → General** (new page, LibreChat-style clean rows): **Theme**
+  (moved from the old Appearance page — old URL redirects), **Language**
+  (moved from Profile), and a new **Message font size** (Small/Medium/Large,
+  stored in the browser, applied to chat bubbles — markdown headings scale
+  with it). Settings nav order: General, Profile, Security, Skills.
+- **Workspace default model (super admin):** the Dashboard's Team-usage gear
+  now also sets the **default model for everyone's new chats**, stored in
+  `app_settings` (`chat.default_model`) — live, no redeploy; "Server default"
+  clears it back to `.env` `ANTHROPIC_MODEL`. Ids that fall off the allowlist
+  are skipped, so retiring a model can't strand anyone. No per-account setting
+  on purpose — the chat header picker already covers personal choice.
+- **Model allowlist via `.env`:** the picker list is now overridable in one
+  line — `ANTHROPIC_MODELS="id:Label,id:Label"` (default list unchanged in
+  `config/services.php`). Claude models only, on purpose: budgets, the
+  approval gate, NetSuite tools, and memory are all built on the Claude API.
+
 ## Chat sharing, retention policy, reply language + migration consolidation
 
 - **Chat sharing (team-only).** A **Share** button in the chat header creates

@@ -5,12 +5,13 @@ namespace App\Http\Controllers;
 use App\Models\Conversation;
 use App\Models\Project;
 use App\Models\ProjectFile;
+use App\Services\ModelCatalog;
 use App\Services\OfficeTextExtractor;
+use App\Services\OpenAiMedia;
 use App\Services\UploadScanner;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -60,12 +61,6 @@ class ProjectController extends Controller
     {
         $this->ensureOwner($request, $project);
 
-        $models = [];
-
-        foreach (Config::array('services.anthropic.models') as $value => $label) {
-            $models[] = ['value' => $value, 'label' => $label];
-        }
-
         return Inertia::render('projects/Show', [
             'project' => [
                 'id' => $project->id,
@@ -85,12 +80,14 @@ class ProjectController extends Controller
                 'maxFiles' => (int) config('services.anthropic.uploads.project_max_files', 10),
                 'mimes' => (string) config('services.anthropic.uploads.project_mimes', 'docx,xlsx,csv,txt,md'),
             ],
-            'models' => $models,
-            'defaultModel' => config('services.anthropic.model'),
+            'providers' => app(ModelCatalog::class)->providers(),
+            'defaultModel' => ChatController::workspaceDefaultModel(),
             'uploads' => ChatController::uploadsProps(),
             'skills' => ChatController::skillOptions($request),
             'mcpEnabled' => ChatController::mcpEnabled($request),
             'webEnabled' => ChatController::webToolsConfigured(),
+            'imageEnabled' => OpenAiMedia::imageEnabled(),
+            'speechEnabled' => OpenAiMedia::speechEnabled(),
             'continuePrompt' => (string) config('services.anthropic.continue_prompt'),
             'conversations' => $project->conversations()
                 ->orderByDesc('starred')

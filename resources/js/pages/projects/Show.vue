@@ -18,7 +18,13 @@ defineProps<{
         name: string;
         instructions: string | null;
     };
-    models: { value: string; label: string }[];
+    providers: {
+        key: string;
+        name: string;
+        available: boolean;
+        blurb: string;
+        models: { value: string; label: string; hint: string }[];
+    }[];
     defaultModel: string;
     conversations: { id: number; title: string }[];
     uploads: {
@@ -30,6 +36,8 @@ defineProps<{
     skills: { id: number; name: string; icon: string | null }[];
     mcpEnabled: boolean;
     webEnabled: boolean;
+    imageEnabled: boolean;
+    speechEnabled: boolean;
     continuePrompt?: string;
     files: { id: number; name: string; size: number }[];
     fileLimits: { maxFiles: number; mimes: string };
@@ -52,13 +60,15 @@ const railClass = computed(() =>
             <!-- Chat -->
             <div class="min-w-0 flex-1">
                 <ChatPanel
-                    :models="models"
+                    :providers="providers"
                     :default-model="defaultModel"
                     :conversations="conversations"
                     :uploads="uploads"
                     :skills="skills"
                     :mcp-enabled="mcpEnabled"
                     :web-enabled="webEnabled"
+                    :image-enabled="imageEnabled"
+                    :speech-enabled="speechEnabled"
                     :continue-prompt="continuePrompt"
                     :project-id="project.id"
                 >

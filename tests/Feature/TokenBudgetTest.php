@@ -101,7 +101,6 @@ test('the dashboard shows the token usage snapshot', function () {
                 ->component('Dashboard')
                 ->where('usage.used', 400)
                 ->where('usage.limit', 1000)
-                ->has('stats')
         );
 });
 

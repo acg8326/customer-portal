@@ -404,17 +404,36 @@ return [
             PROMPT),
 
         // Models a user may pick in the chat UI (id => label). Add/remove freely;
-        // ids are validated server-side against this list.
-        'models' => [
-            'claude-opus-4-8' => 'Claude Opus 4.8 — most capable',
-            'claude-opus-4-7' => 'Claude Opus 4.7',
-            'claude-opus-4-1' => 'Claude Opus 4.1',
-            'claude-sonnet-5' => 'Claude Sonnet 5 — balanced',
-            'claude-sonnet-4-6' => 'Claude Sonnet 4.6',
-            'claude-sonnet-4-5' => 'Claude Sonnet 4.5',
-            'claude-haiku-4-5' => 'Claude Haiku 4.5 — fastest',
-            'claude-fable-5' => 'Claude Fable 5 — Anthropic\'s most capable',
-        ],
+        // ids are validated server-side against this list. Single-line .env
+        // override: ANTHROPIC_MODELS="id:Label,id:Label" (label optional).
+        'models' => (function (): array {
+            $csv = trim((string) env('ANTHROPIC_MODELS', ''));
+
+            if ($csv === '') {
+                return [
+                    'claude-opus-4-8' => 'Claude Opus 4.8 — most capable',
+                    'claude-opus-4-7' => 'Claude Opus 4.7',
+                    'claude-opus-4-1' => 'Claude Opus 4.1',
+                    'claude-sonnet-5' => 'Claude Sonnet 5 — balanced',
+                    'claude-sonnet-4-6' => 'Claude Sonnet 4.6',
+                    'claude-sonnet-4-5' => 'Claude Sonnet 4.5',
+                    'claude-haiku-4-5' => 'Claude Haiku 4.5 — fastest',
+                    'claude-fable-5' => 'Claude Fable 5 — Anthropic\'s most capable',
+                ];
+            }
+
+            $models = [];
+
+            foreach (explode(',', $csv) as $pair) {
+                [$id, $label] = array_pad(explode(':', $pair, 2), 2, '');
+
+                if (trim($id) !== '') {
+                    $models[trim($id)] = trim($label) !== '' ? trim($label) : trim($id);
+                }
+            }
+
+            return $models;
+        })(),
 
         // Chat file uploads (images + PDFs). Claude reads these natively; each
         // attachment is re-sent with every turn so follow-up questions keep the
@@ -440,6 +459,132 @@ return [
             // Total character budget for all project files in one prompt —
             // files beyond it are listed by name with a "not loaded" note.
             'project_max_chars' => (int) env('ANTHROPIC_PROJECT_MAX_CHARS', 100000),
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Additional LLM providers (LibreChat-style model picker)
+    |--------------------------------------------------------------------------
+    | Claude (the `anthropic` block above) is the primary, full-featured
+    | provider — connected tools, web search, thinking, attachments, memory.
+    | The providers below speak the OpenAI-compatible chat-completions API and
+    | get PLAIN chat only. Each is enabled by ONE global API key in .env (no
+    | per-user keys — usage stays inside the org budget). Providers without a
+    | key still show in the picker as locked; picking one lets the user send
+    | an access request to the super admin.
+    |
+    | Per-provider model override (single line): {PREFIX}_MODELS="id:Label|hint,id:Label|hint"
+    | 'hint' is the "when to use it" line shown in the picker.
+    */
+    /*
+    |--------------------------------------------------------------------------
+    | Media — image generation & speech (OpenAI-compatible APIs)
+    |--------------------------------------------------------------------------
+    | Claude doesn't generate images or audio, so these run on a separate
+    | provider key (defaults to OPENAI_API_KEY when set). Missing key = the
+    | feature is hidden/locked in the UI and users can request it from the
+    | admin. Each request is charged to the user's token budget at a flat
+    | token-equivalent cost (configure to match real pricing).
+    */
+    'media' => [
+        'image' => [
+            'key' => env('IMAGE_API_KEY', env('OPENAI_API_KEY')),
+            'base_url' => env('IMAGE_BASE_URL', env('OPENAI_BASE_URL', 'https://api.openai.com/v1')),
+            'model' => env('IMAGE_MODEL', 'gpt-image-1'),
+            'size' => env('IMAGE_SIZE', '1024x1024'),
+            'quality' => env('IMAGE_QUALITY', 'medium'),
+            'provider_name' => env('IMAGE_PROVIDER_NAME', 'OpenAI'),
+            // Budget charge per generated image, in tokens.
+            'token_cost' => (int) env('IMAGE_TOKEN_COST', 5000),
+        ],
+        'speech' => [
+            'key' => env('SPEECH_API_KEY', env('OPENAI_API_KEY')),
+            'base_url' => env('SPEECH_BASE_URL', env('OPENAI_BASE_URL', 'https://api.openai.com/v1')),
+            'stt_model' => env('SPEECH_STT_MODEL', 'gpt-4o-transcribe'),
+            'tts_model' => env('SPEECH_TTS_MODEL', 'gpt-4o-mini-tts'),
+            'tts_voice' => env('SPEECH_TTS_VOICE', 'alloy'),
+            // Budget charge per request (dictation or read-aloud), in tokens.
+            'token_cost' => (int) env('SPEECH_TOKEN_COST', 500),
+            'max_tts_chars' => (int) env('SPEECH_TTS_MAX_CHARS', 4000),
+            'max_audio_kb' => (int) env('SPEECH_MAX_AUDIO_KB', 15360),
+        ],
+    ],
+
+    'llm_providers' => [
+        'openai' => [
+            'name' => 'OpenAI',
+            'key' => env('OPENAI_API_KEY'),
+            'base_url' => env('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
+            // Newer OpenAI models reject `max_tokens` in favour of this.
+            'max_tokens_param' => 'max_completion_tokens',
+            'blurb' => 'Plain chat only — tools, web search & files stay with Claude.',
+            'models_env' => env('OPENAI_MODELS'),
+            'models' => [
+                'gpt-5.5' => ['label' => 'GPT-5.5', 'hint' => 'OpenAI flagship — strong general reasoning'],
+                'gpt-5.5-pro' => ['label' => 'GPT-5.5 Pro', 'hint' => 'Slow & thorough — hardest problems'],
+                'gpt-5.4' => ['label' => 'GPT-5.4', 'hint' => 'Previous flagship'],
+                'gpt-5.4-mini' => ['label' => 'GPT-5.4 mini', 'hint' => 'Fast & affordable everyday questions'],
+            ],
+        ],
+        'google' => [
+            'name' => 'Google Gemini',
+            'key' => env('GEMINI_API_KEY'),
+            // Gemini's OpenAI-compatible endpoint.
+            'base_url' => env('GEMINI_BASE_URL', 'https://generativelanguage.googleapis.com/v1beta/openai'),
+            'max_tokens_param' => 'max_tokens',
+            'blurb' => 'Plain chat only — long context, strong multilingual.',
+            'models_env' => env('GEMINI_MODELS'),
+            'models' => [
+                'gemini-2.5-pro' => ['label' => 'Gemini 2.5 Pro', 'hint' => 'Google flagship — reasoning & long documents'],
+                'gemini-2.5-flash' => ['label' => 'Gemini 2.5 Flash', 'hint' => 'Fast & cheap everyday questions'],
+            ],
+        ],
+        'deepseek' => [
+            'name' => 'DeepSeek',
+            'key' => env('DEEPSEEK_API_KEY'),
+            'base_url' => env('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1'),
+            'max_tokens_param' => 'max_tokens',
+            'blurb' => 'Plain chat only — very low cost.',
+            'models_env' => env('DEEPSEEK_MODELS'),
+            'models' => [
+                'deepseek-chat' => ['label' => 'DeepSeek Chat', 'hint' => 'Cheap general chat'],
+                'deepseek-reasoner' => ['label' => 'DeepSeek Reasoner', 'hint' => 'Step-by-step reasoning on a budget'],
+            ],
+        ],
+        'groq' => [
+            'name' => 'Groq',
+            'key' => env('GROQ_API_KEY'),
+            'base_url' => env('GROQ_BASE_URL', 'https://api.groq.com/openai/v1'),
+            'max_tokens_param' => 'max_tokens',
+            'blurb' => 'Plain chat only — extremely fast open-source models.',
+            'models_env' => env('GROQ_MODELS'),
+            'models' => [
+                'llama-3.3-70b-versatile' => ['label' => 'Llama 3.3 70B', 'hint' => 'Open-source all-rounder at high speed'],
+            ],
+        ],
+        'mistral' => [
+            'name' => 'Mistral',
+            'key' => env('MISTRAL_API_KEY'),
+            'base_url' => env('MISTRAL_BASE_URL', 'https://api.mistral.ai/v1'),
+            'max_tokens_param' => 'max_tokens',
+            'blurb' => 'Plain chat only — strong European models.',
+            'models_env' => env('MISTRAL_MODELS'),
+            'models' => [
+                'mistral-large-latest' => ['label' => 'Mistral Large', 'hint' => 'Mistral flagship'],
+                'mistral-small-latest' => ['label' => 'Mistral Small', 'hint' => 'Fast & affordable'],
+            ],
+        ],
+        'xai' => [
+            'name' => 'xAI Grok',
+            'key' => env('XAI_API_KEY'),
+            'base_url' => env('XAI_BASE_URL', 'https://api.x.ai/v1'),
+            'max_tokens_param' => 'max_tokens',
+            'blurb' => 'Plain chat only.',
+            'models_env' => env('XAI_MODELS'),
+            'models' => [
+                'grok-4' => ['label' => 'Grok 4', 'hint' => 'xAI flagship — reasoning & current events'],
+            ],
         ],
     ],
 

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Settings\GeneralController;
 use App\Http\Controllers\Settings\ProfileController;
 use App\Http\Controllers\Settings\SecurityController;
 use App\Http\Controllers\Settings\SkillController;
@@ -12,7 +13,8 @@ Route::middleware(['auth'])->group(function () {
     Route::get('settings/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('settings/profile', [ProfileController::class, 'update'])->name('profile.update');
     Route::patch('settings/chat-preferences', [ProfileController::class, 'updateChatPreferences'])->name('chat-preferences.update');
-    Route::patch('settings/language', [ProfileController::class, 'updateLanguage'])->name('language.update');
+    Route::get('settings/general', [GeneralController::class, 'edit'])->name('general.edit');
+    Route::patch('settings/language', [GeneralController::class, 'updateLanguage'])->name('language.update');
     Route::patch('settings/memory', [ProfileController::class, 'updateMemorySettings'])->name('memory.update');
     Route::patch('settings/memories/{memory}', [ProfileController::class, 'updateMemory'])->name('memories.update');
     Route::delete('settings/memories/{memory}', [ProfileController::class, 'destroyMemory'])->name('memories.destroy');
@@ -30,7 +32,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->middleware('throttle:6,1')
         ->name('user-password.update');
 
-    Route::inertia('settings/appearance', 'settings/Appearance')->name('appearance.edit');
+    // Theme moved into Settings → General; keep the old URL working.
+    Route::redirect('settings/appearance', '/settings/general')->name('appearance.edit');
 
     Route::get('settings/skills', [SkillController::class, 'index'])->name('skills.index');
     Route::post('settings/skills', [SkillController::class, 'store'])->name('skills.store');

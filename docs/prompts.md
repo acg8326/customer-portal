@@ -23,7 +23,7 @@ prefix, and safety blocks come last so user preferences can't override them):
 | 1 | Persona (`system_prompt`) | always |
 | 2 | About this portal (`company_context`) | always (unless blanked) |
 | 3 | `Current date: …` + `User: {name}` | always (date-only granularity, so the cached prefix stays stable within a day) |
-| 3b | `Always respond in {language} …` | the user set a reply language in Settings → Profile |
+| 3b | `Always respond in {language} …` | the user set a reply language in Settings → General |
 | 4 | `## Summary of the earlier conversation` | the conversation has been compacted |
 | 5 | `## Project instructions` | the chat belongs to a project with instructions |
 | 5b | `## Project files` | the project has knowledge-base files (within `ANTHROPIC_PROJECT_MAX_CHARS`) |
