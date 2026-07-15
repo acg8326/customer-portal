@@ -137,6 +137,12 @@ return [
         // on each round, so one huge payload multiplies fast. 0 disables.
         'tool_result_max_chars' => (int) env('ANTHROPIC_TOOL_RESULT_MAX_CHARS', 20000),
 
+        // Padding (bytes) appended as an ignored SSE comment after tiny,
+        // time-sensitive frames (live tool-activity status), so proxies that
+        // buffer by byte count deliver them immediately instead of holding
+        // them until the answer text arrives. 0 disables.
+        'sse_padding' => (int) env('CHAT_SSE_PADDING', 4096),
+
         // The message the chat UI sends when the user clicks "Continue" after a
         // reply was cut off at the max-token cap.
         'continue_prompt' => env('ANTHROPIC_CONTINUE_PROMPT', 'Continue exactly where you left off — do not repeat what you already wrote.'),

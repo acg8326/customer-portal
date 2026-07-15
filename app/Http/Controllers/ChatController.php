@@ -709,7 +709,8 @@ class ChatController extends Controller
             }
         }, 200, [
             'Content-Type' => 'text/event-stream',
-            'Cache-Control' => 'no-cache',
+            // no-transform: tell proxies/CDNs not to compress or buffer.
+            'Cache-Control' => 'no-cache, no-transform',
             'Connection' => 'keep-alive',
             'X-Accel-Buffering' => 'no', // don't let nginx buffer the stream
         ]);
@@ -724,6 +725,19 @@ class ChatController extends Controller
     {
         echo 'event: '.$event."\n";
         echo 'data: '.json_encode($data)."\n\n";
+
+        // Time-sensitive status frames are tiny (~60 bytes). A proxy or FPM
+        // layer that buffers by byte count would hold them until the final
+        // text flushes everything at once — exactly when they're useless. Pad
+        // them past the buffer with an SSE comment the client ignores.
+        // (X-Accel-Buffering only covers nginx; this covers everything else.)
+        if ($event === 'tool') {
+            $pad = (int) config('services.anthropic.sse_padding', 4096);
+
+            if ($pad > 0) {
+                echo ': '.str_repeat('.', $pad)."\n\n";
+            }
+        }
 
         if (ob_get_level() > 0) {
             @ob_flush();
@@ -1881,7 +1895,7 @@ class ChatController extends Controller
             }
         }, 200, [
             'Content-Type' => 'text/event-stream',
-            'Cache-Control' => 'no-cache',
+            'Cache-Control' => 'no-cache, no-transform',
             'Connection' => 'keep-alive',
             'X-Accel-Buffering' => 'no',
         ]);

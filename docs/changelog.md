@@ -15,6 +15,13 @@ customized so far, newest first.
   while it runs, *"Analyzing the results…"* during each follow-up round —
   so slow (non-streamed) model rounds never fall back to the generic
   indicator mid-turn.
+- **Prod delivery fix:** status frames are ~60 bytes, and proxies/CDNs
+  that buffer by byte count (anything `X-Accel-Buffering` doesn't cover)
+  held them until the answer text flushed everything at once — working
+  locally, invisible in prod. Each `tool` frame is now followed by an
+  ignored SSE comment pad (`CHAT_SSE_PADDING`, default 4096 bytes, 0 =
+  off) and the stream responses send `Cache-Control: no-cache,
+  no-transform`.
 - Backend: the connected-tools loop (`completeWithClientTools` /
   `applyToolResults`) takes an `onActivity` callback and emits a `tool` SSE
   event with a friendly `label` before each call executes — wired in both
