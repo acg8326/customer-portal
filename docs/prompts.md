@@ -35,6 +35,15 @@ prefix, and safety blocks come last so user preferences can't override them):
 | 11 | Using tools + untrusted content (`tool_use_prompt`) | ANY tools active (web, MCP, Composio, NetSuite). **Not** skipped by auto-approve |
 | 12 | Tool safety guardrail (`tool_safety_prompt`) | see §7 — only where the hard gate can't protect |
 
+Two notes since the multi-provider picker and private chats landed:
+
+- **Non-Claude models** (OpenAI, Gemini, DeepSeek, …) receive the **same
+  assembled system prompt** — persona, company context, preferences, memory
+  and all. Their turns are plain chat, so the web block (7) and tool blocks
+  (11–12) are naturally absent.
+- **Private chats** use the same assembly too (minus project blocks — private
+  chats have no project); only persistence is skipped, not instructions.
+
 ---
 
 ## 2. Persona — `system_prompt`

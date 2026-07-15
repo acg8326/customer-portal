@@ -436,7 +436,10 @@ project_id`). Project chats appear only in that project; standalone `/chat`
 Connect AiMe BOT to outside tools. The page (`/integrations`) groups connectors
 **by category** (Communication, CRM, Developer tools, Files & documents,
 Automation, ERP & business systems, Productivity & data). Each card has a
-**Setup guide** modal with numbered steps.
+**Setup guide** modal rendered as **step cards**: a numbered title header,
+menu-path breadcrumb chips (Setup → Company → …), green tick checklists for
+boxes to enable, a paste-exactly code block, and info/warning callouts
+(`GuideStep` in [`Integrations.vue`](../resources/js/pages/Integrations.vue)).
 
 - **"Currently connected apps" overview.** A summary **table** near the top lists
   every app the user has linked through a card — its category, how it's connected
@@ -559,19 +562,25 @@ Automation, ERP & business systems, Productivity & data). Each card has a
   keeps the raw **"Add MCP server"** flow (one-click OAuth or a token, by URL) for
   self-hosted or sensitive tools you don't want routed through Composio. Same
   backend as the MCP servers above.
-- **NetSuite (native — NOT Composio).** Composio's NetSuite toolkit is **OAuth
-  2.0 only**, and its tokens 401 (`INVALID_LOGIN`) on record reads, so NetSuite
-  is a **native integration** against **SuiteTalk REST + SuiteQL**. The connect
-  dialog offers **two auth methods** (pick in a toggle):
-  - **Token-Based Auth (TBA / OAuth 1.0a)** — *recommended for a backend.* Paste
-    five values: **Account ID** + the Integration record's **Consumer Key /
-    Secret** + an Access Token's **Token ID / Secret**. On save we run a signed
-    test query. Each request is HMAC-SHA256-signed; tokens never expire.
-  - **OAuth 2.0 (Authorization Code Grant)** — paste your OAuth app's **Client
-    ID / Secret** + Account ID; you're redirected to NetSuite to approve, then
-    back to `…/integrations/netsuite/callback`. We store the access + refresh
-    tokens and **auto-refresh** the access token before it expires. Requires the
-    integration record's Redirect URI to match `<APP_URL>/integrations/netsuite/callback`.
+- **NetSuite (native — NOT Composio).** Composio's NetSuite toolkit's tokens
+  401 (`INVALID_LOGIN`) on record reads, so NetSuite is a **native
+  integration** against **SuiteTalk REST + SuiteQL**. Auth is **OAuth 2.0
+  (Authorization Code Grant)**: paste your integration record's **Client ID /
+  Secret** + Account ID; you're redirected to NetSuite to approve, then back
+  to `https://aime.cwglobal.ai/integrations/netsuite/callback` (the record's
+  Redirect URI must match exactly; derived from `APP_URL` — the guide and
+  Connect dialog display the server's actual configured URI, highlighted, so
+  what users paste always matches). We store the access + refresh tokens and
+  **auto-refresh** before expiry. The in-app setup guide is rendered as
+  **styled step cards** (title, NetSuite menu-path chips, tick checklists,
+  paste-exactly code block, shown-only-once warning callout) and walks
+  through Enable Features (Client/Server SuiteScript, REST Web Services,
+  OAuth 2.0) → the integration record as **one card for one screen** (name,
+  Authorization Code Grant, scopes REST Web Services **and RESTlets**, and
+  the Redirect URI) → save + copy credentials → Account ID → role
+  permissions → connect.
+  *Legacy:* Token-Based Auth connections made before the OAuth2-only switch
+  keep working server-side; the UI no longer offers TBA.
 
   `auth_type` on the connection records which method is in use; all secrets and
   tokens are stored **encrypted**
@@ -602,8 +611,8 @@ Automation, ERP & business systems, Productivity & data). Each card has a
   `config/integrations.php`. Composio: `COMPOSIO_API_KEY`, `COMPOSIO_BASE_URL`,
   and per-toolkit `COMPOSIO_<TOOL>_AUTH_CONFIG` / `COMPOSIO_<TOOL>_MCP_SERVER_ID`
   — defaults in `config/services.php` (`services.composio`). NetSuite (native
-  TBA): `NETSUITE_ENABLED`, `NETSUITE_TIMEOUT`, `NETSUITE_SUITEQL_MAX_ROWS`,
-  `NETSUITE_REST_DOMAIN` (`services.netsuite`).
+  OAuth 2.0): `NETSUITE_ENABLED`, `NETSUITE_TIMEOUT`, `NETSUITE_SUITEQL_MAX_ROWS`,
+  `NETSUITE_REST_DOMAIN`, `NETSUITE_OAUTH_*` (`services.netsuite`).
 
 ## 7. Theming
 

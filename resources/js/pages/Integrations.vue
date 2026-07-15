@@ -19,6 +19,7 @@ import {
     Search,
     Table,
     Trash2,
+    TriangleAlert,
     Users,
     Webhook,
     Workflow,
@@ -45,13 +46,29 @@ defineOptions({
     },
 });
 
+// A guide step, rendered as a card in the guide modal: a titled header, an
+// optional menu path (breadcrumb chips), body text, a checklist of boxes to
+// tick, a paste-exactly code value, and info/warning callouts.
+type GuideStep = {
+    title: string;
+    path?: string[];
+    body?: string;
+    checks?: string[];
+    // Lead-in line rendered directly above the code block, so the value
+    // always says where it goes (e.g. “Paste this URL into …”).
+    codeLabel?: string;
+    code?: string;
+    note?: string;
+    warn?: string;
+};
+
 type Integration = {
     name: string;
     key: string;
     description: string;
     icon: Component;
     intro: string;
-    steps: string[];
+    steps: GuideStep[];
     // How this card connects: 'webhook' (automation URL) or 'soon' (no backend
     // yet). Tools reachable through Composio set `composio` (their toolkit key)
     // instead — those connect per-user in one click.
@@ -63,7 +80,7 @@ type Integration = {
     // two-way (the assistant runs its workflows) as well as one-way (events).
     alsoMcp?: boolean;
     // A native (non-broker) integration built into the app — currently just
-    // NetSuite over Token-Based Auth. Drives its own connect modal.
+    // NetSuite over OAuth 2.0. Drives its own connect modal.
     native?: 'netsuite';
 };
 
@@ -122,6 +139,9 @@ type Netsuite = {
     authType: string | null; // 'tba' | 'oauth2'
     status: string | null;
     lastError: string | null;
+    // The exact redirect URI the server sends in the OAuth flow — what the
+    // integration record must contain (prod: https://aime.cwglobal.ai/…).
+    redirectUri: string;
 };
 
 const props = defineProps<{
@@ -138,6 +158,13 @@ const netsuiteConnected = computed(
     () =>
         Boolean(props.netsuite?.enabled) && Boolean(props.netsuite?.connected),
 );
+
+// The redirect URI shown in the NetSuite guide + connect dialog. Comes from
+// the server so it always matches what the OAuth flow will actually send.
+const netsuiteRedirectUri =
+    props.netsuite?.redirectUri ||
+    (typeof window !== 'undefined' ? window.location.origin : '') +
+        '/integrations/netsuite/callback';
 
 // Composio toolkits keyed by their key, for quick per-card lookup.
 const composioByKey = computed<Record<string, ComposioToolkit>>(() => {
@@ -176,9 +203,18 @@ const categories: Category[] = [
                 icon: MessageSquare,
                 intro: 'Connect your Slack account so AiMe BOT can search, read, and post on your behalf.',
                 steps: [
-                    'Click Connect and approve access on Slack.',
-                    'Pick your workspace and allow the requested permissions.',
-                    'The card flips to Connected — try “list my Slack channels” in chat.',
+                    {
+                        title: 'Connect & approve',
+                        body: 'Click Connect on this card — you’ll be sent to Slack to approve access.',
+                    },
+                    {
+                        title: 'Pick your workspace',
+                        body: 'Choose the workspace and allow the requested permissions.',
+                    },
+                    {
+                        title: 'Done — try it in chat',
+                        body: 'The card flips to Connected. Try “list my Slack channels” in chat.',
+                    },
                 ],
             },
             {
@@ -190,9 +226,18 @@ const categories: Category[] = [
                 icon: Mail,
                 intro: 'Turn incoming email into chats and get drafted replies back.',
                 steps: [
-                    'Connect a mailbox over IMAP/SMTP, or forward mail to your unique AiMe BOT address.',
-                    'Grant send permission so drafted replies can go out.',
-                    'Choose which folders/labels are watched.',
+                    {
+                        title: 'Connect a mailbox',
+                        body: 'Connect over IMAP/SMTP, or forward mail to your unique AiMe BOT address.',
+                    },
+                    {
+                        title: 'Allow sending',
+                        body: 'Grant send permission so drafted replies can go out.',
+                    },
+                    {
+                        title: 'Choose what’s watched',
+                        body: 'Pick which folders or labels AiMe BOT watches.',
+                    },
                 ],
             },
         ],
@@ -209,9 +254,18 @@ const categories: Category[] = [
                 icon: Contact,
                 intro: 'Connect your HubSpot account so AiMe BOT can read and update contacts, deals, and pipelines.',
                 steps: [
-                    'Click Connect and approve access on HubSpot.',
-                    'Choose the account and allow the requested scopes.',
-                    'The card flips to Connected — ask about your deals in chat.',
+                    {
+                        title: 'Connect & approve',
+                        body: 'Click Connect on this card and approve access on HubSpot.',
+                    },
+                    {
+                        title: 'Choose the account',
+                        body: 'Pick the HubSpot account and allow the requested scopes.',
+                    },
+                    {
+                        title: 'Done — try it in chat',
+                        body: 'The card flips to Connected — ask about your deals in chat.',
+                    },
                 ],
             },
             {
@@ -221,9 +275,19 @@ const categories: Category[] = [
                 icon: Users,
                 intro: 'Sync GoHighLevel contacts and pipelines so AiMe BOT has CRM context.',
                 steps: [
-                    'In GoHighLevel, go to Settings → Private Integrations.',
-                    'Create a token with contact and conversation scopes.',
-                    'Click Connect here and paste the token (or your Location API key).',
+                    {
+                        title: 'Create a private integration',
+                        path: ['Settings', 'Private Integrations'],
+                        body: 'In GoHighLevel, create a new private integration.',
+                    },
+                    {
+                        title: 'Scope the token',
+                        body: 'Give the token contact and conversation scopes.',
+                    },
+                    {
+                        title: 'Paste it here',
+                        body: 'Click Connect on this card and paste the token (or your Location API key).',
+                    },
                 ],
             },
             {
@@ -233,9 +297,18 @@ const categories: Category[] = [
                 icon: Building2,
                 intro: 'Read and update Salesforce records straight from a conversation.',
                 steps: [
-                    'In Salesforce, create a Connected App with OAuth enabled.',
-                    'Copy the consumer key and secret.',
-                    'Click Connect here and authorize with your org.',
+                    {
+                        title: 'Create a Connected App',
+                        body: 'In Salesforce, create a Connected App with OAuth enabled.',
+                    },
+                    {
+                        title: 'Copy the credentials',
+                        body: 'Copy the consumer key and consumer secret.',
+                    },
+                    {
+                        title: 'Authorize',
+                        body: 'Click Connect on this card and authorize with your org.',
+                    },
                 ],
             },
         ],
@@ -252,9 +325,18 @@ const categories: Category[] = [
                 icon: Cloud,
                 intro: 'Bring Google Drive documents into a project as knowledge.',
                 steps: [
-                    'Click Connect here and sign in with Google.',
-                    'Grant read access to Drive.',
-                    'Pick the folders or files to import into a project.',
+                    {
+                        title: 'Sign in with Google',
+                        body: 'Click Connect on this card and sign in with your Google account.',
+                    },
+                    {
+                        title: 'Grant read access',
+                        body: 'Allow read access to Drive.',
+                    },
+                    {
+                        title: 'Pick your content',
+                        body: 'Choose the folders or files to import into a project.',
+                    },
                 ],
             },
             {
@@ -264,9 +346,18 @@ const categories: Category[] = [
                 icon: Table,
                 intro: 'Let AiMe BOT read rows and append data to a spreadsheet.',
                 steps: [
-                    'Click Connect here and sign in with Google.',
-                    'Grant Sheets access.',
-                    'Choose a spreadsheet to read from and write to.',
+                    {
+                        title: 'Sign in with Google',
+                        body: 'Click Connect on this card and sign in with your Google account.',
+                    },
+                    {
+                        title: 'Grant Sheets access',
+                        body: 'Allow access to Google Sheets.',
+                    },
+                    {
+                        title: 'Choose a spreadsheet',
+                        body: 'Pick the spreadsheet to read from and write to.',
+                    },
                 ],
             },
         ],
@@ -284,9 +375,18 @@ const categories: Category[] = [
                 icon: Webhook,
                 intro: 'Receive a signed JSON payload on each event at your own endpoint.',
                 steps: [
-                    'Stand up an HTTPS endpoint that accepts POST requests.',
-                    'Click Connect here and paste the endpoint URL and a shared secret.',
-                    'Verify the signature header on your side using the secret.',
+                    {
+                        title: 'Stand up an endpoint',
+                        body: 'Create an HTTPS endpoint that accepts POST requests.',
+                    },
+                    {
+                        title: 'Connect it here',
+                        body: 'Click Connect on this card, paste the endpoint URL, and set a shared secret.',
+                    },
+                    {
+                        title: 'Verify the signature',
+                        body: 'Check the signature header on your side using the secret.',
+                    },
                 ],
             },
             {
@@ -298,9 +398,18 @@ const categories: Category[] = [
                 icon: Zap,
                 intro: 'Trigger Zaps from chat and project events — no code.',
                 steps: [
-                    'In Zapier, add the AiMe BOT app to a new Zap.',
-                    'Authenticate with an API key generated here.',
-                    'Choose a trigger event and build your Zap.',
+                    {
+                        title: 'Add the app in Zapier',
+                        body: 'In Zapier, add the AiMe BOT app to a new Zap.',
+                    },
+                    {
+                        title: 'Authenticate',
+                        body: 'Use an API key generated here.',
+                    },
+                    {
+                        title: 'Build the Zap',
+                        body: 'Choose a trigger event and build your workflow.',
+                    },
                 ],
             },
             {
@@ -313,11 +422,23 @@ const categories: Category[] = [
                 icon: Workflow,
                 intro: 'AiMe BOT POSTs a chat.completed event to your n8n Webhook node after every reply. Outbound only — no data leaves until an event fires.',
                 steps: [
-                    'In n8n, create a workflow and add a Webhook node.',
-                    'Set the node method to POST and copy its Production URL.',
-                    'Click Connect here, paste the URL, and optionally set a shared secret (sent as a header).',
-                    'Activate the workflow in n8n, then use Send test to confirm delivery.',
-                    'From now on, each finished chat POSTs a chat.completed event to your workflow.',
+                    {
+                        title: 'Create a Webhook node',
+                        body: 'In n8n, create a workflow and add a Webhook node.',
+                    },
+                    {
+                        title: 'Copy the Production URL',
+                        body: 'Set the node method to POST and copy its Production URL.',
+                    },
+                    {
+                        title: 'Connect it here',
+                        body: 'Click Connect on this card, paste the URL, and optionally set a shared secret (sent as a header).',
+                    },
+                    {
+                        title: 'Test the delivery',
+                        body: 'Activate the workflow in n8n, then use Send test to confirm delivery.',
+                        note: 'From now on, each finished chat POSTs a chat.completed event to your workflow.',
+                    },
                 ],
             },
             {
@@ -329,11 +450,23 @@ const categories: Category[] = [
                 icon: Blocks,
                 intro: 'AiMe BOT POSTs a chat.completed event to a Make Custom webhook after every reply. Outbound only — no data leaves until an event fires.',
                 steps: [
-                    'In Make, create a scenario and add a "Custom webhook" trigger module.',
-                    'Add the webhook and copy the URL Make generates.',
-                    'Click Connect here, paste the URL, and optionally set a shared secret (sent as a header).',
-                    'Turn the scenario on, then use Send test to confirm delivery.',
-                    'From now on, each finished chat POSTs a chat.completed event to your scenario.',
+                    {
+                        title: 'Add a Custom webhook',
+                        body: 'In Make, create a scenario and add a “Custom webhook” trigger module.',
+                    },
+                    {
+                        title: 'Copy the URL',
+                        body: 'Add the webhook and copy the URL Make generates.',
+                    },
+                    {
+                        title: 'Connect it here',
+                        body: 'Click Connect on this card, paste the URL, and optionally set a shared secret (sent as a header).',
+                    },
+                    {
+                        title: 'Test the delivery',
+                        body: 'Turn the scenario on, then use Send test to confirm delivery.',
+                        note: 'From now on, each finished chat POSTs a chat.completed event to your scenario.',
+                    },
                 ],
             },
         ],
@@ -349,16 +482,66 @@ const categories: Category[] = [
                 description:
                     'Read ERP data — customers, invoices, transactions — with SuiteQL + REST.',
                 icon: Boxes,
-                intro: 'Connect NetSuite so AiMe BOT can read your ERP data with SuiteQL and the REST record API. Two methods are offered in the Connect dialog: Token-Based Auth (TBA — recommended for a backend, paste 5 values) or OAuth 2.0 (paste your app Client ID/Secret, then approve on NetSuite). Either way the token/role needs REST Web Services + record permissions.',
+                intro: 'Connect NetSuite over OAuth 2.0 so AiMe BOT can read your ERP data with SuiteQL and the REST record API. One-time NetSuite setup (admin), then connecting is a click + consent.',
                 steps: [
-                    'You need the NetSuite Administrator role (or a role with the right setup permissions).',
-                    'Setup → Company → Enable Features → SuiteCloud tab: enable “REST WEB SERVICES” and “TOKEN-BASED AUTHENTICATION”, then Save.',
-                    'Setup → Integration → Manage Integrations → New. Name it “CWGP-AIMe”. Check “TOKEN-BASED AUTHENTICATION” and uncheck the OAuth 2.0 boxes. Save.',
-                    'On save, NetSuite shows the Consumer Key and Consumer Secret once — copy both now.',
-                    'Setup → Users/Roles → Access Tokens → New. Pick the “CWGP-AIMe” application, the user, and a role that has “REST Web Services” + “Log in using Access Tokens” permissions and access to the records you need (e.g. Lists → Customers, Transactions).',
-                    'On save, NetSuite shows the Token ID and Token Secret once — copy both now.',
-                    'Find your Account ID: Setup → Company → Company Information → “Account ID” (e.g. 1234567, or 1234567_SB1 for a sandbox).',
-                    'Back here, click Connect on the NetSuite card and paste the Account ID plus the four token values. We run a test query and flip the card to Connected.',
+                    {
+                        title: 'Enable Features',
+                        path: [
+                            'Setup',
+                            'Company',
+                            'Enable Features',
+                            'SuiteCloud tab',
+                        ],
+                        body: 'On the SuiteCloud tab, tick all four boxes below, then click Save.',
+                        checks: [
+                            'Client SuiteScript',
+                            'Server SuiteScript',
+                            'REST Web Services',
+                            'OAuth 2.0',
+                        ],
+                    },
+                    {
+                        title: 'Create the integration record',
+                        path: [
+                            'Setup',
+                            'Integration',
+                            'Manage Integrations',
+                            'New',
+                        ],
+                        body: 'Everything in this step is on one screen. Give the record a name — e.g. “CWGP-AIMe” — then scroll down to the OAuth 2.0 section and tick all three boxes below.',
+                        checks: [
+                            'Authorization Code Grant',
+                            'Scope: REST Web Services',
+                            'Scope: RESTlets',
+                        ],
+                        codeLabel:
+                            'Then paste this URL into the “Redirect URI” field:',
+                        code: netsuiteRedirectUri,
+                        note: 'Character-for-character — scheme, host, path, no trailing slash.',
+                    },
+                    {
+                        title: 'Save — and copy your credentials',
+                        body: 'After saving, NetSuite shows this record’s Client ID and Client Secret.',
+                        warn: 'The Client Secret is shown only once. Copy both values somewhere safe now — if you lose the secret you’ll have to reset the credentials on the record.',
+                    },
+                    {
+                        title: 'Find your Account ID',
+                        path: ['Setup', 'Company', 'Company Information'],
+                        body: 'Copy the “Account ID” value — e.g. 1234567, or 1234567_SB1 for a sandbox.',
+                        note: 'It’s also the first part of your NetSuite URL (1234567.app.netsuite.com).',
+                    },
+                    {
+                        title: 'Check role permissions',
+                        body: 'The user who’ll approve access needs a role with the two permissions below, plus access to every record AiMe should read (e.g. Customers, Invoices, Transactions).',
+                        checks: [
+                            'REST Web Services',
+                            'OAuth 2.0 Authorized Applications',
+                        ],
+                    },
+                    {
+                        title: 'Connect',
+                        body: 'Back on this page, click Connect on the NetSuite card and paste the Account ID, Client ID, and Client Secret. You’ll be sent to NetSuite’s consent screen — approve, and you land back here, connected.',
+                    },
                 ],
             },
         ],
@@ -374,9 +557,18 @@ const categories: Category[] = [
                 icon: Calendar,
                 intro: 'Let AiMe BOT see availability and create calendar events.',
                 steps: [
-                    'Click Connect here and choose Google or Microsoft.',
-                    'Authorize with read/write calendar scope.',
-                    'Pick which calendar to use.',
+                    {
+                        title: 'Choose a provider',
+                        body: 'Click Connect on this card and choose Google or Microsoft.',
+                    },
+                    {
+                        title: 'Authorize',
+                        body: 'Approve read/write calendar access.',
+                    },
+                    {
+                        title: 'Pick a calendar',
+                        body: 'Choose which calendar AiMe BOT uses.',
+                    },
                 ],
             },
             {
@@ -387,9 +579,18 @@ const categories: Category[] = [
                 icon: Database,
                 intro: 'Query your own database read-only, in a sandbox.',
                 steps: [
-                    'Click Connect here and paste a read-only connection string.',
-                    'Confirm the row/time limits for sandboxed queries.',
-                    'Test the connection.',
+                    {
+                        title: 'Paste a connection string',
+                        body: 'Click Connect on this card and paste a read-only connection string.',
+                    },
+                    {
+                        title: 'Confirm the limits',
+                        body: 'Confirm the row and time limits for sandboxed queries.',
+                    },
+                    {
+                        title: 'Test it',
+                        body: 'Run the connection test.',
+                    },
                 ],
             },
             {
@@ -401,9 +602,18 @@ const categories: Category[] = [
                 icon: LayoutGrid,
                 intro: 'Connect your Airtable account so AiMe BOT can read and update bases, tables, and records.',
                 steps: [
-                    'Click Connect and approve access on Airtable.',
-                    'Choose the bases/workspaces to grant access to.',
-                    'The card flips to Connected — try “list my Airtable bases” in chat.',
+                    {
+                        title: 'Connect & approve',
+                        body: 'Click Connect on this card and approve access on Airtable.',
+                    },
+                    {
+                        title: 'Choose your bases',
+                        body: 'Pick the bases or workspaces to grant access to.',
+                    },
+                    {
+                        title: 'Done — try it in chat',
+                        body: 'The card flips to Connected — try “list my Airtable bases” in chat.',
+                    },
                 ],
             },
             {
@@ -414,9 +624,18 @@ const categories: Category[] = [
                 icon: Code,
                 intro: 'Connect your GitHub account so AiMe BOT can read and act on issues, PRs, and repositories.',
                 steps: [
-                    'Click Connect and approve access on GitHub.',
-                    'Authorize the app for your account or organization.',
-                    'The card flips to Connected — try “list my GitHub repos” in chat.',
+                    {
+                        title: 'Connect & approve',
+                        body: 'Click Connect on this card and approve access on GitHub.',
+                    },
+                    {
+                        title: 'Authorize the app',
+                        body: 'Authorize for your account or organization.',
+                    },
+                    {
+                        title: 'Done — try it in chat',
+                        body: 'The card flips to Connected — try “list my GitHub repos” in chat.',
+                    },
                 ],
             },
         ],
@@ -739,14 +958,11 @@ function disconnectComposio(key: string) {
 }
 
 // Native NetSuite (TBA) connect modal — collects the five values from the
-// user's NetSuite Integration record + Access Token, POSTs them, and the server
-// verifies the token before saving. No OAuth redirect (unlike Composio).
+// user's OAuth 2.0 Client ID/Secret + Account ID, POSTs them, and the server
+// redirects the browser to NetSuite's consent screen. (Legacy TBA connections
+// made before the OAuth2-only switch keep working server-side.)
 type NetsuiteForm = {
     account_id: string;
-    consumer_key: string;
-    consumer_secret: string;
-    token_id: string;
-    token_secret: string;
     client_id: string;
     client_secret: string;
 };
@@ -760,61 +976,28 @@ type NetsuiteField = {
 const netsuiteOpen = ref(false);
 const netsuiteSubmitting = ref(false);
 const netsuiteError = ref<string | null>(null);
-const netsuiteAuthType = ref<'tba' | 'oauth2'>('tba');
-// Shown in the OAuth2 hint so the user knows the exact Redirect URI to register.
-const origin = typeof window !== 'undefined' ? window.location.origin : '';
 const netsuiteForm = ref<NetsuiteForm>({
     account_id: '',
-    consumer_key: '',
-    consumer_secret: '',
-    token_id: '',
-    token_secret: '',
     client_id: '',
     client_secret: '',
 });
 
-// The fields shown depend on the chosen auth method. Account ID is common; TBA
-// needs the four token secrets, OAuth 2.0 needs the app's client id/secret.
-const netsuiteFields = computed<NetsuiteField[]>(() => {
-    const account: NetsuiteField = {
-        name: 'account_id',
-        label: 'Account ID',
-        secret: false,
-    };
-
-    if (netsuiteAuthType.value === 'oauth2') {
-        return [
-            account,
-            { name: 'client_id', label: 'Client ID', secret: false },
-            { name: 'client_secret', label: 'Client Secret', secret: true },
-        ];
-    }
-
-    return [
-        account,
-        { name: 'consumer_key', label: 'Consumer Key', secret: false },
-        { name: 'consumer_secret', label: 'Consumer Secret', secret: true },
-        { name: 'token_id', label: 'Token ID', secret: false },
-        { name: 'token_secret', label: 'Token Secret', secret: true },
-    ];
-});
+const netsuiteFields: NetsuiteField[] = [
+    { name: 'account_id', label: 'Account ID', secret: false },
+    { name: 'client_id', label: 'Client ID', secret: false },
+    { name: 'client_secret', label: 'Client Secret', secret: true },
+];
 
 const netsuiteFormValid = computed(() =>
-    netsuiteFields.value.every((f) => netsuiteForm.value[f.name].trim() !== ''),
+    netsuiteFields.every((f) => netsuiteForm.value[f.name].trim() !== ''),
 );
 
 function openNetsuite() {
     netsuiteForm.value = {
         account_id: props.netsuite?.accountId ?? '',
-        consumer_key: '',
-        consumer_secret: '',
-        token_id: '',
-        token_secret: '',
         client_id: '',
         client_secret: '',
     };
-    netsuiteAuthType.value =
-        props.netsuite?.authType === 'oauth2' ? 'oauth2' : 'tba';
     netsuiteError.value = null;
     netsuiteOpen.value = true;
 }
@@ -827,12 +1010,11 @@ async function submitNetsuite() {
     netsuiteSubmitting.value = true;
     netsuiteError.value = null;
 
-    // Send only the fields relevant to the chosen method, plus auth_type.
     const payload: Record<string, string> = {
-        auth_type: netsuiteAuthType.value,
+        auth_type: 'oauth2',
     };
 
-    for (const f of netsuiteFields.value) {
+    for (const f of netsuiteFields) {
         payload[f.name] = netsuiteForm.value[f.name].trim();
     }
 
@@ -1390,22 +1572,94 @@ function hostOf(url: string): string {
 
             <!-- Scrolls when a guide has many steps, so the modal never runs off
                  the screen and the header/footer stay put. -->
-            <ol class="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
-                <li
-                    v-for="(step, i) in guideFor.steps"
-                    :key="i"
-                    class="flex gap-3 text-sm"
-                >
-                    <span
-                        class="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold"
+            <div class="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
+                <div class="space-y-3">
+                    <div
+                        v-for="(step, i) in guideFor.steps"
+                        :key="i"
+                        class="overflow-hidden rounded-xl border"
                     >
-                        {{ i + 1 }}
-                    </span>
-                    <span class="pt-0.5 leading-relaxed break-words">{{
-                        step
-                    }}</span>
-                </li>
-            </ol>
+                        <div
+                            class="flex items-center gap-3 border-b bg-muted/40 px-4 py-2.5"
+                        >
+                            <span
+                                class="flex size-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-navy to-brand-gold text-xs font-bold text-white"
+                            >
+                                {{ i + 1 }}
+                            </span>
+                            <span class="text-sm font-semibold">{{
+                                step.title
+                            }}</span>
+                        </div>
+                        <div class="space-y-3 px-4 py-3 text-sm">
+                            <div
+                                v-if="step.path"
+                                class="flex flex-wrap items-center gap-1.5 text-xs"
+                            >
+                                <template
+                                    v-for="(seg, j) in step.path"
+                                    :key="j"
+                                >
+                                    <span
+                                        v-if="j > 0"
+                                        class="text-muted-foreground"
+                                        >→</span
+                                    >
+                                    <span
+                                        class="rounded-md bg-brand-navy/5 px-2 py-0.5 font-medium text-brand-navy dark:bg-brand-gold/10 dark:text-brand-gold"
+                                        >{{ seg }}</span
+                                    >
+                                </template>
+                            </div>
+                            <p
+                                v-if="step.body"
+                                class="leading-relaxed text-muted-foreground"
+                            >
+                                {{ step.body }}
+                            </p>
+                            <ul
+                                v-if="step.checks"
+                                class="grid gap-1.5 sm:grid-cols-2"
+                            >
+                                <li
+                                    v-for="c in step.checks"
+                                    :key="c"
+                                    class="flex items-center gap-2"
+                                >
+                                    <CheckCircle2
+                                        class="size-4 shrink-0 text-emerald-500"
+                                    />
+                                    <span class="font-medium">{{ c }}</span>
+                                </li>
+                            </ul>
+                            <p
+                                v-if="step.codeLabel"
+                                class="leading-relaxed font-medium"
+                            >
+                                {{ step.codeLabel }}
+                            </p>
+                            <code
+                                v-if="step.code"
+                                class="block overflow-x-auto rounded-lg bg-brand-navy px-3 py-2 font-mono text-xs whitespace-nowrap text-brand-gold"
+                                >{{ step.code }}</code
+                            >
+                            <p
+                                v-if="step.note"
+                                class="text-xs text-muted-foreground"
+                            >
+                                {{ step.note }}
+                            </p>
+                            <div
+                                v-if="step.warn"
+                                class="flex gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400"
+                            >
+                                <TriangleAlert class="mt-0.5 size-4 shrink-0" />
+                                <span>{{ step.warn }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
             <DialogFooter>
                 <Button
@@ -1553,14 +1807,16 @@ function hostOf(url: string): string {
         </DialogContent>
     </Dialog>
 
-    <!-- NetSuite native (TBA) connect modal -->
+    <!-- NetSuite native (OAuth 2.0) connect modal -->
     <Dialog v-model:open="netsuiteOpen">
         <DialogContent class="sm:max-w-lg">
             <DialogHeader>
                 <DialogTitle>Connect NetSuite</DialogTitle>
                 <DialogDescription>
-                    Choose how to authenticate. Secrets are encrypted on the
-                    server and never shown again.
+                    Paste your integration record's OAuth 2.0 credentials —
+                    you'll be sent to NetSuite to approve access, then returned
+                    here. Secrets are encrypted on the server and never shown
+                    again.
                 </DialogDescription>
             </DialogHeader>
 
@@ -1568,54 +1824,18 @@ function hostOf(url: string): string {
                 class="max-h-[60vh] space-y-4 overflow-y-auto pr-1"
                 @submit.prevent="submitNetsuite"
             >
-                <!-- Auth method toggle -->
-                <div class="space-y-2">
-                    <Label>Authentication method</Label>
-                    <div class="flex gap-2">
-                        <Button
-                            type="button"
-                            size="sm"
-                            :variant="
-                                netsuiteAuthType === 'tba'
-                                    ? 'default'
-                                    : 'outline'
-                            "
-                            @click="netsuiteAuthType = 'tba'"
-                        >
-                            Token-Based Auth
-                        </Button>
-                        <Button
-                            type="button"
-                            size="sm"
-                            :variant="
-                                netsuiteAuthType === 'oauth2'
-                                    ? 'default'
-                                    : 'outline'
-                            "
-                            @click="netsuiteAuthType = 'oauth2'"
-                        >
-                            OAuth 2.0
-                        </Button>
-                    </div>
-                    <p class="text-xs text-muted-foreground">
-                        <template v-if="netsuiteAuthType === 'tba'">
-                            Recommended for a backend service. Paste the
-                            Consumer Key/Secret (Integration record) + Token
-                            ID/Secret (Access Token). We verify the token
-                            immediately.
-                        </template>
-                        <template v-else>
-                            Paste your OAuth 2.0 app's Client ID/Secret. You'll
-                            be sent to NetSuite to approve access, then returned
-                            here. The integration record's Redirect URI must be
-                            <code
-                                >{{
-                                    origin
-                                }}/integrations/netsuite/callback</code
-                            >.
-                        </template>
-                    </p>
-                </div>
+                <p class="text-xs leading-relaxed text-muted-foreground">
+                    The integration record's
+                    <span class="font-semibold text-foreground"
+                        >Redirect URI</span
+                    >
+                    must be exactly
+                    <code
+                        class="rounded-md bg-brand-gold/10 px-1.5 py-0.5 font-semibold break-all text-brand-gold"
+                        >{{ netsuiteRedirectUri }}</code
+                    >
+                    — see the Setup guide on the NetSuite card.
+                </p>
 
                 <div
                     v-for="field in netsuiteFields"
@@ -1657,12 +1877,8 @@ function hostOf(url: string): string {
                         <Plug class="size-4" />
                         {{
                             netsuiteSubmitting
-                                ? netsuiteAuthType === 'oauth2'
-                                    ? 'Redirecting…'
-                                    : 'Verifying…'
-                                : netsuiteAuthType === 'oauth2'
-                                  ? 'Continue to NetSuite'
-                                  : 'Connect'
+                                ? 'Redirecting…'
+                                : 'Continue to NetSuite'
                         }}
                     </Button>
                 </DialogFooter>

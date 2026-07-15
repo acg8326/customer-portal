@@ -3,6 +3,31 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## NetSuite: OAuth 2.0 only + card-style setup guides everywhere
+
+- **The connect dialog is OAuth 2.0 only** — the TBA/OAuth toggle is gone.
+  Paste Account ID + Client ID/Secret → approve on NetSuite → connected.
+  Legacy TBA connections keep working server-side (signing code retained);
+  the UI just no longer offers TBA for new connections.
+- **Every setup guide is now step cards** (all integrations, not just
+  NetSuite): each step is a titled card with menu-path chips
+  (Setup → Company → …), green tick checklists for the boxes to enable, a
+  paste-exactly code block, plain info notes, and amber warning callouts.
+  The old plain numbered one-liners and the method-tabs machinery were
+  removed (`GuideStep` replaces `steps: string[]`).
+- **NetSuite guide** steps in order: Enable Features (Client SuiteScript,
+  Server SuiteScript, REST Web Services, OAuth 2.0) → integration record —
+  one card for one screen: name, Authorization Code Grant, scopes REST Web
+  Services **and RESTlets**, and the Redirect URI → save + copy the Client
+  ID/Secret immediately (amber shown-only-once warning) → Account ID → role
+  permissions → Connect. [docs/netsuite.md](netsuite.md) rewritten to match,
+  including a redirect-URI-mismatch troubleshooting row.
+- **The guide + Connect dialog show the server's real redirect URI** (from
+  `NetsuiteService::redirectUri()`, passed as a page prop) instead of the
+  browser origin — on production that's
+  `https://aime.cwglobal.ai/integrations/netsuite/callback` — with
+  “Redirect URI” and the URL visually highlighted in the dialog.
+
 ## Image generation + speech (dictation & read-aloud)
 
 - **Image generation** (🖼️ button in the composer): toggle Image mode, type a

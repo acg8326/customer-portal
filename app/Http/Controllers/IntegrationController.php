@@ -31,10 +31,13 @@ class IntegrationController extends Controller
     }
 
     /**
-     * Native NetSuite (TBA) connection state for the current user. Secrets are
-     * never returned — only the account id and status.
+     * Native NetSuite (OAuth 2.0) connection state for the current user.
+     * Secrets are never returned — only the account id and status. The
+     * redirect URI is included so the guide/dialog always show exactly what
+     * the server will send in the OAuth flow (APP_URL-derived, overridable
+     * via NETSUITE_OAUTH_REDIRECT).
      *
-     * @return array{enabled: bool, connected: bool, accountId: string|null, authType: string|null, status: string|null, lastError: string|null}
+     * @return array{enabled: bool, connected: bool, accountId: string|null, authType: string|null, status: string|null, lastError: string|null, redirectUri: string}
      */
     private function netsuite(Request $request): array
     {
@@ -43,6 +46,7 @@ class IntegrationController extends Controller
 
         return [
             'enabled' => $service->enabled(),
+            'redirectUri' => $service->redirectUri(),
             // A 'pending' OAuth2 row (awaiting consent) isn't a live connection.
             'connected' => $conn !== null && $conn->status !== 'pending',
             'accountId' => $conn?->account_id,
