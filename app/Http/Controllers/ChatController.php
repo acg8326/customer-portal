@@ -12,6 +12,7 @@ use Anthropic\Beta\Messages\BetaRawContentBlockStartEvent;
 use Anthropic\Beta\Messages\BetaRawMessageDeltaEvent;
 use Anthropic\Beta\Messages\BetaRawMessageStartEvent;
 use Anthropic\Beta\Messages\BetaRequestMCPServerURLDefinition;
+use Anthropic\Beta\Messages\BetaServerToolUseBlock;
 use Anthropic\Beta\Messages\BetaTextBlock;
 use Anthropic\Beta\Messages\BetaTextBlockParam;
 use Anthropic\Beta\Messages\BetaTextDelta;
@@ -522,7 +523,13 @@ class ChatController extends Controller
                     // to a plain reply.
                     try {
                         [$reply, $inputTokens, $outputTokens, $stopReason] =
-                            $this->completeWithClientTools($client, $conversation, $selectedModel, $composioKeys, $netsuite);
+                            $this->completeWithClientTools(
+                                $client, $conversation, $selectedModel, $composioKeys, $netsuite,
+                                onActivity: fn (string $name) => $this->emit('tool', [
+                                    'name' => $name,
+                                    'label' => self::toolActivityLabel($name),
+                                ]),
+                            );
 
                         // Hard gate: the turn paused before a destructive tool
                         // call. Surface the approval card and stop — nothing is
@@ -633,10 +640,17 @@ class ChatController extends Controller
                                 $citations[$citation->url] = $citation->title ?: $citation->url;
                             }
                         } elseif ($event instanceof BetaRawContentBlockStartEvent && $event->contentBlock instanceof BetaMCPToolUseBlock) {
-                            // Surface a tool call as it starts.
+                            // Surface an MCP tool call as it starts.
                             $this->emit('tool', [
                                 'name' => $event->contentBlock->name,
                                 'server' => $event->contentBlock->serverName,
+                                'label' => 'Using '.$event->contentBlock->serverName,
+                            ]);
+                        } elseif ($event instanceof BetaRawContentBlockStartEvent && $event->contentBlock instanceof BetaServerToolUseBlock) {
+                            // Claude's server-side web search/fetch starting.
+                            $this->emit('tool', [
+                                'name' => $event->contentBlock->name,
+                                'label' => self::toolActivityLabel($event->contentBlock->name),
                             ]);
                         } elseif ($event instanceof RawMessageStartEvent) {
                             $inputTokens = $event->message->usage->inputTokens;
@@ -719,6 +733,37 @@ class ChatController extends Controller
         }
 
         flush();
+    }
+
+    /**
+     * A human-readable "what the assistant is doing" label for a tool call,
+     * shown live in the chat's typing indicator (the UI appends "…").
+     */
+    public static function toolActivityLabel(string $name): string
+    {
+        return match ($name) {
+            'netsuite_suiteql' => 'Querying NetSuite (SuiteQL)',
+            'netsuite_get_record' => 'Fetching a NetSuite record',
+            'web_search' => 'Searching the web',
+            'web_fetch' => 'Reading a web page',
+            default => self::genericActivityLabel($name),
+        };
+    }
+
+    /**
+     * Composio tools are named APP_ACTION_WORDS (e.g. SLACK_SEND_MESSAGE) —
+     * turn that into "Slack · send message". Anything else: "Using {name}".
+     */
+    private static function genericActivityLabel(string $name): string
+    {
+        if (preg_match('/^[A-Z0-9]+(?:_[A-Z0-9]+)+$/', $name) === 1) {
+            $parts = explode('_', strtolower($name));
+            $app = ucfirst(array_shift($parts));
+
+            return $app.' · '.implode(' ', $parts);
+        }
+
+        return 'Using '.$name;
     }
 
     /**
@@ -1208,9 +1253,10 @@ class ChatController extends Controller
      *
      * @param  list<string>  $toolkitKeys
      * @param  array<string, mixed>|null  $resume
+     * @param  (\Closure(string): void)|null  $onActivity  Called with each tool name as it executes — streamed to the UI as a live "what I'm doing" indicator.
      * @return array{0: string, 1: int, 2: int, 3: string|null} [reply, inputTokens, outputTokens, stopReason]
      */
-    private function completeWithClientTools(Client $client, Conversation $conversation, string $model, array $toolkitKeys, bool $netsuite, ?array $resume = null): array
+    private function completeWithClientTools(Client $client, Conversation $conversation, string $model, array $toolkitKeys, bool $netsuite, ?array $resume = null, ?\Closure $onActivity = null): array
     {
         $composio = app(ComposioService::class);
         $netsuiteService = app(NetsuiteService::class);
@@ -1269,7 +1315,7 @@ class ChatController extends Controller
 
             // The user approved: run the paused calls, then rejoin the loop.
             [$messages, $plain] = $this->applyToolResults(
-                $conversation, $this->normalizedCalls((array) ($resume['pending'] ?? [])), $messages, $plain,
+                $conversation, $this->normalizedCalls((array) ($resume['pending'] ?? [])), $messages, $plain, $onActivity,
             );
         } else {
             $plain = $this->textHistory($conversation);
@@ -1365,6 +1411,7 @@ class ChatController extends Controller
                 ], $toolUses),
                 $messages,
                 $plain,
+                $onActivity,
             );
         }
 
@@ -1379,9 +1426,10 @@ class ChatController extends Controller
      * @param  list<array{id: string, name: string, input: array<string, mixed>}>  $calls
      * @param  list<mixed>  $messages
      * @param  list<mixed>  $plain
+     * @param  (\Closure(string): void)|null  $onActivity
      * @return array{0: list<mixed>, 1: list<mixed>}
      */
-    private function applyToolResults(Conversation $conversation, array $calls, array $messages, array $plain): array
+    private function applyToolResults(Conversation $conversation, array $calls, array $messages, array $plain, ?\Closure $onActivity = null): array
     {
         $composio = app(ComposioService::class);
         $netsuiteService = app(NetsuiteService::class);
@@ -1391,6 +1439,11 @@ class ChatController extends Controller
         $resultsPlain = [];
 
         foreach ($calls as $call) {
+            // Tell the UI what's running before the (possibly slow) call.
+            if ($onActivity !== null) {
+                $onActivity($call['name']);
+            }
+
             if ($user === null) {
                 $result = ['ok' => false, 'output' => 'No user context.'];
             } elseif ($netsuiteService->isNetsuiteTool($call['name'])) {
@@ -1773,6 +1826,10 @@ class ChatController extends Controller
                 [$reply, $inputTokens, $outputTokens, $stopReason] = $this->completeWithClientTools(
                     $client, $conversation, $model,
                     $toolkits, (bool) ($state['netsuite'] ?? false), $state,
+                    onActivity: fn (string $name) => $this->emit('tool', [
+                        'name' => $name,
+                        'label' => self::toolActivityLabel($name),
+                    ]),
                 );
 
                 // The continuation hit ANOTHER destructive call — gate again.

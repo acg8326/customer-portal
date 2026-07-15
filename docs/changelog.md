@@ -3,6 +3,20 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Live tool activity in chat
+
+- While the assistant works, the typing indicator now says **what** it's
+  doing instead of a generic "AiMe is thinking…" — *"Querying NetSuite
+  (SuiteQL)…"*, *"Fetching a NetSuite record…"*, *"Searching the web…"*,
+  *"Slack · send message…"* (Composio tool names humanized), *"Using
+  {server}…"* for MCP servers.
+- Backend: the connected-tools loop (`completeWithClientTools` /
+  `applyToolResults`) takes an `onActivity` callback and emits a `tool` SSE
+  event with a friendly `label` before each call executes — wired in both
+  the streaming turn and the post-approval resume (`toolDecision`). The
+  streamed path also surfaces Claude's server-side web search/fetch blocks.
+  Labels come from `ChatController::toolActivityLabel()` (unit-tested).
+
 ## NetSuite: OAuth 2.0 only + card-style setup guides everywhere
 
 - **The connect dialog is OAuth 2.0 only** — the TBA/OAuth toggle is gone.

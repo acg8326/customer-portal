@@ -1224,6 +1224,7 @@ async function consumeStream(
                 stop_reason?: string | null;
                 name?: string;
                 server?: string;
+                label?: string;
                 calls?: PendingCall[];
                 usage?: {
                     prompt_tokens?: number;
@@ -1248,9 +1249,11 @@ async function consumeStream(
                     bumpToTop(activeId.value, payload.title);
                 }
             } else if (evt === 'tool') {
-                // An MCP tool is being called server-side.
+                // A tool is running server-side (NetSuite/Composio/MCP/web
+                // search) — show what the assistant is doing while it waits.
                 streamingTool.value =
-                    payload.server ?? payload.name ?? 'a tool';
+                    payload.label ??
+                    `Using ${payload.server ?? payload.name ?? 'a tool'}`;
             } else if (evt === 'approval') {
                 // Hard gate: the turn paused before a destructive tool call.
                 pendingApproval.value = payload.calls ?? [];
@@ -2318,7 +2321,7 @@ onMounted(() => {
                         >
                             <Spinner class="size-4" />
                             <template v-if="streamingTool">
-                                Using {{ streamingTool }}…
+                                {{ streamingTool }}…
                             </template>
                             <template v-else> AiMe is thinking… </template>
                         </div>
