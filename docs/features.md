@@ -395,14 +395,15 @@ the **Claude API**.
   totals, and n8n event are all persisted server-side once the stream finishes
   (identical bookkeeping to the non-streaming path, which remains at
   `POST /chat/message`). File uploads stream too.
-- **Live tool activity:** while the assistant runs a tool, the typing
-  indicator says what it's doing instead of a generic spinner — e.g.
-  *"Querying NetSuite (SuiteQL)…"*, *"Searching the web…"*, *"Slack · send
-  message…"* (Composio names humanized), *"Using {server}…"* for MCP. A
-  `tool` SSE event fires per call as it starts
-  (`ChatController::toolActivityLabel()`); it covers the connected-tools
-  loop (NetSuite/Composio, including after an approval decision) and the
-  streamed web-search/MCP path, and clears when the answer starts.
+- **Live tool activity:** while the assistant works with tools, the typing
+  indicator narrates each phase instead of a generic spinner — *"Choosing
+  the right tool…"* (first model round) → *"Querying NetSuite (SuiteQL)…"*
+  / *"Slack · send message…"* (each call as it executes; Composio names
+  humanized via `ChatController::toolActivityLabel()`) → *"Analyzing the
+  results…"* (every follow-up round). `tool` SSE events drive it; covered
+  paths: the connected-tools loop (NetSuite/Composio, including after an
+  approval decision) and the streamed web-search (*"Searching the web…"*)
+  / MCP (*"Using {server}…"*) path. Clears when the answer starts.
 
 ## 6. Projects (Claude-style workspaces)
 

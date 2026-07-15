@@ -10,6 +10,11 @@ customized so far, newest first.
   (SuiteQL)…"*, *"Fetching a NetSuite record…"*, *"Searching the web…"*,
   *"Slack · send message…"* (Composio tool names humanized), *"Using
   {server}…"* for MCP servers.
+- The tool loop narrates **every phase**, not just execution: *"Choosing
+  the right tool…"* during the first model round, the tool's own label
+  while it runs, *"Analyzing the results…"* during each follow-up round —
+  so slow (non-streamed) model rounds never fall back to the generic
+  indicator mid-turn.
 - Backend: the connected-tools loop (`completeWithClientTools` /
   `applyToolResults`) takes an `onActivity` callback and emits a `tool` SSE
   event with a friendly `label` before each call executes — wired in both

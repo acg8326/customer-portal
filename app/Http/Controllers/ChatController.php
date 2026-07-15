@@ -525,10 +525,7 @@ class ChatController extends Controller
                         [$reply, $inputTokens, $outputTokens, $stopReason] =
                             $this->completeWithClientTools(
                                 $client, $conversation, $selectedModel, $composioKeys, $netsuite,
-                                onActivity: fn (string $name) => $this->emit('tool', [
-                                    'name' => $name,
-                                    'label' => self::toolActivityLabel($name),
-                                ]),
+                                onActivity: fn (string $label) => $this->emit('tool', ['label' => $label]),
                             );
 
                         // Hard gate: the turn paused before a destructive tool
@@ -1253,7 +1250,7 @@ class ChatController extends Controller
      *
      * @param  list<string>  $toolkitKeys
      * @param  array<string, mixed>|null  $resume
-     * @param  (\Closure(string): void)|null  $onActivity  Called with each tool name as it executes — streamed to the UI as a live "what I'm doing" indicator.
+     * @param  (\Closure(string): void)|null  $onActivity  Called with a short activity label at each phase of the loop (deciding / running a tool / analyzing results) — streamed to the UI as a live "what I'm doing" indicator.
      * @return array{0: string, 1: int, 2: int, 3: string|null} [reply, inputTokens, outputTokens, stopReason]
      */
     private function completeWithClientTools(Client $client, Conversation $conversation, string $model, array $toolkitKeys, bool $netsuite, ?array $resume = null, ?\Closure $onActivity = null): array
@@ -1327,6 +1324,15 @@ class ChatController extends Controller
         }
 
         for ($round = 0; $round < $maxRounds; $round++) {
+            // Each model round is a slow, non-streamed call — tell the UI
+            // what's happening so the indicator never sits on a generic
+            // "thinking" while tools are in play.
+            if ($onActivity !== null) {
+                $onActivity($round === 0 && $resume === null
+                    ? 'Choosing the right tool'
+                    : 'Analyzing the results');
+            }
+
             $message = $client->beta->messages->create(
                 maxTokens: $maxTokens,
                 messages: $messages,
@@ -1426,7 +1432,7 @@ class ChatController extends Controller
      * @param  list<array{id: string, name: string, input: array<string, mixed>}>  $calls
      * @param  list<mixed>  $messages
      * @param  list<mixed>  $plain
-     * @param  (\Closure(string): void)|null  $onActivity
+     * @param  (\Closure(string): void)|null  $onActivity  Receives a display label per call.
      * @return array{0: list<mixed>, 1: list<mixed>}
      */
     private function applyToolResults(Conversation $conversation, array $calls, array $messages, array $plain, ?\Closure $onActivity = null): array
@@ -1441,7 +1447,7 @@ class ChatController extends Controller
         foreach ($calls as $call) {
             // Tell the UI what's running before the (possibly slow) call.
             if ($onActivity !== null) {
-                $onActivity($call['name']);
+                $onActivity(self::toolActivityLabel($call['name']));
             }
 
             if ($user === null) {
@@ -1826,10 +1832,7 @@ class ChatController extends Controller
                 [$reply, $inputTokens, $outputTokens, $stopReason] = $this->completeWithClientTools(
                     $client, $conversation, $model,
                     $toolkits, (bool) ($state['netsuite'] ?? false), $state,
-                    onActivity: fn (string $name) => $this->emit('tool', [
-                        'name' => $name,
-                        'label' => self::toolActivityLabel($name),
-                    ]),
+                    onActivity: fn (string $label) => $this->emit('tool', ['label' => $label]),
                 );
 
                 // The continuation hit ANOTHER destructive call — gate again.
