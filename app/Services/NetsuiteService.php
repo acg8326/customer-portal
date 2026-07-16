@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\NetsuiteConnection;
 use App\Models\User;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -31,33 +32,94 @@ class NetsuiteService
         return (bool) config('services.netsuite.enabled', false);
     }
 
-    public function connectionFor(User $user): ?NetsuiteConnection
+    /**
+     * All of a user's NetSuite connections, default first.
+     *
+     * @return Collection<int, NetsuiteConnection>
+     */
+    public function connectionsFor(User $user): Collection
     {
-        return $user->netsuiteConnection;
+        return $user->netsuiteConnections()
+            ->orderByDesc('is_default')
+            ->orderBy('id')
+            ->get();
     }
 
     /**
-     * Whether this user has a usable NetSuite connection (feature on + active
-     * connection stored).
+     * The connection a chat uses when none is pinned: the active default,
+     * else the oldest active connection.
+     */
+    public function defaultConnectionFor(User $user): ?NetsuiteConnection
+    {
+        return $user->netsuiteConnections()
+            ->where('status', 'active')
+            ->orderByDesc('is_default')
+            ->orderBy('id')
+            ->first();
+    }
+
+    /**
+     * A specific connection by id — only if it belongs to this user.
+     */
+    public function connectionById(User $user, int $id): ?NetsuiteConnection
+    {
+        return $user->netsuiteConnections()->whereKey($id)->first();
+    }
+
+    /**
+     * Whether this user has a usable NetSuite connection (feature on + at
+     * least one active connection stored).
      */
     public function enabledFor(User $user): bool
     {
         return $this->enabled()
-            && ($conn = $this->connectionFor($user)) !== null
-            && $conn->isActive();
+            && $user->netsuiteConnections()->where('status', 'active')->exists();
+    }
+
+    /**
+     * The connection row for one of the user's NetSuite accounts — reconnecting
+     * the same account id updates it in place; a new account id adds another
+     * connection. The user's first connection becomes their default.
+     */
+    private function connectionForAccount(User $user, string $accountId, ?string $label): NetsuiteConnection
+    {
+        $accountId = trim($accountId);
+        $conn = $user->netsuiteConnections()->where('account_id', $accountId)->first()
+            ?? new NetsuiteConnection;
+
+        $conn->user_id = $user->id;
+        $conn->account_id = $accountId;
+
+        if ($label !== null) {
+            $conn->label = trim($label) !== '' ? trim($label) : null;
+        }
+
+        if (! $conn->exists) {
+            $conn->is_default = ! $user->netsuiteConnections()->exists();
+        }
+
+        return $conn;
+    }
+
+    /**
+     * Make one of the user's connections the default (the account chats use
+     * when none is pinned). Exactly one default at a time.
+     */
+    public function setDefault(User $user, NetsuiteConnection $conn): void
+    {
+        $user->netsuiteConnections()->whereKeyNot($conn->id)->update(['is_default' => false]);
+        $conn->forceFill(['is_default' => true])->save();
     }
 
     /**
      * Store (or replace) a user's TBA credentials. Secrets are encrypted by the
      * model's casts.
      *
-     * @param  array{account_id: string, consumer_key: string, consumer_secret: string, token_id: string, token_secret: string}  $creds
+     * @param  array{account_id: string, consumer_key: string, consumer_secret: string, token_id: string, token_secret: string, label?: string|null}  $creds
      */
     public function store(User $user, array $creds): NetsuiteConnection
     {
-        $conn = $user->netsuiteConnection ?? new NetsuiteConnection;
-        $conn->user_id = $user->id;
-        $conn->account_id = trim($creds['account_id']);
+        $conn = $this->connectionForAccount($user, $creds['account_id'], $creds['label'] ?? null);
         $conn->auth_type = NetsuiteConnection::AUTH_TBA;
         $conn->consumer_key = trim($creds['consumer_key']);
         $conn->consumer_secret = trim($creds['consumer_secret']);
@@ -81,14 +143,12 @@ class NetsuiteService
      * connection is saved as 'pending' until the callback exchanges the code
      * for tokens. Returns [connection, authorizeUrl, state].
      *
-     * @param  array{account_id: string, client_id: string, client_secret: string}  $creds
+     * @param  array{account_id: string, client_id: string, client_secret: string, label?: string|null}  $creds
      * @return array{0: NetsuiteConnection, 1: string, 2: string}
      */
     public function beginOauth(User $user, array $creds, string $state): array
     {
-        $conn = $user->netsuiteConnection ?? new NetsuiteConnection;
-        $conn->user_id = $user->id;
-        $conn->account_id = trim($creds['account_id']);
+        $conn = $this->connectionForAccount($user, $creds['account_id'], $creds['label'] ?? null);
         $conn->auth_type = NetsuiteConnection::AUTH_OAUTH2;
         $conn->client_id = trim($creds['client_id']);
         $conn->client_secret = trim($creds['client_secret']);
@@ -107,9 +167,19 @@ class NetsuiteService
         return [$conn, $this->authorizeUrl($conn, $state), $state];
     }
 
-    public function disconnect(User $user): void
+    /**
+     * Remove one connection. If it was the default, the oldest remaining
+     * connection is promoted so chats always have a fallback.
+     */
+    public function disconnect(User $user, NetsuiteConnection $conn): void
     {
-        $user->netsuiteConnection?->delete();
+        $wasDefault = $conn->is_default;
+        $conn->delete();
+
+        if ($wasDefault) {
+            $user->netsuiteConnections()->orderBy('id')->first()
+                ?->forceFill(['is_default' => true])->save();
+        }
     }
 
     /**
@@ -196,19 +266,29 @@ class NetsuiteService
 
     /**
      * The NetSuite tools exposed to Claude. Names are prefixed so the chat loop
-     * can route execution here (vs. Composio).
+     * can route execution here (vs. Composio). When the executing connection is
+     * known, each description names the account so the model can say where the
+     * data came from — the *scoping* itself is server-side (execute() only ever
+     * gets the pinned connection), never up to the model.
      *
      * @return list<array{name: string, description: string, input_schema: array<string, mixed>}>
      */
-    public function toolSchemas(): array
+    public function toolSchemas(?NetsuiteConnection $conn = null): array
     {
+        $accountNote = $conn !== null
+            ? ' This chat is pinned to the NetSuite account "'.$conn->displayLabel().'"'
+                .' (id '.$conn->account_id.'); every call runs against that account only,'
+                .' so name it when reporting the data.'
+            : '';
+
         return [
             [
                 'name' => self::TOOL_PREFIX.'suiteql',
                 'description' => 'Run a read-only SuiteQL (SQL) query against NetSuite and return the rows. '
                     .'Use this for listing or searching records — customers, invoices, transactions, items, etc. '
                     .'Example: "SELECT id, entityid, companyname FROM customer". Do not include a trailing '
-                    .'semicolon. Results are capped, so add your own filters/ordering for large tables.',
+                    .'semicolon. Results are capped, so add your own filters/ordering for large tables.'
+                    .$accountNote,
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -227,7 +307,8 @@ class NetsuiteService
             [
                 'name' => self::TOOL_PREFIX.'get_record',
                 'description' => 'Fetch a single NetSuite record by its internal id via the REST record API. '
-                    .'Provide the record type (e.g. "customer", "invoice", "salesorder") and the numeric id.',
+                    .'Provide the record type (e.g. "customer", "invoice", "salesorder") and the numeric id.'
+                    .$accountNote,
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -253,13 +334,15 @@ class NetsuiteService
 
     /**
      * Execute one NetSuite tool call for a user and return a result for Claude.
+     * The caller passes the conversation's pinned connection; without one the
+     * user's default account is used.
      *
      * @param  array<string, mixed>  $input
      * @return array{ok: bool, output: mixed}
      */
-    public function execute(User $user, string $toolName, array $input): array
+    public function execute(User $user, string $toolName, array $input, ?NetsuiteConnection $conn = null): array
     {
-        $conn = $this->connectionFor($user);
+        $conn ??= $this->defaultConnectionFor($user);
 
         if ($conn === null || ! $conn->isActive()) {
             return ['ok' => false, 'output' => 'No active NetSuite connection for this user.'];

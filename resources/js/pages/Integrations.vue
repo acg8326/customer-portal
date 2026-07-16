@@ -17,6 +17,7 @@ import {
     Plus,
     Power,
     Search,
+    Star,
     Table,
     Trash2,
     TriangleAlert,
@@ -132,13 +133,21 @@ type Composio = {
 };
 
 // Native NetSuite connection state — no secrets, only what the UI needs.
+// A user can hold several accounts at once; one is the default for chats.
+type NetsuiteAccount = {
+    id: number;
+    accountId: string;
+    label: string;
+    isDefault: boolean;
+    authType: string; // 'tba' | 'oauth2'
+    status: string;
+    lastError: string | null;
+};
+
 type Netsuite = {
     enabled: boolean;
     connected: boolean;
-    accountId: string | null;
-    authType: string | null; // 'tba' | 'oauth2'
-    status: string | null;
-    lastError: string | null;
+    accounts: NetsuiteAccount[];
     // The exact redirect URI the server sends in the OAuth flow — what the
     // integration record must contain (prod: https://aime.cwglobal.ai/…).
     redirectUri: string;
@@ -647,7 +656,9 @@ const categories: Category[] = [
 // card grid, so they aren't shown twice.
 function isConnected(item: Integration): boolean {
     if (item.native === 'netsuite') {
-        return netsuiteConnected.value;
+        // The NetSuite card stays in the grid even when connected — it's the
+        // entry point for adding ANOTHER account (multi-account support).
+        return false;
     }
 
     return Boolean(
@@ -692,6 +703,8 @@ type ConnectedRow = {
     category: string;
     mode: 'composio' | 'webhook' | 'netsuite';
     detail: string | null;
+    // One row per linked NetSuite account.
+    account?: NetsuiteAccount;
 };
 
 const connectedRows = computed<ConnectedRow[]>(() => {
@@ -700,15 +713,21 @@ const connectedRows = computed<ConnectedRow[]>(() => {
     for (const cat of categories) {
         for (const item of cat.items) {
             if (item.native === 'netsuite') {
-                if (netsuiteConnected.value) {
+                for (const account of props.netsuite?.accounts ?? []) {
+                    if (account.status === 'pending') {
+                        continue; // awaiting OAuth consent — not live yet
+                    }
+
                     rows.push({
                         item,
                         category: cat.label,
                         mode: 'netsuite',
+                        account,
                         detail:
-                            `Account ${props.netsuite.accountId ?? '—'}` +
-                            ` · ${props.netsuite.authType === 'oauth2' ? 'OAuth 2.0' : 'TBA'}` +
-                            (props.netsuite.status === 'error'
+                            `${account.label} · Account ${account.accountId}` +
+                            ` · ${account.authType === 'oauth2' ? 'OAuth 2.0' : 'TBA'}` +
+                            (account.isDefault ? ' · default' : '') +
+                            (account.status === 'error'
                                 ? ' · needs attention'
                                 : ''),
                     });
@@ -963,6 +982,7 @@ function disconnectComposio(key: string) {
 // made before the OAuth2-only switch keep working server-side.)
 type NetsuiteForm = {
     account_id: string;
+    label: string;
     client_id: string;
     client_secret: string;
 };
@@ -978,10 +998,13 @@ const netsuiteSubmitting = ref(false);
 const netsuiteError = ref<string | null>(null);
 const netsuiteForm = ref<NetsuiteForm>({
     account_id: '',
+    label: '',
     client_id: '',
     client_secret: '',
 });
 
+// The label is optional — it names the account in chat ("Client A") when the
+// user connects more than one.
 const netsuiteFields: NetsuiteField[] = [
     { name: 'account_id', label: 'Account ID', secret: false },
     { name: 'client_id', label: 'Client ID', secret: false },
@@ -992,9 +1015,13 @@ const netsuiteFormValid = computed(() =>
     netsuiteFields.every((f) => netsuiteForm.value[f.name].trim() !== ''),
 );
 
-function openNetsuite() {
+// Open the connect dialog: with an account → reconnect it (prefilled); with
+// null → add a new account (blank form).
+function openNetsuiteFor(account: NetsuiteAccount | null) {
     netsuiteForm.value = {
-        account_id: props.netsuite?.accountId ?? '',
+        account_id: account?.accountId ?? '',
+        label:
+            account && account.label !== account.accountId ? account.label : '',
         client_id: '',
         client_secret: '',
     };
@@ -1012,6 +1039,7 @@ async function submitNetsuite() {
 
     const payload: Record<string, string> = {
         auth_type: 'oauth2',
+        label: netsuiteForm.value.label.trim(),
     };
 
     for (const f of netsuiteFields) {
@@ -1058,8 +1086,16 @@ async function submitNetsuite() {
     }
 }
 
-function disconnectNetsuite() {
-    router.delete('/integrations/netsuite', { preserveScroll: true });
+function disconnectNetsuite(id: number) {
+    router.delete(`/integrations/netsuite/${id}`, { preserveScroll: true });
+}
+
+function makeDefaultNetsuite(id: number) {
+    router.patch(
+        `/integrations/netsuite/${id}/default`,
+        {},
+        { preserveScroll: true },
+    );
 }
 
 function hostOf(url: string): string {
@@ -1147,7 +1183,10 @@ function hostOf(url: string): string {
                     <tbody>
                         <tr
                             v-for="row in connectedRows"
-                            :key="row.item.key"
+                            :key="
+                                row.item.key +
+                                (row.account ? `-${row.account.id}` : '')
+                            "
                             class="border-b last:border-0"
                         >
                             <td class="px-4 py-3">
@@ -1210,9 +1249,25 @@ function hostOf(url: string): string {
                                         v-else-if="row.mode === 'netsuite'"
                                     >
                                         <Button
+                                            v-if="!row.account!.isDefault"
+                                            variant="ghost"
+                                            size="sm"
+                                            class="text-muted-foreground"
+                                            title="Make this the default account for new chats"
+                                            @click="
+                                                makeDefaultNetsuite(
+                                                    row.account!.id,
+                                                )
+                                            "
+                                        >
+                                            <Star class="size-4" />
+                                        </Button>
+                                        <Button
                                             variant="outline"
                                             size="sm"
-                                            @click="openNetsuite"
+                                            @click="
+                                                openNetsuiteFor(row.account!)
+                                            "
                                         >
                                             Reconnect
                                         </Button>
@@ -1220,7 +1275,11 @@ function hostOf(url: string): string {
                                             variant="ghost"
                                             size="sm"
                                             class="text-muted-foreground"
-                                            @click="disconnectNetsuite"
+                                            @click="
+                                                disconnectNetsuite(
+                                                    row.account!.id,
+                                                )
+                                            "
                                         >
                                             <Trash2 class="size-4" />
                                         </Button>
@@ -1518,15 +1577,20 @@ function hostOf(url: string): string {
                             </template>
                         </template>
 
-                        <!-- Native NetSuite (TBA) — collect five values in a modal -->
+                        <!-- Native NetSuite — the card stays visible so more
+                             accounts can be added after the first -->
                         <template v-else-if="connectMode(item) === 'netsuite'">
                             <Button
                                 variant="default"
                                 size="sm"
-                                @click="openNetsuite"
+                                @click="openNetsuiteFor(null)"
                             >
                                 <Plug class="size-4" />
-                                Connect
+                                {{
+                                    netsuiteConnected
+                                        ? 'Add account'
+                                        : 'Connect'
+                                }}
                             </Button>
                         </template>
 
@@ -1687,16 +1751,13 @@ function hostOf(url: string): string {
                     Connect now
                 </Button>
                 <Button
-                    v-else-if="
-                        connectMode(guideFor) === 'netsuite' &&
-                        !netsuiteConnected
-                    "
+                    v-else-if="connectMode(guideFor) === 'netsuite'"
                     @click="
-                        openNetsuite();
+                        openNetsuiteFor(null);
                         guideFor = null;
                     "
                 >
-                    Connect now
+                    {{ netsuiteConnected ? 'Add account' : 'Connect now' }}
                 </Button>
                 <Button v-else variant="outline" @click="guideFor = null">
                     Close
@@ -1862,6 +1923,23 @@ function hostOf(url: string): string {
                     >
                         Setup → Company → Company Information → “Account ID”.
                         Sandboxes include the <code>_SB1</code> suffix.
+                    </p>
+                </div>
+
+                <div class="space-y-2">
+                    <Label for="netsuite-label">Label (optional)</Label>
+                    <Input
+                        id="netsuite-label"
+                        v-model="netsuiteForm.label"
+                        type="text"
+                        maxlength="60"
+                        placeholder="e.g. Client A, Production, Sandbox"
+                        autocomplete="off"
+                    />
+                    <p class="text-xs text-muted-foreground">
+                        Names this account when you connect more than one — it's
+                        what the chat's account picker and activity indicator
+                        show.
                     </p>
                 </div>
 

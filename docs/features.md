@@ -618,6 +618,24 @@ boxes to enable, a paste-exactly code block, and info/warning callouts
   *Legacy:* Token-Based Auth connections made before the OAuth2-only switch
   keep working server-side; the UI no longer offers TBA.
 
+  **Multiple NetSuite accounts.** A user can connect **several NetSuite
+  accounts at once** (one connection per account id; reconnecting an account
+  updates it in place). Each connection takes an optional **label** ("Client
+  A", "Sandbox") and one is the **default**. The NetSuite card stays in the
+  grid after connecting ("Add account"); the *Currently connected* table shows
+  **one row per account** with label · account id · default marker, plus
+  per-row actions: make-default (star), reconnect, disconnect (deleting the
+  default promotes the oldest remaining account). In chat, an **account
+  picker** appears in the composer **only when >1 account is connected**; the
+  choice is **pinned on the conversation** (`netsuite_connection_id`,
+  restored when reopening the chat) and scoping is **server-side**: the tool
+  loop is handed exactly one connection, so the model can never pick the
+  wrong account. Provenance is visible end-to-end — the tool descriptions
+  name the pinned account (so answers cite it), and the live activity
+  indicator shows *"Querying NetSuite (SuiteQL) · Client B"* for labelled
+  accounts. With one account (or none pinned) everything falls back to the
+  default connection, exactly as before.
+
   `auth_type` on the connection records which method is in use; all secrets and
   tokens are stored **encrypted**
   ([`NetsuiteConnection`](../app/Models/NetsuiteConnection.php)). In chat AiMe

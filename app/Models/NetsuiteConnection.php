@@ -12,6 +12,8 @@ use Illuminate\Support\Carbon;
  * @property int $id
  * @property int $user_id
  * @property string $account_id
+ * @property string|null $label
+ * @property bool $is_default
  * @property string $auth_type
  * @property string|null $consumer_key
  * @property string|null $consumer_secret
@@ -26,7 +28,7 @@ use Illuminate\Support\Carbon;
  * @property string|null $last_error
  * @property Carbon|null $last_used_at
  */
-#[Fillable(['account_id', 'auth_type', 'consumer_key', 'consumer_secret', 'token_id', 'token_secret', 'client_id', 'client_secret', 'status'])]
+#[Fillable(['account_id', 'label', 'auth_type', 'consumer_key', 'consumer_secret', 'token_id', 'token_secret', 'client_id', 'client_secret', 'status'])]
 #[Hidden(['consumer_key', 'consumer_secret', 'token_id', 'token_secret', 'client_id', 'client_secret', 'access_token', 'refresh_token'])]
 class NetsuiteConnection extends Model
 {
@@ -54,7 +56,17 @@ class NetsuiteConnection extends Model
             'refresh_token' => 'encrypted',
             'token_expires_at' => 'datetime',
             'last_used_at' => 'datetime',
+            'is_default' => 'boolean',
         ];
+    }
+
+    /**
+     * What the UI (and activity labels) call this account: the user's label,
+     * falling back to the raw NetSuite account id.
+     */
+    public function displayLabel(): string
+    {
+        return filled($this->label) ? (string) $this->label : $this->account_id;
     }
 
     public function isOauth2(): bool

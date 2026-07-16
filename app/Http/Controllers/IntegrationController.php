@@ -31,28 +31,37 @@ class IntegrationController extends Controller
     }
 
     /**
-     * Native NetSuite (OAuth 2.0) connection state for the current user.
-     * Secrets are never returned — only the account id and status. The
-     * redirect URI is included so the guide/dialog always show exactly what
-     * the server will send in the OAuth flow (APP_URL-derived, overridable
-     * via NETSUITE_OAUTH_REDIRECT).
+     * Native NetSuite (OAuth 2.0) connection state for the current user — a
+     * user can hold several accounts at once. Secrets are never returned —
+     * only account ids, labels, and status. The redirect URI is included so
+     * the guide/dialog always show exactly what the server will send in the
+     * OAuth flow (APP_URL-derived, overridable via NETSUITE_OAUTH_REDIRECT).
      *
-     * @return array{enabled: bool, connected: bool, accountId: string|null, authType: string|null, status: string|null, lastError: string|null, redirectUri: string}
+     * @return array{enabled: bool, connected: bool, redirectUri: string, accounts: array<int, array{id: int, accountId: string, label: string, isDefault: bool, authType: string, status: string, lastError: string|null}>}
      */
     private function netsuite(Request $request): array
     {
         $service = app(NetsuiteService::class);
-        $conn = $service->connectionFor($request->user());
+
+        $accounts = $service->connectionsFor($request->user())
+            ->map(fn ($conn): array => [
+                'id' => $conn->id,
+                'accountId' => $conn->account_id,
+                'label' => $conn->displayLabel(),
+                'isDefault' => $conn->is_default,
+                'authType' => $conn->auth_type,
+                'status' => $conn->status,
+                'lastError' => $conn->last_error,
+            ])
+            ->values()
+            ->all();
 
         return [
             'enabled' => $service->enabled(),
             'redirectUri' => $service->redirectUri(),
             // A 'pending' OAuth2 row (awaiting consent) isn't a live connection.
-            'connected' => $conn !== null && $conn->status !== 'pending',
-            'accountId' => $conn?->account_id,
-            'authType' => $conn?->auth_type,
-            'status' => $conn?->status,
-            'lastError' => $conn?->last_error,
+            'connected' => collect($accounts)->contains(fn (array $a): bool => $a['status'] !== 'pending'),
+            'accounts' => $accounts,
         ];
     }
 

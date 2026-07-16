@@ -3,6 +3,31 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Multiple NetSuite accounts, pinned per chat
+
+- A user can now link **several NetSuite accounts simultaneously** — the
+  unique constraint moved from *one per user* to *one per user per account
+  id*. Each connection has an optional **label** and one is the **default**
+  (first connection auto-defaults; deleting the default promotes the oldest
+  remaining one).
+- **Integrations page**: the connected table lists one row per account
+  (label · account id · auth · default), with make-default / reconnect /
+  disconnect per row; the NetSuite card stays visible as the "Add account"
+  entry point. The connect dialog gained an optional Label field.
+- **Chat**: when >1 account is connected, a gold account picker appears in
+  the composer. The selection is **pinned on the conversation** and enforced
+  **server-side** — the tool loop receives exactly one connection, so the
+  model can never query the wrong account. Tool descriptions name the pinned
+  account and the live activity indicator shows "Querying NetSuite · {label}".
+  Works in the approval-gate resume path too (the paused state stores the
+  connection id; legacy boolean states fall back to the default account).
+- OAuth callback now targets the specific connection being authorized
+  (session carries the connection id), so adding account #2 can't clobber
+  account #1.
+- Deploy note: run `php artisan migrate`. Existing single connections become
+  their user's default automatically; nothing changes for single-account
+  users (no picker, same behavior).
+
 ## Dashboard redesign — greeting, KPI strip, tabbed insights
 
 - The dashboard opens with a time-of-day greeting ("Good morning, Alex" +

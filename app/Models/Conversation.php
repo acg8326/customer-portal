@@ -13,6 +13,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * @property int $user_id
  * @property int|null $project_id
  * @property int|null $skill_id
+ * @property int|null $netsuite_connection_id
  * @property string $title
  * @property string $model
  * @property int $prompt_tokens

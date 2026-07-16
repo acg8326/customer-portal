@@ -54,7 +54,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('integrations.netsuite.test');
     Route::get('integrations/netsuite/callback', [NetsuiteController::class, 'callback'])
         ->name('integrations.netsuite.callback');
-    Route::delete('integrations/netsuite', [NetsuiteController::class, 'disconnect'])
+    Route::patch('integrations/netsuite/{connection}/default', [NetsuiteController::class, 'setDefault'])
+        ->middleware('throttle:integrations')
+        ->name('integrations.netsuite.default');
+    Route::delete('integrations/netsuite/{connection}', [NetsuiteController::class, 'disconnect'])
         ->middleware('throttle:integrations')
         ->name('integrations.netsuite.disconnect');
 

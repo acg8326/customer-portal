@@ -33,6 +33,12 @@ defineProps<{
     };
     skills: { id: number; name: string; icon: string | null }[];
     mcpEnabled: boolean;
+    netsuiteAccounts: {
+        id: number;
+        label: string;
+        accountId: string;
+        isDefault: boolean;
+    }[];
     webEnabled: boolean;
     imageEnabled: boolean;
     speechEnabled: boolean;
@@ -51,6 +57,7 @@ defineProps<{
             :uploads="uploads"
             :skills="skills"
             :mcp-enabled="mcpEnabled"
+            :netsuite-accounts="netsuiteAccounts"
             :web-enabled="webEnabled"
             :image-enabled="imageEnabled"
             :speech-enabled="speechEnabled"

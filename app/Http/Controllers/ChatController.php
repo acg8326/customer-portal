@@ -46,6 +46,7 @@ use App\Jobs\DispatchN8nEvent;
 use App\Jobs\UpdateUserMemory;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Models\NetsuiteConnection;
 use App\Models\Project;
 use App\Models\Skill;
 use App\Models\User;
@@ -125,6 +126,7 @@ class ChatController extends Controller
             'uploads' => self::uploadsProps(),
             'skills' => self::skillOptions($request),
             'mcpEnabled' => self::mcpEnabled($request),
+            'netsuiteAccounts' => self::netsuiteAccountOptions($request),
             'webEnabled' => self::webToolsConfigured(),
             'imageEnabled' => OpenAiMedia::imageEnabled(),
             'speechEnabled' => OpenAiMedia::speechEnabled(),
@@ -170,6 +172,33 @@ class ChatController extends Controller
         return $user->mcpServers()->where('enabled', true)->exists()
             || $user->composioConnections()->where('status', 'active')->exists()
             || app(NetsuiteService::class)->enabledFor($user);
+    }
+
+    /**
+     * The user's active NetSuite accounts, for the chat's account picker
+     * (shown when more than one is connected). Each conversation pins the
+     * account its NetSuite queries run against.
+     *
+     * @return array<int, array{id: int, label: string, accountId: string, isDefault: bool}>
+     */
+    public static function netsuiteAccountOptions(Request $request): array
+    {
+        $service = app(NetsuiteService::class);
+
+        if (! $service->enabled()) {
+            return [];
+        }
+
+        return $service->connectionsFor($request->user())
+            ->filter(fn (NetsuiteConnection $c): bool => $c->isActive())
+            ->map(fn (NetsuiteConnection $c): array => [
+                'id' => $c->id,
+                'label' => $c->displayLabel(),
+                'accountId' => $c->account_id,
+                'isDefault' => $c->is_default,
+            ])
+            ->values()
+            ->all();
     }
 
     /**
@@ -223,6 +252,7 @@ class ChatController extends Controller
             'completion_tokens' => $conversation->completion_tokens,
             'compacted' => filled($conversation->summary),
             'auto_approve' => $conversation->auto_approve,
+            'netsuite_connection_id' => $conversation->netsuite_connection_id,
             'pending_approval' => $this->pendingCalls($conversation) ?: null,
             'share_url' => $conversation->share_token !== null
                 ? route('chat.shared', $conversation->share_token)
@@ -291,12 +321,13 @@ class ChatController extends Controller
             $client = new Client(apiKey: $apiKey);
             $user = $request->user();
             $composioKeys = app(ComposioService::class)->activeToolkitKeys($user);
-            $netsuite = app(NetsuiteService::class)->enabledFor($user);
+            $netsuiteConn = $this->netsuiteConnectionFor($user, $conversation);
             // Cost routing: only ship the schemas the conversation is about.
-            [$composioKeys, $netsuite] = $this->routeToolkits($composioKeys, $netsuite, $conversation);
+            [$composioKeys, $netsuiteOn] = $this->routeToolkits($composioKeys, $netsuiteConn !== null, $conversation);
+            $netsuiteConn = $netsuiteOn ? $netsuiteConn : null;
             // Composio + NetSuite tools run through a client-side loop; custom MCP
             // servers run server-side. Prefer the client-side tools when connected.
-            $useClientTools = $composioKeys !== [] || $netsuite;
+            $useClientTools = $composioKeys !== [] || $netsuiteConn !== null;
             $mcp = $useClientTools ? [] : $this->mcpServerDefs($user);
 
             $reply = null;
@@ -306,7 +337,7 @@ class ChatController extends Controller
             if ($useClientTools) {
                 try {
                     [$reply, $inputTokens, $outputTokens, $stopReason] =
-                        $this->completeWithClientTools($client, $conversation, $selectedModel, $composioKeys, $netsuite);
+                        $this->completeWithClientTools($client, $conversation, $selectedModel, $composioKeys, $netsuiteConn);
 
                     // Hard gate: nothing persists until the user decides via
                     // the toolDecision endpoint (the chat UI shows the card).
@@ -484,19 +515,20 @@ class ChatController extends Controller
         // chat deliberately doesn't have. Web tools + MCP stay available.
         $plainOnly = $this->privateMode || $openAiProvider !== null;
         $composioKeys = $plainOnly ? [] : app(ComposioService::class)->activeToolkitKeys($request->user());
-        $netsuite = ! $plainOnly && app(NetsuiteService::class)->enabledFor($request->user());
+        $netsuiteConn = $plainOnly ? null : $this->netsuiteConnectionFor($request->user(), $conversation);
 
         if (! $plainOnly) {
             // Cost routing: only ship the schemas the conversation is about.
-            [$composioKeys, $netsuite] = $this->routeToolkits($composioKeys, $netsuite, $conversation);
+            [$composioKeys, $netsuiteOn] = $this->routeToolkits($composioKeys, $netsuiteConn !== null, $conversation);
+            $netsuiteConn = $netsuiteOn ? $netsuiteConn : null;
         }
 
-        $useClientTools = $composioKeys !== [] || $netsuite;
+        $useClientTools = $composioKeys !== [] || $netsuiteConn !== null;
         $mcp = ($useClientTools || $openAiProvider !== null) ? [] : $this->mcpServerDefs($request->user());
         $maxTokens = (int) config('services.anthropic.max_tokens', 8192);
         $thinkingOn = $this->thinkingEnabled($request, $selectedModel);
 
-        return response()->stream(function () use ($request, $conversation, $mcp, $composioKeys, $netsuite, $useClientTools, $openAiProvider, $selectedModel, $maxTokens, $thinkingOn, $userId, $apiKey): void {
+        return response()->stream(function () use ($request, $conversation, $mcp, $composioKeys, $netsuiteConn, $useClientTools, $openAiProvider, $selectedModel, $maxTokens, $thinkingOn, $userId, $apiKey): void {
             $this->emit('meta', [
                 'conversation_id' => $conversation->id,
                 'title' => $conversation->title,
@@ -541,7 +573,7 @@ class ChatController extends Controller
                     try {
                         [$reply, $inputTokens, $outputTokens, $stopReason] =
                             $this->completeWithClientTools(
-                                $client, $conversation, $selectedModel, $composioKeys, $netsuite,
+                                $client, $conversation, $selectedModel, $composioKeys, $netsuiteConn,
                                 onActivity: fn (string $label) => $this->emit('tool', ['label' => $label]),
                             );
 
@@ -902,6 +934,15 @@ class ChatController extends Controller
         // Session toggle: when on, skip the confirm-before-destructive-actions
         // guardrail (applied per turn from the chat UI).
         $conversation->auto_approve = $request->boolean('auto_approve');
+        // The composer's NetSuite account picker pins this chat's account.
+        // Only touch the pin when the request carries the key — payloads
+        // without it (single-account users) keep whatever is stored.
+        if ($request->exists('netsuite_connection_id')) {
+            $id = $request->integer('netsuite_connection_id');
+            $conversation->netsuite_connection_id = $id > 0
+                ? app(NetsuiteService::class)->connectionById($request->user(), $id)?->id
+                : null;
+        }
         // A new turn supersedes any tool call still paused at the approval
         // gate — the user moved on, so the stale pending state is dropped.
         $conversation->pending_tool_state = null;
@@ -1054,6 +1095,48 @@ class ChatController extends Controller
                 cacheControl: CacheControlEphemeral::with(),
             ),
         ];
+    }
+
+    /**
+     * The NetSuite connection this conversation's queries run against: the
+     * pinned account (composer picker) when it's still the user's and active,
+     * else the user's default. Null = NetSuite tools off for this turn. This
+     * is the server-side scoping — the model never chooses an account.
+     */
+    private function netsuiteConnectionFor(User $user, Conversation $conversation): ?NetsuiteConnection
+    {
+        $service = app(NetsuiteService::class);
+
+        if (! $service->enabled()) {
+            return null;
+        }
+
+        $conn = $conversation->netsuite_connection_id !== null
+            ? $service->connectionById($user, (int) $conversation->netsuite_connection_id)
+            : null;
+
+        if ($conn === null || ! $conn->isActive()) {
+            $conn = $service->defaultConnectionFor($user);
+        }
+
+        return $conn;
+    }
+
+    /**
+     * Rehydrate the NetSuite connection from paused gate state: new states
+     * store the connection id; legacy ones stored a boolean (→ default).
+     */
+    private function netsuiteFromState(User $user, mixed $value): ?NetsuiteConnection
+    {
+        $service = app(NetsuiteService::class);
+
+        if (is_int($value) && $value > 0) {
+            $conn = $service->connectionById($user, $value);
+
+            return ($conn !== null && $conn->isActive()) ? $conn : null;
+        }
+
+        return $value === true ? $service->defaultConnectionFor($user) : null;
     }
 
     /**
@@ -1303,15 +1386,16 @@ class ChatController extends Controller
      * @param  (\Closure(string): void)|null  $onActivity  Called with a short activity label at each phase of the loop (deciding / running a tool / analyzing results) — streamed to the UI as a live "what I'm doing" indicator.
      * @return array{0: string, 1: int, 2: int, 3: string|null} [reply, inputTokens, outputTokens, stopReason]
      */
-    private function completeWithClientTools(Client $client, Conversation $conversation, string $model, array $toolkitKeys, bool $netsuite, ?array $resume = null, ?\Closure $onActivity = null): array
+    private function completeWithClientTools(Client $client, Conversation $conversation, string $model, array $toolkitKeys, ?NetsuiteConnection $netsuite = null, ?array $resume = null, ?\Closure $onActivity = null): array
     {
         $composio = app(ComposioService::class);
         $netsuiteService = app(NetsuiteService::class);
 
         $schemas = $composio->toolSchemas($toolkitKeys);
 
-        if ($netsuite) {
-            $schemas = array_merge($schemas, $netsuiteService->toolSchemas());
+        if ($netsuite !== null) {
+            // Schemas name the pinned account; execution is scoped to it too.
+            $schemas = array_merge($schemas, $netsuiteService->toolSchemas($netsuite));
         }
 
         if ($schemas === []) {
@@ -1362,7 +1446,7 @@ class ChatController extends Controller
 
             // The user approved: run the paused calls, then rejoin the loop.
             [$messages, $plain] = $this->applyToolResults(
-                $conversation, $this->normalizedCalls((array) ($resume['pending'] ?? [])), $messages, $plain, $onActivity,
+                $conversation, $this->normalizedCalls((array) ($resume['pending'] ?? [])), $messages, $plain, $onActivity, $netsuite,
             );
         } else {
             $plain = $this->textHistory($conversation);
@@ -1447,7 +1531,9 @@ class ChatController extends Controller
                 $conversation->pending_tool_state = [
                     'model' => $model,
                     'toolkits' => $toolkitKeys,
-                    'netsuite' => $netsuite,
+                    // The pinned connection id, so the post-approval resume
+                    // executes against the same account.
+                    'netsuite' => $netsuite?->id,
                     'reply' => $reply,
                     'input_tokens' => $inputTokens,
                     'output_tokens' => $outputTokens,
@@ -1474,6 +1560,7 @@ class ChatController extends Controller
                 $messages,
                 $plain,
                 $onActivity,
+                $netsuite,
             );
         }
 
@@ -1489,9 +1576,10 @@ class ChatController extends Controller
      * @param  list<mixed>  $messages
      * @param  list<mixed>  $plain
      * @param  (\Closure(string): void)|null  $onActivity  Receives a display label per call.
+     * @param  NetsuiteConnection|null  $netsuiteConn  The account this chat is pinned to — NetSuite calls run against it only.
      * @return array{0: list<mixed>, 1: list<mixed>}
      */
-    private function applyToolResults(Conversation $conversation, array $calls, array $messages, array $plain, ?\Closure $onActivity = null): array
+    private function applyToolResults(Conversation $conversation, array $calls, array $messages, array $plain, ?\Closure $onActivity = null, ?NetsuiteConnection $netsuiteConn = null): array
     {
         $composio = app(ComposioService::class);
         $netsuiteService = app(NetsuiteService::class);
@@ -1503,13 +1591,21 @@ class ChatController extends Controller
         foreach ($calls as $call) {
             // Tell the UI what's running before the (possibly slow) call.
             if ($onActivity !== null) {
-                $onActivity(self::toolActivityLabel($call['name']));
+                $label = self::toolActivityLabel($call['name']);
+
+                // Provenance: labelled accounts show up in the indicator, so
+                // it's always visible WHICH NetSuite is being queried.
+                if ($netsuiteConn !== null && filled($netsuiteConn->label) && $netsuiteService->isNetsuiteTool($call['name'])) {
+                    $label .= ' · '.$netsuiteConn->label;
+                }
+
+                $onActivity($label);
             }
 
             if ($user === null) {
                 $result = ['ok' => false, 'output' => 'No user context.'];
             } elseif ($netsuiteService->isNetsuiteTool($call['name'])) {
-                $result = $netsuiteService->execute($user, $call['name'], (array) $call['input']);
+                $result = $netsuiteService->execute($user, $call['name'], (array) $call['input'], $netsuiteConn);
             } else {
                 $result = $composio->execute($user, $call['name'], (array) $call['input']);
             }
@@ -1896,7 +1992,7 @@ class ChatController extends Controller
 
                 [$reply, $inputTokens, $outputTokens, $stopReason] = $this->completeWithClientTools(
                     $client, $conversation, $model,
-                    $toolkits, (bool) ($state['netsuite'] ?? false), $state,
+                    $toolkits, $this->netsuiteFromState($request->user(), $state['netsuite'] ?? null), $state,
                     onActivity: fn (string $label) => $this->emit('tool', ['label' => $label]),
                 );
 

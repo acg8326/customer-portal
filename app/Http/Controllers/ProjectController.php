@@ -85,6 +85,7 @@ class ProjectController extends Controller
             'uploads' => ChatController::uploadsProps(),
             'skills' => ChatController::skillOptions($request),
             'mcpEnabled' => ChatController::mcpEnabled($request),
+            'netsuiteAccounts' => ChatController::netsuiteAccountOptions($request),
             'webEnabled' => ChatController::webToolsConfigured(),
             'imageEnabled' => OpenAiMedia::imageEnabled(),
             'speechEnabled' => OpenAiMedia::speechEnabled(),

@@ -2,6 +2,7 @@
 import { router, usePage } from '@inertiajs/vue3';
 import {
     ArrowUp,
+    Boxes,
     Brain,
     Check,
     ChevronDown,
@@ -100,6 +101,14 @@ type SkillOption = {
 
 type ProviderModel = { value: string; label: string; hint: string };
 
+// A linked NetSuite account (users can hold several; chats pin one).
+type NetsuiteAccountOption = {
+    id: number;
+    label: string;
+    accountId: string;
+    isDefault: boolean;
+};
+
 type Provider = {
     key: string;
     name: string;
@@ -118,6 +127,7 @@ const props = withDefaults(
         uploads?: UploadConfig;
         skills?: SkillOption[];
         mcpEnabled?: boolean;
+        netsuiteAccounts?: NetsuiteAccountOption[];
         webEnabled?: boolean;
         imageEnabled?: boolean;
         speechEnabled?: boolean;
@@ -134,6 +144,7 @@ const props = withDefaults(
         }),
         skills: () => [],
         mcpEnabled: false,
+        netsuiteAccounts: () => [],
         webEnabled: false,
         imageEnabled: false,
         speechEnabled: false,
@@ -145,6 +156,20 @@ const props = withDefaults(
 const page = usePage();
 const userName = computed(() => page.props.auth?.user?.name ?? 'there');
 const userInitials = computed(() => getInitials(page.props.auth?.user?.name));
+
+// --- NetSuite account picker -------------------------------------------------
+// Shown only when the user has linked more than one NetSuite account. The
+// selection is pinned on the conversation server-side, so every NetSuite
+// query in this chat runs against that account only.
+const showNetsuitePicker = computed(() => props.netsuiteAccounts.length > 1);
+
+function defaultNetsuiteAccountId(): number | null {
+    const accounts = props.netsuiteAccounts;
+
+    return accounts.find((a) => a.isDefault)?.id ?? accounts[0]?.id ?? null;
+}
+
+const netsuiteAccountId = ref<number | null>(defaultNetsuiteAccountId());
 
 const greeting = computed(() => {
     const hour = new Date().getHours();
@@ -888,6 +913,7 @@ function newChat() {
     pendingApproval.value = null;
     shareUrl.value = null;
     showShareDialog.value = false;
+    netsuiteAccountId.value = defaultNetsuiteAccountId();
 }
 
 async function selectConversation(id: number) {
@@ -921,6 +947,9 @@ async function selectConversation(id: number) {
         editingIndex.value = null;
         pendingApproval.value = data.pending_approval ?? null;
         shareUrl.value = data.share_url ?? null;
+        // Restore the chat's pinned NetSuite account (falls back to default).
+        netsuiteAccountId.value =
+            data.netsuite_connection_id ?? defaultNetsuiteAccountId();
 
         if (typeof data.model === 'string') {
             model.value = data.model;
@@ -1092,6 +1121,13 @@ async function send(opts: SendOptions = {}) {
             form.append('thinking', thinkingOn.value ? '1' : '0');
             form.append('web', webOn.value ? '1' : '0');
 
+            if (showNetsuitePicker.value && netsuiteAccountId.value != null) {
+                form.append(
+                    'netsuite_connection_id',
+                    String(netsuiteAccountId.value),
+                );
+            }
+
             if (skillId.value != null) {
                 form.append('skill_id', String(skillId.value));
             }
@@ -1131,6 +1167,12 @@ async function send(opts: SendOptions = {}) {
                       web: webOn.value,
                       retry: isRetry,
                       replace_last: opts.replaceLast === true,
+                      // Only sent when the picker is visible — single-account
+                      // users keep the server-side default.
+                      ...(showNetsuitePicker.value &&
+                      netsuiteAccountId.value != null
+                          ? { netsuite_connection_id: netsuiteAccountId.value }
+                          : {}),
                   };
 
             res = await fetch('/chat/stream', {
@@ -1635,6 +1677,26 @@ onMounted(() => {
                         <Brain class="size-3.5" />
                         <span class="hidden sm:inline">Thinking</span>
                     </button>
+                    <div
+                        v-if="showNetsuitePicker"
+                        class="inline-flex h-8 items-center gap-1.5 rounded-md border border-brand-gold/50 bg-brand-gold/10 px-2.5 text-xs font-medium text-brand-gold"
+                        title="Which NetSuite account this chat queries — every NetSuite question here runs against the selected account only. The choice is saved on this chat."
+                    >
+                        <Boxes class="size-3.5" />
+                        <select
+                            v-model="netsuiteAccountId"
+                            aria-label="NetSuite account for this chat"
+                            class="h-full max-w-36 cursor-pointer truncate bg-transparent text-xs font-medium outline-none"
+                        >
+                            <option
+                                v-for="a in netsuiteAccounts"
+                                :key="a.id"
+                                :value="a.id"
+                            >
+                                {{ a.label }}
+                            </option>
+                        </select>
+                    </div>
                     <div
                         v-if="mcpEnabled"
                         class="inline-flex h-8 items-center gap-2 rounded-md border px-2.5 transition-colors"
