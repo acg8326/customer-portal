@@ -95,6 +95,12 @@ return [
     // Key/Secret + an Access Token's Token ID/Secret); we sign each request.
     'netsuite' => [
         'enabled' => (bool) env('NETSUITE_ENABLED', true),
+        // Allow linking several NetSuite accounts per user (with a per-chat
+        // account picker). Off by default: connecting a different account id
+        // replaces the existing connection, like a single-account setup. The
+        // schema + scoping stay in place either way, so enabling later is
+        // just this flag.
+        'multi_account' => (bool) env('NETSUITE_MULTI_ACCOUNT', false),
         // Request timeout (seconds) and the row cap applied to SuiteQL queries
         // so a broad query can't return thousands of rows into a chat turn.
         'timeout' => (int) env('NETSUITE_TIMEOUT', 30),

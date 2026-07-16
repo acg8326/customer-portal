@@ -618,9 +618,15 @@ boxes to enable, a paste-exactly code block, and info/warning callouts
   *Legacy:* Token-Based Auth connections made before the OAuth2-only switch
   keep working server-side; the UI no longer offers TBA.
 
-  **Multiple NetSuite accounts.** A user can connect **several NetSuite
+  **Multiple NetSuite accounts (feature-flagged, off by default).** With
+  `NETSUITE_MULTI_ACCOUNT=true` a user can connect **several NetSuite
   accounts at once** (one connection per account id; reconnecting an account
-  updates it in place). Each connection takes an optional **label** ("Client
+  updates it in place). With the flag off (default) the portal behaves like a
+  single-account setup: connecting a different account id **replaces** the
+  existing connection, the connect dialog hides the Label field, the card
+  moves to the connected table as before, and the chat never shows an
+  account picker. The schema and server-side scoping stay in place either
+  way, so enabling later is just the flag — no migration or redeploy logic. Each connection takes an optional **label** ("Client
   A", "Sandbox") and one is the **default**. The NetSuite card stays in the
   grid after connecting ("Add account"); the *Currently connected* table shows
   **one row per account** with label · account id · default marker, plus

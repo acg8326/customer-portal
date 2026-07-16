@@ -33,6 +33,15 @@ class NetsuiteService
     }
 
     /**
+     * Whether a user may hold several NetSuite accounts at once. Off = the
+     * classic single-account behavior (connecting replaces the connection).
+     */
+    public function multiAccountEnabled(): bool
+    {
+        return (bool) config('services.netsuite.multi_account', false);
+    }
+
+    /**
      * All of a user's NetSuite connections, default first.
      *
      * @return Collection<int, NetsuiteConnection>
@@ -79,13 +88,21 @@ class NetsuiteService
     /**
      * The connection row for one of the user's NetSuite accounts — reconnecting
      * the same account id updates it in place; a new account id adds another
-     * connection. The user's first connection becomes their default.
+     * connection (multi-account on) or replaces the existing one (off). The
+     * user's first connection becomes their default.
      */
     private function connectionForAccount(User $user, string $accountId, ?string $label): NetsuiteConnection
     {
         $accountId = trim($accountId);
-        $conn = $user->netsuiteConnections()->where('account_id', $accountId)->first()
-            ?? new NetsuiteConnection;
+        $conn = $user->netsuiteConnections()->where('account_id', $accountId)->first();
+
+        if ($conn === null && ! $this->multiAccountEnabled()) {
+            // Single-account mode: a different account id takes over the
+            // user's existing connection instead of adding a second one.
+            $conn = $user->netsuiteConnections()->first();
+        }
+
+        $conn ??= new NetsuiteConnection;
 
         $conn->user_id = $user->id;
         $conn->account_id = $accountId;

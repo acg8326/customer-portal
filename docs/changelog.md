@@ -3,6 +3,17 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Multi-account NetSuite behind a feature flag (off by default)
+
+- No current use case for several NetSuite accounts per user, so the whole
+  capability now sits behind `NETSUITE_MULTI_ACCOUNT` (default **off**).
+- Off = classic single-account behavior: connecting a different account id
+  replaces the existing connection, no Label field in the connect dialog, no
+  "Add account" button, no chat account picker, and the chat page sends no
+  pin (the default connection is always used).
+- Nothing was removed — schema, per-connection scoping, and provenance all
+  stay in place. Turning it on later is a one-line `.env` change.
+
 ## Multiple NetSuite accounts, pinned per chat
 
 - A user can now link **several NetSuite accounts simultaneously** — the

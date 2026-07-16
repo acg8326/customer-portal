@@ -185,7 +185,9 @@ class ChatController extends Controller
     {
         $service = app(NetsuiteService::class);
 
-        if (! $service->enabled()) {
+        // Single-account mode never shows a picker — return nothing so the
+        // chat sends no pin and the default connection is always used.
+        if (! $service->enabled() || ! $service->multiAccountEnabled()) {
             return [];
         }
 

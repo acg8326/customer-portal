@@ -229,6 +229,7 @@ test('the OAuth2 callback rejects a bad state', function () {
 // --- Multiple accounts ------------------------------------------------------
 
 test('a user can connect several NetSuite accounts; the first stays default', function () use ($validCreds) {
+    config(['services.netsuite.multi_account' => true]);
     Http::fake(['*' => Http::response(['items' => [['id' => '1']]], 200)]);
 
     $user = User::factory()->create();
@@ -336,7 +337,33 @@ test('the integrations page lists all NetSuite accounts', function () {
         );
 });
 
+test('with multi-account off, a different account id replaces the connection', function () use ($validCreds) {
+    // The default: NETSUITE_MULTI_ACCOUNT is not set.
+    Http::fake(['*' => Http::response(['items' => [['id' => '1']]], 200)]);
+
+    $user = User::factory()->create();
+
+    $this->actingAs($user)
+        ->postJson('/integrations/netsuite/connect', $validCreds)
+        ->assertOk();
+    $this->actingAs($user)
+        ->postJson('/integrations/netsuite/connect', [...$validCreds, 'account_id' => '7654321'])
+        ->assertOk();
+
+    // Still one connection — the new account took over the existing row.
+    $conns = $user->netsuiteConnections()->get();
+    expect($conns)->toHaveCount(1)
+        ->and($conns[0]->account_id)->toBe('7654321');
+
+    // And the chat page offers no account picker data.
+    $this->actingAs($user)
+        ->get('/chat')
+        ->assertInertia(fn ($page) => $page->has('netsuiteAccounts', 0));
+});
+
 test('a conversation pin survives in show() and the chat page lists accounts', function () {
+    config(['services.netsuite.multi_account' => true]);
+
     $user = User::factory()->create();
     makeNsConnection($user, '1111111', 'Client A');
     $b = makeNsConnection($user, '2222222', 'Client B');

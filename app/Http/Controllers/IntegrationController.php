@@ -37,7 +37,7 @@ class IntegrationController extends Controller
      * the guide/dialog always show exactly what the server will send in the
      * OAuth flow (APP_URL-derived, overridable via NETSUITE_OAUTH_REDIRECT).
      *
-     * @return array{enabled: bool, connected: bool, redirectUri: string, accounts: array<int, array{id: int, accountId: string, label: string, isDefault: bool, authType: string, status: string, lastError: string|null}>}
+     * @return array{enabled: bool, multiAccount: bool, connected: bool, redirectUri: string, accounts: array<int, array{id: int, accountId: string, label: string, isDefault: bool, authType: string, status: string, lastError: string|null}>}
      */
     private function netsuite(Request $request): array
     {
@@ -58,6 +58,7 @@ class IntegrationController extends Controller
 
         return [
             'enabled' => $service->enabled(),
+            'multiAccount' => $service->multiAccountEnabled(),
             'redirectUri' => $service->redirectUri(),
             // A 'pending' OAuth2 row (awaiting consent) isn't a live connection.
             'connected' => collect($accounts)->contains(fn (array $a): bool => $a['status'] !== 'pending'),

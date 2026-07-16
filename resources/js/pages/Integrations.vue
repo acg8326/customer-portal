@@ -146,6 +146,8 @@ type NetsuiteAccount = {
 
 type Netsuite = {
     enabled: boolean;
+    // Feature flag (NETSUITE_MULTI_ACCOUNT): several accounts per user.
+    multiAccount: boolean;
     connected: boolean;
     accounts: NetsuiteAccount[];
     // The exact redirect URI the server sends in the OAuth flow — what the
@@ -656,9 +658,10 @@ const categories: Category[] = [
 // card grid, so they aren't shown twice.
 function isConnected(item: Integration): boolean {
     if (item.native === 'netsuite') {
-        // The NetSuite card stays in the grid even when connected — it's the
-        // entry point for adding ANOTHER account (multi-account support).
-        return false;
+        // Multi-account on: the card stays in the grid even when connected —
+        // it's the entry point for adding ANOTHER account. Off: classic
+        // behavior, the card moves to the connected table.
+        return props.netsuite?.multiAccount ? false : netsuiteConnected.value;
     }
 
     return Boolean(
@@ -726,7 +729,11 @@ const connectedRows = computed<ConnectedRow[]>(() => {
                         detail:
                             `${account.label} · Account ${account.accountId}` +
                             ` · ${account.authType === 'oauth2' ? 'OAuth 2.0' : 'TBA'}` +
-                            (account.isDefault ? ' · default' : '') +
+                            // "default" only means something with 2+ accounts.
+                            (account.isDefault &&
+                            (props.netsuite?.accounts.length ?? 0) > 1
+                                ? ' · default'
+                                : '') +
                             (account.status === 'error'
                                 ? ' · needs attention'
                                 : ''),
@@ -1577,8 +1584,8 @@ function hostOf(url: string): string {
                             </template>
                         </template>
 
-                        <!-- Native NetSuite — the card stays visible so more
-                             accounts can be added after the first -->
+                        <!-- Native NetSuite — with multi-account on, the card
+                             stays visible so more accounts can be added -->
                         <template v-else-if="connectMode(item) === 'netsuite'">
                             <Button
                                 variant="default"
@@ -1587,7 +1594,7 @@ function hostOf(url: string): string {
                             >
                                 <Plug class="size-4" />
                                 {{
-                                    netsuiteConnected
+                                    netsuite?.multiAccount && netsuiteConnected
                                         ? 'Add account'
                                         : 'Connect'
                                 }}
@@ -1751,13 +1758,20 @@ function hostOf(url: string): string {
                     Connect now
                 </Button>
                 <Button
-                    v-else-if="connectMode(guideFor) === 'netsuite'"
+                    v-else-if="
+                        connectMode(guideFor) === 'netsuite' &&
+                        (netsuite?.multiAccount || !netsuiteConnected)
+                    "
                     @click="
                         openNetsuiteFor(null);
                         guideFor = null;
                     "
                 >
-                    {{ netsuiteConnected ? 'Add account' : 'Connect now' }}
+                    {{
+                        netsuite?.multiAccount && netsuiteConnected
+                            ? 'Add account'
+                            : 'Connect now'
+                    }}
                 </Button>
                 <Button v-else variant="outline" @click="guideFor = null">
                     Close
@@ -1926,7 +1940,7 @@ function hostOf(url: string): string {
                     </p>
                 </div>
 
-                <div class="space-y-2">
+                <div v-if="netsuite?.multiAccount" class="space-y-2">
                     <Label for="netsuite-label">Label (optional)</Label>
                     <Input
                         id="netsuite-label"
