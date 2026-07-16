@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Conversation;
 use App\Models\FeedbackEntry;
 use App\Models\Message;
 use App\Models\User;
 use App\Services\AppSettings;
+use App\Services\ModelCatalog;
 use App\Services\TokenBudget;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -28,7 +30,102 @@ class DashboardController extends Controller
             'teamUsage' => $request->user()->isSuperAdmin()
                 ? $this->teamUsage($budget, $settings)
                 : null,
+            'costEfficiency' => $request->user()->isSuperAdmin()
+                ? $this->costEfficiency()
+                : null,
         ]);
+    }
+
+    /**
+     * Estimated API spend by model plus prompt-cache efficiency, aggregated
+     * over every stored conversation (super admin card). Prices come from
+     * config('services.llm_pricing') — estimates, not invoices.
+     *
+     * @return array{models: array<int, array{model: string, label: string, provider: string, input_tokens: int, output_tokens: int, cost: float}>, total_usd: float, cache: array{hit_rate: float|null, read_tokens: int, write_tokens: int, uncached_tokens: int, saved_usd: float}}
+     */
+    private function costEfficiency(): array
+    {
+        $rows = Conversation::query()
+            ->selectRaw('model')
+            ->selectRaw('SUM(prompt_tokens) AS input_sum')
+            ->selectRaw('SUM(completion_tokens) AS output_sum')
+            ->selectRaw('SUM(cache_read_tokens) AS cache_read_sum')
+            ->selectRaw('SUM(cache_write_tokens) AS cache_write_sum')
+            ->groupBy('model')
+            ->get();
+
+        $prices = Config::array('services.llm_pricing.models');
+        [$defIn, $defOut] = array_pad(Config::array('services.llm_pricing.default'), 2, 3.0);
+        $readX = (float) config('services.llm_pricing.cache_read_multiplier', 0.1);
+        $writeX = (float) config('services.llm_pricing.cache_write_multiplier', 1.25);
+
+        // Model id → display label + provider name, from the picker catalog.
+        $catalog = [];
+
+        foreach (app(ModelCatalog::class)->providers() as $provider) {
+            foreach ($provider['models'] as $m) {
+                $catalog[$m['value']] = ['label' => $m['label'], 'provider' => $provider['name']];
+            }
+        }
+
+        $models = [];
+        $total = 0.0;
+        $cacheRead = 0;
+        $cacheWrite = 0;
+        $cacheableInput = 0;
+        $saved = 0.0;
+
+        foreach ($rows as $row) {
+            $model = (string) $row->getAttribute('model');
+            $input = (int) $row->getAttribute('input_sum');
+            $output = (int) $row->getAttribute('output_sum');
+            $read = (int) $row->getAttribute('cache_read_sum');
+            $write = (int) $row->getAttribute('cache_write_sum');
+
+            [$inPrice, $outPrice] = array_pad((array) ($prices[$model] ?? [$defIn, $defOut]), 2, (float) $defOut);
+
+            $cost = ($input * $inPrice
+                + $read * $inPrice * $readX
+                + $write * $inPrice * $writeX
+                + $output * $outPrice) / 1_000_000;
+
+            $total += $cost;
+
+            // Cache efficiency is a Claude-only concept here (other providers
+            // don't report cache usage), so only Claude rows feed the rate.
+            if (str_starts_with($model, 'claude')) {
+                $cacheRead += $read;
+                $cacheWrite += $write;
+                $cacheableInput += $input;
+                // What the cached-read tokens would have cost at full price.
+                $saved += $read * $inPrice * (1 - $readX) / 1_000_000;
+            }
+
+            $models[] = [
+                'model' => $model,
+                'label' => (string) ($catalog[$model]['label'] ?? $model),
+                'provider' => (string) ($catalog[$model]['provider'] ?? 'Other'),
+                'input_tokens' => $input + $read + $write,
+                'output_tokens' => $output,
+                'cost' => round($cost, 2),
+            ];
+        }
+
+        usort($models, fn (array $a, array $b): int => $b['cost'] <=> $a['cost']);
+
+        $denominator = $cacheRead + $cacheWrite + $cacheableInput;
+
+        return [
+            'models' => $models,
+            'total_usd' => round($total, 2),
+            'cache' => [
+                'hit_rate' => $denominator > 0 ? round($cacheRead / $denominator, 4) : null,
+                'read_tokens' => $cacheRead,
+                'write_tokens' => $cacheWrite,
+                'uncached_tokens' => $cacheableInput,
+                'saved_usd' => round($saved, 2),
+            ],
+        ];
     }
 
     /**

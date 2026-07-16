@@ -3,6 +3,52 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Dashboard redesign — greeting, KPI strip, tabbed insights
+
+- The dashboard opens with a time-of-day greeting ("Good morning, Alex" +
+  today's date) for everyone.
+- **Super admin declutter:** the five stacked full-width cards became a
+  4-tile **KPI strip** (your tokens with mini progress bar, team total,
+  est. API spend + $ saved by caching, 👍/👎 feedback score) and one
+  **Organization insights** card with segmented tabs — **Team usage /
+  Cost & efficiency / Feedback** — so only one detail view is open at a
+  time. The usage-settings gear lives in the card header on the Team
+  usage tab.
+- Members and admins keep the classic token-usage card + feedback form —
+  their view was already clean.
+- Frontend-only change (`Dashboard.vue`); no controller or prop changes.
+
+## Cost & efficiency dashboard card (super admin)
+
+- New card between Team usage and Team feedback, **super admin only**:
+  estimated total API spend in USD, prompt-cache hit rate, $ saved by
+  caching, and a per-model cost table (provider, input/output tokens,
+  est. cost — sorted by cost).
+- Powered by the conversations table's token + cache columns and a new
+  `services.llm_pricing` config: per-model `[input, output]` USD per 1M
+  tokens (env override `LLM_PRICES="model:in:out,…"`), default prices for
+  unlisted models, and cache read/write multipliers. All tunable via `.env`.
+- Tests: math verified end-to-end (hit rate, savings, price override), and
+  admins/members get `null` — the card never renders for them.
+
+## Prompt caching actually caching (fix + tracking)
+
+- **Found via the Anthropic console's "low cache hit rate" notice.** The only
+  breakpoint was on the system block, and `claude-opus-4-8` silently ignores
+  cache markers on prefixes under **4,096 tokens** — our assembled system
+  prompt is only ~1,800 tokens, so plain chats never cached anything, and the
+  replayed conversation history was re-billed at full input price every turn.
+- **Fix: a second, top-level auto-cache breakpoint on the messages** on every
+  Claude call path (plain send/stream, MCP/web beta stream, the
+  Composio/NetSuite tool loop, and `completeWithMcp`). The cached prefix is
+  now tools + system + history, which clears the minimum quickly; each turn
+  and each tool-loop round re-reads it at ~0.1× price (writes cost 1.25×, so
+  any 2+ turn conversation within the 5-minute TTL profits).
+- **Tracking:** per-turn `cache_read_input_tokens` / `cache_creation_input_tokens`
+  from every API round are accumulated and persisted on the conversation
+  (`cache_read_tokens` / `cache_write_tokens` columns) so the real hit rate is
+  measurable, not guessed.
+
 ## Live tool activity in chat
 
 - While the assistant works, the typing indicator now says **what** it's

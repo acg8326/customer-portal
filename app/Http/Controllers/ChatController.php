@@ -23,6 +23,7 @@ use Anthropic\Beta\Messages\BetaTool\InputSchema as BetaInputSchema;
 use Anthropic\Beta\Messages\BetaToolResultBlockParam;
 use Anthropic\Beta\Messages\BetaToolUseBlock;
 use Anthropic\Beta\Messages\BetaToolUseBlockParam;
+use Anthropic\Beta\Messages\BetaUsage;
 use Anthropic\Beta\Messages\BetaWebFetchTool20250910;
 use Anthropic\Beta\Messages\BetaWebSearchTool20250305;
 use Anthropic\Client;
@@ -39,6 +40,7 @@ use Anthropic\Messages\TextBlockParam;
 use Anthropic\Messages\TextDelta;
 use Anthropic\Messages\ThinkingConfigAdaptive;
 use Anthropic\Messages\ThinkingDelta;
+use Anthropic\Messages\Usage;
 use App\Jobs\AutoCompactConversation;
 use App\Jobs\DispatchN8nEvent;
 use App\Jobs\UpdateUserMemory;
@@ -99,6 +101,15 @@ class ChatController extends Controller
      * @var list<array{role: 'assistant'|'user', content: string}>
      */
     private array $privateHistory = [];
+
+    /**
+     * Prompt-cache usage accumulated across every API round of this turn
+     * (a tool loop makes several). Persisted per conversation in
+     * finalizeTurn so the dashboard can show the real cache hit rate.
+     */
+    private int $cacheReadTokens = 0;
+
+    private int $cacheWriteTokens = 0;
 
     /**
      * Render the chat page with the user's saved conversations and model list.
@@ -338,7 +349,13 @@ class ChatController extends Controller
                     messages: $this->buildHistory($conversation),
                     model: $selectedModel,
                     system: $this->systemBlocks($conversation),
+                    // Second breakpoint (system block is the first): auto-caches
+                    // the conversation history, so the next turn re-reads it at
+                    // ~0.1x instead of full input price.
+                    cacheControl: CacheControlEphemeral::with(),
                 );
+
+                $this->recordCacheUsage($message->usage);
 
                 $reply = '';
 
@@ -585,6 +602,9 @@ class ChatController extends Controller
                                 thinking: $thinkingOn ? BetaThinkingConfigAdaptive::with(display: 'summarized') : null,
                                 tools: $webTools !== [] ? $webTools : null,
                                 betas: $this->betaFlags($mcp !== [], $webTools !== []),
+                                // Auto-cache the history (second breakpoint
+                                // after the system block).
+                                cacheControl: BetaCacheControlEphemeral::with(),
                             );
                         } catch (Throwable $e) {
                             report($e);
@@ -605,6 +625,9 @@ class ChatController extends Controller
                             model: $selectedModel,
                             system: $this->systemBlocks($conversation),
                             thinking: $thinkingOn ? ThinkingConfigAdaptive::with(display: 'summarized') : null,
+                            // Auto-cache the history (second breakpoint after
+                            // the system block).
+                            cacheControl: CacheControlEphemeral::with(),
                         );
                     }
 
@@ -651,8 +674,10 @@ class ChatController extends Controller
                             ]);
                         } elseif ($event instanceof RawMessageStartEvent) {
                             $inputTokens = $event->message->usage->inputTokens;
+                            $this->recordCacheUsage($event->message->usage);
                         } elseif ($event instanceof BetaRawMessageStartEvent) {
                             $inputTokens = $event->message->usage->inputTokens;
+                            $this->recordCacheUsage($event->message->usage);
                         } elseif ($event instanceof RawMessageDeltaEvent) {
                             $outputTokens = $event->usage->outputTokens;
                             $stopReason = $event->delta->stopReason ?? $stopReason;
@@ -775,6 +800,17 @@ class ChatController extends Controller
         }
 
         return 'Using '.$name;
+    }
+
+    /**
+     * Accumulate one API round's prompt-cache usage (read = served from cache
+     * at ~0.1x input price, write = stored at ~1.25x) for finalizeTurn to
+     * persist on the conversation.
+     */
+    private function recordCacheUsage(Usage|BetaUsage $usage): void
+    {
+        $this->cacheReadTokens += (int) $usage->cacheReadInputTokens;
+        $this->cacheWriteTokens += (int) $usage->cacheCreationInputTokens;
     }
 
     /**
@@ -1354,10 +1390,16 @@ class ChatController extends Controller
                 system: $system,
                 tools: $tools,
                 betas: $this->betaFlags(false, $webTools !== []),
+                // Auto-cache the newest message (second breakpoint after the
+                // system block, whose marker already covers the tool schemas).
+                // Each round then re-reads the previous round's whole prompt —
+                // history AND tool results — at ~0.1x instead of full price.
+                cacheControl: BetaCacheControlEphemeral::with(),
             );
 
             $inputTokens += $message->usage->inputTokens;
             $outputTokens += $message->usage->outputTokens;
+            $this->recordCacheUsage($message->usage);
 
             $assistantContent = [];
             $assistantPlain = [];
@@ -1641,7 +1683,11 @@ class ChatController extends Controller
             mcpServers: $mcp !== [] ? $mcp : null,
             tools: $webTools !== [] ? $webTools : null,
             betas: $this->betaFlags($mcp !== [], $webTools !== []),
+            // Auto-cache the history (second breakpoint after the system block).
+            cacheControl: BetaCacheControlEphemeral::with(),
         );
+
+        $this->recordCacheUsage($message->usage);
 
         $reply = '';
         $citations = [];
@@ -1702,6 +1748,11 @@ class ChatController extends Controller
         $conversation->model = $selectedModel;
         $conversation->prompt_tokens += $inputTokens;
         $conversation->completion_tokens += $outputTokens;
+        // Prompt-cache accounting for this turn (all API rounds combined) —
+        // input_tokens above is only the UNCACHED remainder; these two are
+        // the rest of the prompt, at ~0.1x (read) / ~1.25x (write) pricing.
+        $conversation->cache_read_tokens += $this->cacheReadTokens;
+        $conversation->cache_write_tokens += $this->cacheWriteTokens;
         $conversation->save();
 
         // Charge this turn's tokens against the user's rolling budget.

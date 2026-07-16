@@ -77,7 +77,7 @@ A bespoke, modern "AI product" login:
 
 | Page                  | Route                  | Status                                                   |
 | --------------------- | ---------------------- | -------------------------------------------------------- |
-| Dashboard             | `/dashboard`           | ✅ Usage meter, feedback & suggestions card, team usage + insights (super admin) |
+| Dashboard             | `/dashboard`           | ✅ Greeting + usage meter, feedback & suggestions card; super admins get a KPI strip + tabbed insights (team usage / cost / feedback) |
 | Chat                  | `/chat`                | ✅ Working — AI chat powered by the Claude API (see §7)  |
 | Integrations          | `/integrations`        | ✅ **MCP servers + n8n live**; other cards placeholder    |
 | Settings → General    | `/settings/general`    | ✅ Theme, language, message font size (clean row layout) |
@@ -258,6 +258,14 @@ the **Claude API**.
   "resets on <date>" message until the window rolls over). Turn tracking off
   entirely with `USAGE_LIMIT_ENABLED=false`.
   ([`TokenBudget`](../app/Services/TokenBudget.php).)
+- **Dashboard layout:** the page opens with a time-of-day greeting
+  ("Good morning, Alex" + date). Members see their token-usage card and the
+  feedback form. Super admins instead get a **KPI strip** — four glanceable
+  tiles (your tokens with mini progress bar, team total, est. API spend with
+  $-saved-by-caching, 👍/👎 feedback score) — and a single **Organization
+  insights** card with segmented tabs (**Team usage / Cost & efficiency /
+  Feedback**) so only one detail view is open at a time, instead of five
+  stacked full-width cards.
 - **Team usage screen + in-app limit settings (super admin):** the Dashboard's
   **Team usage** card lists every member's tokens in their current window
   (heaviest first, with per-user progress bars against the limit) plus the
@@ -267,14 +275,33 @@ the **Claude API**.
   ([`AppSettings`](../app/Services/AppSettings.php)) and **override the
   `.env` defaults** immediately — no redeploy; clearing falls back to `.env`.
   (`PATCH /dashboard/usage-settings`, super admin only.)
-- **Prompt caching + history trimming:** the system prompt is cached
-  (`cache_control`) on **every** path — plain, MCP/web (beta), and the
-  connected-tools loop. Because the API builds the cache prefix tools → system →
-  messages, the system-block breakpoint also caches the **tool schemas** (the
-  biggest static cost with up to `COMPOSIO_MAX_TOOLS` tools), and hits again on
-  each round of the tool loop. Only the most recent `ANTHROPIC_HISTORY_LIMIT`
-  messages (default 40) are replayed each turn, keeping long conversations'
-  context and cost bounded.
+- **Cost & efficiency card (super admin):** estimated API spend in dollars,
+  aggregated over all stored conversations. Three tiles — **prompt-cache hit
+  rate** (Claude input tokens served from cache), **$ saved by caching**
+  (reads bill at ~10% of input price), and uncached input — plus a per-model
+  table (model, provider, input/output tokens, est. cost, sorted by cost).
+  Prices are config, not code: per-model `[input, output]` USD/MTok in
+  `services.llm_pricing` with a single-line override
+  `LLM_PRICES="model:input:output,…"`, a `LLM_PRICE_DEFAULT_INPUT/_OUTPUT`
+  fallback for unlisted models, and cache multipliers
+  (`LLM_CACHE_READ_MULTIPLIER` 0.1 / `LLM_CACHE_WRITE_MULTIPLIER` 1.25).
+  Estimates only — deleted chats drop out, and cache columns count from
+  deployment day.
+- **Prompt caching + history trimming:** two `cache_control` breakpoints on
+  **every** Claude path — plain, MCP/web (beta), and the connected-tools loop.
+  The first sits on the system block; because the API builds the cache prefix
+  tools → system → messages, it also caches the **tool schemas** (the biggest
+  static cost with up to `COMPOSIO_MAX_TOOLS` tools). The second is a
+  top-level auto-cache marker on the **conversation history** — crucial for
+  two reasons: (a) Claude Opus models only cache prefixes ≥ 4,096 tokens, and
+  the system prompt alone (~1,800 tokens) is silently below that, so without
+  the history in the prefix most chats never cached at all; (b) each turn (and
+  each round inside the tool loop) now re-reads the whole prior prompt —
+  history *and* tool results — at ~0.1× input price instead of full price.
+  Per-turn cache usage is persisted on the conversation
+  (`cache_read_tokens` / `cache_write_tokens`) for hit-rate monitoring. Only
+  the most recent `ANTHROPIC_HISTORY_LIMIT` messages (default 40) are replayed
+  each turn, keeping long conversations' context and cost bounded.
 - **Per-toolkit routing (cost):** when several tool sources are connected
   (Slack + NetSuite + …), only the toolkit(s) the conversation **mentions** ship
   their schemas — keyword match over the replayed user turns (the toolkit key

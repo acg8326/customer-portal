@@ -594,4 +594,67 @@ return [
         ],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | LLM pricing (dashboard estimates)
+    |--------------------------------------------------------------------------
+    | USD per 1 MILLION tokens as [input, output], used by the super admin
+    | "Cost & efficiency" dashboard card to turn token counts into money.
+    | Estimates only — check each provider's current price list. Models not
+    | listed fall back to 'default'. Single-line override (model:input:output):
+    | LLM_PRICES="claude-opus-4-8:5:25,gpt-5.5:1.25:10"
+    */
+    'llm_pricing' => [
+        'models' => (function (): array {
+            $defaults = [
+                'claude-opus-4-8' => [5.0, 25.0],
+                'claude-opus-4-7' => [5.0, 25.0],
+                'claude-opus-4-1' => [15.0, 75.0],
+                'claude-sonnet-5' => [3.0, 15.0],
+                'claude-sonnet-4-6' => [3.0, 15.0],
+                'claude-sonnet-4-5' => [3.0, 15.0],
+                'claude-haiku-4-5' => [1.0, 5.0],
+                'claude-fable-5' => [10.0, 50.0],
+                'gpt-5.5' => [1.25, 10.0],
+                'gpt-5.5-pro' => [15.0, 120.0],
+                'gpt-5.4' => [1.25, 10.0],
+                'gemini-2.5-pro' => [1.25, 10.0],
+                'gemini-2.5-flash' => [0.30, 2.50],
+                'deepseek-chat' => [0.27, 1.10],
+                'deepseek-reasoner' => [0.55, 2.19],
+                'llama-3.3-70b-versatile' => [0.59, 0.79],
+                'mistral-large-latest' => [2.0, 6.0],
+                'mistral-small-latest' => [0.10, 0.30],
+                'grok-4' => [3.0, 15.0],
+            ];
+
+            $csv = trim((string) env('LLM_PRICES', ''));
+
+            if ($csv === '') {
+                return $defaults;
+            }
+
+            $models = [];
+
+            foreach (explode(',', $csv) as $entry) {
+                $parts = array_map('trim', explode(':', $entry));
+
+                if (count($parts) === 3 && $parts[0] !== '') {
+                    $models[$parts[0]] = [(float) $parts[1], (float) $parts[2]];
+                }
+            }
+
+            return $models !== [] ? $models : $defaults;
+        })(),
+        // Fallback for models with no price row.
+        'default' => [
+            (float) env('LLM_PRICE_DEFAULT_INPUT', 3.0),
+            (float) env('LLM_PRICE_DEFAULT_OUTPUT', 15.0),
+        ],
+        // Prompt-cache pricing relative to the input price (Anthropic 5-min
+        // TTL): reads bill at ~0.1x, writes at ~1.25x.
+        'cache_read_multiplier' => (float) env('LLM_CACHE_READ_MULTIPLIER', 0.1),
+        'cache_write_multiplier' => (float) env('LLM_CACHE_WRITE_MULTIPLIER', 1.25),
+    ],
+
 ];

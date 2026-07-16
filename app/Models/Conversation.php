@@ -17,6 +17,8 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * @property string $model
  * @property int $prompt_tokens
  * @property int $completion_tokens
+ * @property int $cache_read_tokens
+ * @property int $cache_write_tokens
  * @property string|null $summary
  * @property int|null $summary_through_id
  * @property bool $auto_approve

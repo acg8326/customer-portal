@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { Head, router } from '@inertiajs/vue3';
+import { Head, router, usePage } from '@inertiajs/vue3';
 import {
+    CircleDollarSign,
     KeyRound,
     Lightbulb,
     MessageSquareHeart,
@@ -12,6 +13,7 @@ import {
     Zap,
 } from '@lucide/vue';
 import { computed, ref } from 'vue';
+import type { Component } from 'vue';
 import { dashboard } from '@/routes';
 
 defineOptions({
@@ -69,6 +71,25 @@ const props = defineProps<{
         default_model: string | null;
         env_default_model: string;
     } | null;
+    // Super admin only — null hides the card entirely.
+    costEfficiency: {
+        models: {
+            model: string;
+            label: string;
+            provider: string;
+            input_tokens: number;
+            output_tokens: number;
+            cost: number;
+        }[];
+        total_usd: number;
+        cache: {
+            hit_rate: number | null;
+            read_tokens: number;
+            write_tokens: number;
+            uncached_tokens: number;
+            saved_usd: number;
+        };
+    } | null;
 }>();
 
 const nf = new Intl.NumberFormat();
@@ -79,6 +100,44 @@ function compact(n: number): string {
         maximumFractionDigits: 1,
     }).format(n);
 }
+
+function usd(n: number): string {
+    return new Intl.NumberFormat(undefined, {
+        style: 'currency',
+        currency: 'USD',
+        maximumFractionDigits: 2,
+    }).format(n);
+}
+
+// --- Greeting -------------------------------------------------------------------
+
+const page = usePage();
+
+const firstName = computed(() => {
+    const name = (page.props.auth?.user?.name ?? '').trim();
+
+    return name.split(' ')[0] || 'there';
+});
+
+const greeting = computed(() => {
+    const h = new Date().getHours();
+
+    if (h < 12) {
+        return 'Good morning';
+    }
+
+    if (h < 18) {
+        return 'Good afternoon';
+    }
+
+    return 'Good evening';
+});
+
+const todayLabel = new Date().toLocaleDateString(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+});
 
 const resetsLabel = computed(() => {
     if (!props.usage.resets_at) {
@@ -105,6 +164,40 @@ const barColor = computed(() => {
 
     return 'bg-brand-gold';
 });
+
+// --- Insights tabs (super admin) --------------------------------------------------
+
+type InsightTab = 'team' | 'cost' | 'feedback';
+
+const insightTabs = computed(() => {
+    const tabs: { value: InsightTab; label: string; Icon: Component }[] = [];
+
+    if (props.teamUsage) {
+        tabs.push({ value: 'team', label: 'Team usage', Icon: UsersRound });
+    }
+
+    if (props.costEfficiency) {
+        tabs.push({
+            value: 'cost',
+            label: 'Cost & efficiency',
+            Icon: CircleDollarSign,
+        });
+    }
+
+    if (props.feedback) {
+        tabs.push({
+            value: 'feedback',
+            label: 'Feedback',
+            Icon: MessageSquareHeart,
+        });
+    }
+
+    return tabs;
+});
+
+const insightTab = ref<InsightTab>(
+    props.teamUsage ? 'team' : props.costEfficiency ? 'cost' : 'feedback',
+);
 
 // --- Team usage (super admin) ---------------------------------------------------
 
@@ -168,8 +261,146 @@ function sendFeedback() {
     <Head title="Dashboard" />
 
     <div class="flex w-full flex-col gap-4 p-4">
-        <!-- Token usage -->
-        <section class="rounded-xl border bg-card p-5">
+        <!-- Greeting -->
+        <div class="px-1 pt-1">
+            <h1 class="text-xl font-semibold tracking-tight">
+                {{ greeting }}, {{ firstName }}
+            </h1>
+            <p class="text-sm text-muted-foreground">{{ todayLabel }}</p>
+        </div>
+
+        <!-- KPI strip (super admin) — personal usage lives here as a tile -->
+        <template v-if="teamUsage">
+            <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <!-- Your tokens -->
+                <div class="rounded-xl border bg-card p-4">
+                    <div class="flex items-center justify-between gap-2">
+                        <p class="text-xs font-medium text-muted-foreground">
+                            Your tokens
+                        </p>
+                        <Zap class="size-4 text-brand-gold" />
+                    </div>
+                    <p class="mt-2 text-2xl font-semibold tabular-nums">
+                        {{ compact(usage.used) }}
+                        <span
+                            v-if="usage.enabled"
+                            class="text-sm font-normal text-muted-foreground"
+                        >
+                            / {{ compact(usage.limit) }}
+                        </span>
+                    </p>
+                    <template v-if="usage.enabled">
+                        <div
+                            class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted"
+                        >
+                            <div
+                                class="h-full rounded-full transition-all"
+                                :class="barColor"
+                                :style="{
+                                    width: `${Math.min(100, usage.percent)}%`,
+                                }"
+                            />
+                        </div>
+                        <p class="mt-1.5 text-xs text-muted-foreground">
+                            {{ usage.percent }}% used
+                            <template v-if="resetsLabel">
+                                · resets {{ resetsLabel }}
+                            </template>
+                        </p>
+                    </template>
+                    <p v-else class="mt-1.5 text-xs text-muted-foreground">
+                        no limit configured
+                    </p>
+                </div>
+
+                <!-- Team total -->
+                <div class="rounded-xl border bg-card p-4">
+                    <div class="flex items-center justify-between gap-2">
+                        <p class="text-xs font-medium text-muted-foreground">
+                            Team tokens
+                        </p>
+                        <UsersRound class="size-4 text-muted-foreground" />
+                    </div>
+                    <p class="mt-2 text-2xl font-semibold tabular-nums">
+                        {{ compact(teamUsage.total) }}
+                    </p>
+                    <p class="mt-1.5 text-xs text-muted-foreground">
+                        {{ teamUsage.users.length }} members ·
+                        {{
+                            teamUsage.limit > 0
+                                ? `limit ${compact(teamUsage.limit)} each`
+                                : 'no limit set'
+                        }}
+                    </p>
+                </div>
+
+                <!-- Est. spend -->
+                <div
+                    v-if="costEfficiency"
+                    class="rounded-xl border bg-card p-4"
+                >
+                    <div class="flex items-center justify-between gap-2">
+                        <p class="text-xs font-medium text-muted-foreground">
+                            Est. API spend
+                        </p>
+                        <CircleDollarSign
+                            class="size-4 text-muted-foreground"
+                        />
+                    </div>
+                    <p class="mt-2 text-2xl font-semibold tabular-nums">
+                        {{ usd(costEfficiency.total_usd) }}
+                    </p>
+                    <p
+                        class="mt-1.5 text-xs text-emerald-600 dark:text-emerald-400"
+                    >
+                        {{ usd(costEfficiency.cache.saved_usd) }} saved by
+                        caching
+                    </p>
+                </div>
+
+                <!-- Feedback score -->
+                <div v-if="feedback" class="rounded-xl border bg-card p-4">
+                    <div class="flex items-center justify-between gap-2">
+                        <p class="text-xs font-medium text-muted-foreground">
+                            Answer feedback
+                        </p>
+                        <MessageSquareHeart
+                            class="size-4 text-muted-foreground"
+                        />
+                    </div>
+                    <p
+                        class="mt-2 flex items-center gap-3 text-2xl font-semibold tabular-nums"
+                    >
+                        <span
+                            class="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400"
+                        >
+                            <ThumbsUp class="size-4" />
+                            {{ nf.format(feedback.up) }}
+                        </span>
+                        <span
+                            class="inline-flex items-center gap-1.5 text-destructive"
+                        >
+                            <ThumbsDown class="size-4" />
+                            {{ nf.format(feedback.down) }}
+                        </span>
+                    </p>
+                    <p class="mt-1.5 text-xs text-muted-foreground">
+                        thumbs on AiMe's replies
+                    </p>
+                </div>
+            </div>
+
+            <p
+                v-if="usage.enabled && usage.percent >= 90"
+                class="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            >
+                You're almost out of tokens for this period. New messages will
+                be blocked until your allowance resets.
+            </p>
+        </template>
+
+        <!-- Token usage (members & admins — the classic full card) -->
+        <section v-else class="rounded-xl border bg-card p-5">
             <div class="mb-4 flex items-center justify-between gap-4">
                 <div class="flex items-center gap-3">
                     <div
@@ -235,308 +466,404 @@ function sendFeedback() {
             </template>
         </section>
 
-        <!-- Team usage + limit settings (super admin only) -->
-        <section v-if="teamUsage" class="rounded-xl border bg-card p-5">
-            <div class="mb-4 flex items-center justify-between gap-4">
-                <div class="flex items-center gap-3">
-                    <div
-                        class="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground"
-                    >
-                        <UsersRound class="size-5" />
-                    </div>
-                    <div>
-                        <h2 class="font-semibold tracking-tight">Team usage</h2>
-                        <p class="text-xs text-muted-foreground">
-                            Tokens per member in their current
-                            {{ teamUsage.period_days }}-day window ·
-                            {{
-                                teamUsage.limit > 0
-                                    ? `limit ${compact(teamUsage.limit)} each`
-                                    : 'no limit set'
-                            }}
-                        </p>
-                    </div>
-                </div>
-                <div class="flex items-center gap-3">
-                    <div class="text-right">
-                        <p class="text-2xl font-semibold tabular-nums">
-                            {{ compact(teamUsage.total) }}
-                        </p>
-                        <p class="text-xs text-muted-foreground">
-                            total, all members
-                        </p>
-                    </div>
+        <!-- Organization insights (super admin only) — one card, tabbed -->
+        <section v-if="insightTabs.length" class="rounded-xl border bg-card">
+            <div
+                class="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 sm:px-5"
+            >
+                <div class="inline-flex gap-1 rounded-lg bg-muted p-1">
                     <button
+                        v-for="tab in insightTabs"
+                        :key="tab.value"
                         type="button"
-                        class="rounded-md border p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                        :title="
-                            editingUsage
-                                ? 'Close settings'
-                                : 'Set the per-user token limit and period'
+                        class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors"
+                        :class="
+                            insightTab === tab.value
+                                ? 'bg-card font-medium shadow-xs'
+                                : 'text-muted-foreground hover:text-foreground'
                         "
-                        @click="editingUsage = !editingUsage"
+                        @click="insightTab = tab.value"
                     >
-                        <Settings2 class="size-4" />
+                        <component :is="tab.Icon" class="size-4" />
+                        {{ tab.label }}
                     </button>
                 </div>
+
+                <!-- Contextual header meta per tab -->
+                <button
+                    v-if="insightTab === 'team'"
+                    type="button"
+                    class="rounded-md border p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    :title="
+                        editingUsage
+                            ? 'Close settings'
+                            : 'Set the per-user token limit and period'
+                    "
+                    @click="editingUsage = !editingUsage"
+                >
+                    <Settings2 class="size-4" />
+                </button>
             </div>
 
-            <form
-                v-if="editingUsage"
-                class="mb-4 flex flex-wrap items-end gap-3 rounded-lg border bg-muted/30 p-3"
-                @submit.prevent="saveUsageSettings"
-            >
-                <div>
-                    <label
-                        class="mb-1 block text-xs font-medium text-muted-foreground"
-                        for="usage-limit"
-                    >
-                        Token limit per user (0 = unlimited)
-                    </label>
-                    <input
-                        id="usage-limit"
-                        v-model="limitDraft"
-                        type="number"
-                        min="0"
-                        step="50000"
-                        class="h-9 w-44 rounded-md border border-input bg-background px-3 text-sm tabular-nums outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
-                    />
-                </div>
-                <div>
-                    <label
-                        class="mb-1 block text-xs font-medium text-muted-foreground"
-                        for="usage-period"
-                    >
-                        Period (days)
-                    </label>
-                    <input
-                        id="usage-period"
-                        v-model="periodDraft"
-                        type="number"
-                        min="1"
-                        max="365"
-                        class="h-9 w-28 rounded-md border border-input bg-background px-3 text-sm tabular-nums outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
-                    />
-                </div>
-                <div>
-                    <label
-                        class="mb-1 block text-xs font-medium text-muted-foreground"
-                        for="usage-model"
-                    >
-                        Default model (new chats)
-                    </label>
-                    <select
-                        id="usage-model"
-                        v-model="modelDraft"
-                        class="h-9 w-64 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
-                    >
-                        <option value="default">
-                            Server default — {{ teamUsage.env_default_model }}
-                        </option>
-                        <option
-                            v-for="m in teamUsage.models"
-                            :key="m.value"
-                            :value="m.value"
-                        >
-                            {{ m.label }}
-                        </option>
-                    </select>
-                </div>
-                <button
-                    type="submit"
-                    class="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
-                >
-                    Save for everyone
-                </button>
-                <p class="basis-full text-xs text-muted-foreground">
-                    Applies to all members immediately. Changes here override
-                    the server's <code>.env</code> defaults.
+            <!-- Team usage tab -->
+            <div v-if="insightTab === 'team' && teamUsage" class="p-4 sm:p-5">
+                <p class="mb-3 text-xs text-muted-foreground">
+                    Tokens per member in their current
+                    {{ teamUsage.period_days }}-day window ·
+                    {{
+                        teamUsage.limit > 0
+                            ? `limit ${compact(teamUsage.limit)} each`
+                            : 'no limit set'
+                    }}
                 </p>
-            </form>
 
-            <ul class="divide-y">
-                <li
-                    v-for="u in teamUsage.users"
-                    :key="u.id"
-                    class="flex items-center gap-3 py-2"
+                <form
+                    v-if="editingUsage"
+                    class="mb-4 flex flex-wrap items-end gap-3 rounded-lg border bg-muted/30 p-3"
+                    @submit.prevent="saveUsageSettings"
                 >
-                    <span class="w-44 truncate text-sm font-medium">
-                        {{ u.name }}
-                        <span
-                            v-if="u.role !== 'user'"
-                            class="ml-1 text-xs font-normal text-brand-gold"
-                            >{{
-                                u.role === 'super_admin'
-                                    ? 'super admin'
-                                    : 'admin'
-                            }}</span
+                    <div>
+                        <label
+                            class="mb-1 block text-xs font-medium text-muted-foreground"
+                            for="usage-limit"
                         >
-                    </span>
-                    <div
-                        class="h-2 flex-1 overflow-hidden rounded-full bg-muted"
-                    >
-                        <div
-                            v-if="teamUsage.limit > 0"
-                            class="h-full rounded-full"
-                            :class="
-                                u.percent >= 90
-                                    ? 'bg-destructive'
-                                    : u.percent >= 75
-                                      ? 'bg-amber-500'
-                                      : 'bg-brand-gold'
-                            "
-                            :style="{ width: `${Math.min(100, u.percent)}%` }"
+                            Token limit per user (0 = unlimited)
+                        </label>
+                        <input
+                            id="usage-limit"
+                            v-model="limitDraft"
+                            type="number"
+                            min="0"
+                            step="50000"
+                            class="h-9 w-44 rounded-md border border-input bg-background px-3 text-sm tabular-nums outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
                         />
-                    </div>
-                    <span
-                        class="w-24 text-right text-sm text-muted-foreground tabular-nums"
-                    >
-                        {{ compact(u.used) }}
-                    </span>
-                    <span
-                        class="hidden w-24 text-right text-xs text-muted-foreground sm:block"
-                    >
-                        resets {{ resetLabel(u.resets_at) }}
-                    </span>
-                </li>
-            </ul>
-        </section>
-
-        <!-- Answer feedback (super admin only) -->
-        <section v-if="feedback" class="rounded-xl border bg-card p-5">
-            <div class="mb-1 flex items-center justify-between gap-4">
-                <div class="flex items-center gap-3">
-                    <div
-                        class="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground"
-                    >
-                        <MessageSquareHeart class="size-5" />
                     </div>
                     <div>
-                        <h2 class="font-semibold tracking-tight">
-                            Team feedback
-                        </h2>
-                        <p class="text-xs text-muted-foreground">
-                            Thumbs on AiMe's replies + written feedback &
-                            suggestions from the team
-                        </p>
+                        <label
+                            class="mb-1 block text-xs font-medium text-muted-foreground"
+                            for="usage-period"
+                        >
+                            Period (days)
+                        </label>
+                        <input
+                            id="usage-period"
+                            v-model="periodDraft"
+                            type="number"
+                            min="1"
+                            max="365"
+                            class="h-9 w-28 rounded-md border border-input bg-background px-3 text-sm tabular-nums outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                        />
                     </div>
-                </div>
-                <div class="flex items-center gap-2">
-                    <span
-                        class="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-sm font-medium text-emerald-600 tabular-nums dark:text-emerald-400"
+                    <div>
+                        <label
+                            class="mb-1 block text-xs font-medium text-muted-foreground"
+                            for="usage-model"
+                        >
+                            Default model (new chats)
+                        </label>
+                        <select
+                            id="usage-model"
+                            v-model="modelDraft"
+                            class="h-9 w-64 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                        >
+                            <option value="default">
+                                Server default —
+                                {{ teamUsage.env_default_model }}
+                            </option>
+                            <option
+                                v-for="m in teamUsage.models"
+                                :key="m.value"
+                                :value="m.value"
+                            >
+                                {{ m.label }}
+                            </option>
+                        </select>
+                    </div>
+                    <button
+                        type="submit"
+                        class="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
                     >
-                        <ThumbsUp class="size-3.5" />
-                        {{ nf.format(feedback.up) }}
-                    </span>
-                    <span
-                        class="inline-flex items-center gap-1.5 rounded-full bg-destructive/10 px-3 py-1 text-sm font-medium text-destructive tabular-nums"
+                        Save for everyone
+                    </button>
+                    <p class="basis-full text-xs text-muted-foreground">
+                        Applies to all members immediately. Changes here
+                        override the server's <code>.env</code> defaults.
+                    </p>
+                </form>
+
+                <ul class="divide-y">
+                    <li
+                        v-for="u in teamUsage.users"
+                        :key="u.id"
+                        class="flex items-center gap-3 py-2"
                     >
-                        <ThumbsDown class="size-3.5" />
-                        {{ nf.format(feedback.down) }}
-                    </span>
-                </div>
+                        <span class="w-44 truncate text-sm font-medium">
+                            {{ u.name }}
+                            <span
+                                v-if="u.role !== 'user'"
+                                class="ml-1 text-xs font-normal text-brand-gold"
+                                >{{
+                                    u.role === 'super_admin'
+                                        ? 'super admin'
+                                        : 'admin'
+                                }}</span
+                            >
+                        </span>
+                        <div
+                            class="h-2 flex-1 overflow-hidden rounded-full bg-muted"
+                        >
+                            <div
+                                v-if="teamUsage.limit > 0"
+                                class="h-full rounded-full"
+                                :class="
+                                    u.percent >= 90
+                                        ? 'bg-destructive'
+                                        : u.percent >= 75
+                                          ? 'bg-amber-500'
+                                          : 'bg-brand-gold'
+                                "
+                                :style="{
+                                    width: `${Math.min(100, u.percent)}%`,
+                                }"
+                            />
+                        </div>
+                        <span
+                            class="w-24 text-right text-sm text-muted-foreground tabular-nums"
+                        >
+                            {{ compact(u.used) }}
+                        </span>
+                        <span
+                            class="hidden w-24 text-right text-xs text-muted-foreground sm:block"
+                        >
+                            resets {{ resetLabel(u.resets_at) }}
+                        </span>
+                    </li>
+                </ul>
             </div>
 
-            <p
-                v-if="feedback.recent.length === 0"
-                class="py-6 text-center text-sm text-muted-foreground"
+            <!-- Cost & efficiency tab -->
+            <div
+                v-if="insightTab === 'cost' && costEfficiency"
+                class="p-4 sm:p-5"
             >
-                No feedback yet — the thumbs under any AiMe answer land here.
-            </p>
-
-            <ul v-else class="mt-3 divide-y">
-                <li
-                    v-for="item in feedback.recent"
-                    :key="'thumb-' + item.id"
-                    class="flex items-start gap-3 py-2.5"
-                >
-                    <span
-                        class="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full"
-                        :class="
-                            item.rating === 'up'
-                                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                                : 'bg-destructive/10 text-destructive'
-                        "
-                    >
-                        <component
-                            :is="item.rating === 'up' ? ThumbsUp : ThumbsDown"
-                            class="size-3"
-                        />
-                    </span>
-                    <div class="min-w-0 flex-1">
-                        <p class="truncate text-sm">{{ item.excerpt }}</p>
-                        <p class="mt-0.5 text-xs text-muted-foreground">
-                            <template v-if="item.user"
-                                >{{ item.user }} · </template
-                            >{{ item.conversation ?? 'Deleted chat'
-                            }}<template v-if="item.when">
-                                · {{ item.when }}</template
-                            >
+                <div class="mb-4 grid gap-3 sm:grid-cols-3">
+                    <div class="rounded-lg border bg-muted/30 p-3">
+                        <p class="text-xs text-muted-foreground">
+                            Prompt-cache hit rate
+                        </p>
+                        <p class="mt-1 text-xl font-semibold tabular-nums">
+                            {{
+                                costEfficiency.cache.hit_rate !== null
+                                    ? Math.round(
+                                          costEfficiency.cache.hit_rate * 100,
+                                      ) + '%'
+                                    : '—'
+                            }}
+                        </p>
+                        <p class="text-xs text-muted-foreground">
+                            of Claude input tokens served from cache
                         </p>
                     </div>
-                </li>
-            </ul>
+                    <div class="rounded-lg border bg-muted/30 p-3">
+                        <p class="text-xs text-muted-foreground">
+                            Saved by caching
+                        </p>
+                        <p
+                            class="mt-1 text-xl font-semibold text-emerald-600 tabular-nums dark:text-emerald-400"
+                        >
+                            {{ usd(costEfficiency.cache.saved_usd) }}
+                        </p>
+                        <p class="text-xs text-muted-foreground">
+                            {{ compact(costEfficiency.cache.read_tokens) }}
+                            tokens re-read at ~10% price
+                        </p>
+                    </div>
+                    <div class="rounded-lg border bg-muted/30 p-3">
+                        <p class="text-xs text-muted-foreground">
+                            Uncached input
+                        </p>
+                        <p class="mt-1 text-xl font-semibold tabular-nums">
+                            {{ compact(costEfficiency.cache.uncached_tokens) }}
+                        </p>
+                        <p class="text-xs text-muted-foreground">
+                            + {{ compact(costEfficiency.cache.write_tokens) }}
+                            written to cache
+                        </p>
+                    </div>
+                </div>
 
-            <!-- Written feedback & suggestions from the dashboard card -->
-            <div class="mt-5 border-t pt-4">
-                <p
-                    class="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                <div
+                    v-if="costEfficiency.models.length"
+                    class="overflow-x-auto"
                 >
-                    Written feedback & suggestions
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr
+                                class="border-b text-left text-xs text-muted-foreground"
+                            >
+                                <th class="py-2 pr-3 font-medium">Model</th>
+                                <th class="py-2 pr-3 font-medium">Provider</th>
+                                <th class="py-2 pr-3 text-right font-medium">
+                                    Input
+                                </th>
+                                <th class="py-2 pr-3 text-right font-medium">
+                                    Output
+                                </th>
+                                <th class="py-2 text-right font-medium">
+                                    Est. cost
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y">
+                            <tr
+                                v-for="m in costEfficiency.models"
+                                :key="m.model"
+                            >
+                                <td class="py-2 pr-3 font-medium">
+                                    {{ m.label }}
+                                </td>
+                                <td class="py-2 pr-3 text-muted-foreground">
+                                    {{ m.provider }}
+                                </td>
+                                <td
+                                    class="py-2 pr-3 text-right text-muted-foreground tabular-nums"
+                                >
+                                    {{ compact(m.input_tokens) }}
+                                </td>
+                                <td
+                                    class="py-2 pr-3 text-right text-muted-foreground tabular-nums"
+                                >
+                                    {{ compact(m.output_tokens) }}
+                                </td>
+                                <td
+                                    class="py-2 text-right font-medium tabular-nums"
+                                >
+                                    {{ usd(m.cost) }}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p v-else class="text-sm text-muted-foreground">
+                    No conversations yet.
                 </p>
 
+                <p class="mt-3 text-xs text-muted-foreground">
+                    Estimates from per-model prices in config (override with
+                    <code>LLM_PRICES</code>). Deleted chats drop out of the
+                    totals; cache tracking counts from the day it was deployed.
+                </p>
+            </div>
+
+            <!-- Feedback tab -->
+            <div
+                v-if="insightTab === 'feedback' && feedback"
+                class="p-4 sm:p-5"
+            >
                 <p
-                    v-if="feedback.entries.length === 0"
-                    class="py-4 text-center text-sm text-muted-foreground"
+                    v-if="feedback.recent.length === 0"
+                    class="py-6 text-center text-sm text-muted-foreground"
                 >
-                    Nothing yet — what members send from their dashboard's
-                    "Feedback & suggestions" card lands here.
+                    No feedback yet — the thumbs under any AiMe answer land
+                    here.
                 </p>
 
                 <ul v-else class="divide-y">
                     <li
-                        v-for="entry in feedback.entries"
-                        :key="'entry-' + entry.id"
+                        v-for="item in feedback.recent"
+                        :key="'thumb-' + item.id"
                         class="flex items-start gap-3 py-2.5"
                     >
                         <span
                             class="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full"
                             :class="
-                                entry.type === 'feedback'
-                                    ? 'bg-muted text-muted-foreground'
-                                    : 'bg-brand-gold/10 text-brand-gold'
+                                item.rating === 'up'
+                                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                                    : 'bg-destructive/10 text-destructive'
                             "
                         >
                             <component
                                 :is="
-                                    entry.type === 'suggestion'
-                                        ? Lightbulb
-                                        : entry.type === 'api_request'
-                                          ? KeyRound
-                                          : MessageSquareHeart
+                                    item.rating === 'up' ? ThumbsUp : ThumbsDown
                                 "
                                 class="size-3"
                             />
                         </span>
                         <div class="min-w-0 flex-1">
-                            <p class="text-sm whitespace-pre-wrap">
-                                {{ entry.message }}
-                            </p>
+                            <p class="truncate text-sm">{{ item.excerpt }}</p>
                             <p class="mt-0.5 text-xs text-muted-foreground">
-                                <span class="capitalize">{{
-                                    entry.type === 'api_request'
-                                        ? 'API request'
-                                        : entry.type
-                                }}</span>
-                                <template v-if="entry.user">
-                                    · {{ entry.user }}</template
-                                ><template v-if="entry.when">
-                                    · {{ entry.when }}</template
+                                <template v-if="item.user"
+                                    >{{ item.user }} · </template
+                                >{{ item.conversation ?? 'Deleted chat'
+                                }}<template v-if="item.when">
+                                    · {{ item.when }}</template
                                 >
                             </p>
                         </div>
                     </li>
                 </ul>
+
+                <!-- Written feedback & suggestions from the dashboard card -->
+                <div class="mt-5 border-t pt-4">
+                    <p
+                        class="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                    >
+                        Written feedback & suggestions
+                    </p>
+
+                    <p
+                        v-if="feedback.entries.length === 0"
+                        class="py-4 text-center text-sm text-muted-foreground"
+                    >
+                        Nothing yet — what members send from their dashboard's
+                        "Feedback & suggestions" card lands here.
+                    </p>
+
+                    <ul v-else class="divide-y">
+                        <li
+                            v-for="entry in feedback.entries"
+                            :key="'entry-' + entry.id"
+                            class="flex items-start gap-3 py-2.5"
+                        >
+                            <span
+                                class="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full"
+                                :class="
+                                    entry.type === 'feedback'
+                                        ? 'bg-muted text-muted-foreground'
+                                        : 'bg-brand-gold/10 text-brand-gold'
+                                "
+                            >
+                                <component
+                                    :is="
+                                        entry.type === 'suggestion'
+                                            ? Lightbulb
+                                            : entry.type === 'api_request'
+                                              ? KeyRound
+                                              : MessageSquareHeart
+                                    "
+                                    class="size-3"
+                                />
+                            </span>
+                            <div class="min-w-0 flex-1">
+                                <p class="text-sm whitespace-pre-wrap">
+                                    {{ entry.message }}
+                                </p>
+                                <p class="mt-0.5 text-xs text-muted-foreground">
+                                    <span class="capitalize">{{
+                                        entry.type === 'api_request'
+                                            ? 'API request'
+                                            : entry.type
+                                    }}</span>
+                                    <template v-if="entry.user">
+                                        · {{ entry.user }}</template
+                                    ><template v-if="entry.when">
+                                        · {{ entry.when }}</template
+                                    >
+                                </p>
+                            </div>
+                        </li>
+                    </ul>
+                </div>
             </div>
         </section>
 
