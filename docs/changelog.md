@@ -3,6 +3,44 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## LLM gateway — Claude Code through AiMe (feature-flagged, off by default)
+
+- New Anthropic-compatible surface at `/llm/v1` so developers can use **Claude
+  Code** (VS Code extension / CLI) with **AiMe as the backend** instead of
+  hitting api.anthropic.com directly. Behind `CHAT_GATEWAY_ENABLED` (default
+  off).
+- AiMe is a transparent proxy: authenticates each request by a **per-user
+  token**, **forces that user's assigned model**, enforces their **token
+  budget** (429 over-limit), forwards on the server's central key, and records
+  usage. Streaming SSE passes through verbatim; a small parser tallies tokens
+  as they flow. Non-streaming + `count_tokens` supported too.
+- **Settings → Developer access**: users generate/revoke their own tokens
+  (shown once, stored hashed) with copy-paste setup steps + env vars. Page and
+  nav item only appear when the gateway is enabled.
+- Governance reuses the per-user model + limit from the previous change, so
+  the portal and developer access share one policy.
+- Files: `AnthropicGateway`, `SseUsageParser`, `GatewayController`,
+  `GatewayAuth`, `GatewayToken`, `Settings/GatewayTokenController`,
+  `routes/gateway.php`, `settings/DeveloperAccess.vue`; gateway route group
+  wired in `bootstrap/app.php`.
+- Deploy note: run `php artisan migrate` (gateway_tokens table). Off by
+  default — set `CHAT_GATEWAY_ENABLED=true` + `php artisan optimize` to turn on.
+
+## Per-user model + token limit (super admin)
+
+- The super admin can now govern **each user individually** from the Team
+  usage card: a gear on every member row opens an inline editor to **pin that
+  user to a specific model** and/or set **their own token cap**.
+- A pinned model is enforced **server-side** (the chat forces it regardless of
+  what the client sends) and the chat model picker **locks** with a padlock
+  for that user. "Free choice" clears the pin → workspace default.
+- The per-user token cap overrides the workspace limit: blank = inherit,
+  `0` = unlimited for that user, a positive value caps them specifically.
+- New `users.assigned_model` + `users.token_limit` columns; these are also the
+  policy the planned **LLM gateway** (developer Claude Code access via AiMe)
+  will enforce.
+- Deploy note: run `php artisan migrate`.
+
 ## Multi-account NetSuite behind a feature flag (off by default)
 
 - No current use case for several NetSuite accounts per user, so the whole

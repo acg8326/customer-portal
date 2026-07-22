@@ -42,9 +42,13 @@ class HandleInertiaRequests extends Middleware
                 'user' => $request->user(),
             ],
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
+            // Whether the LLM gateway is on — drives the Developer access nav item.
+            'gatewayEnabled' => (bool) config('services.anthropic.gateway.enabled', false),
             'flash' => [
                 'success' => $request->session()->get('success'),
                 'error' => $request->session()->get('error'),
+                // A freshly-issued gateway token, shown once on the settings page.
+                'gatewayToken' => $request->session()->get('gatewayToken'),
             ],
         ];
     }

@@ -121,7 +121,9 @@ class ChatController extends Controller
             // Grouped picker: Claude (full-featured) + OpenAI-compatible
             // providers (plain chat); locked ones offer "request access".
             'providers' => app(ModelCatalog::class)->providers(),
-            'defaultModel' => self::workspaceDefaultModel(),
+            'defaultModel' => self::defaultModelFor($request->user()),
+            // When set, the user is pinned to this model — the picker locks.
+            'lockedModel' => $request->user()->assigned_model,
             'conversations' => $this->conversationList($request),
             'uploads' => self::uploadsProps(),
             'skills' => self::skillOptions($request),
@@ -150,6 +152,39 @@ class ChatController extends Controller
         }
 
         return (string) config('services.anthropic.model');
+    }
+
+    /**
+     * The model a new chat starts on for this user: their assigned model when
+     * the super admin pinned one (and it's still allowed), else the workspace
+     * default.
+     */
+    public static function defaultModelFor(User $user): string
+    {
+        $assigned = $user->assigned_model;
+
+        if ($assigned !== null && array_key_exists($assigned, Config::array('services.anthropic.models'))) {
+            return $assigned;
+        }
+
+        return self::workspaceDefaultModel();
+    }
+
+    /**
+     * Resolve the model a turn actually runs on: a user pinned to a model is
+     * forced onto it (governance), otherwise the model they requested. An
+     * assigned model that fell out of the allowed list is ignored, so trimming
+     * the list can't strand the user.
+     */
+    public static function effectiveModel(User $user, string $requested): string
+    {
+        $assigned = $user->assigned_model;
+
+        if ($assigned !== null && array_key_exists($assigned, Config::array('services.anthropic.models'))) {
+            return $assigned;
+        }
+
+        return $requested;
     }
 
     /**
@@ -863,7 +898,10 @@ class ChatController extends Controller
 
         $userId = $request->user()->id;
         $content = (string) $request->input('content');
-        $selectedModel = (string) $request->input('model');
+        // A user pinned to a specific model (super admin governance) is forced
+        // onto it server-side, whatever the client sent — the picker is also
+        // locked in the UI, but the server is the authority.
+        $selectedModel = self::effectiveModel($request->user(), (string) $request->input('model'));
         $conversationId = $request->integer('conversation_id');
 
         if ($this->privateMode) {

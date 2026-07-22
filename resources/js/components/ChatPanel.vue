@@ -121,6 +121,9 @@ const props = withDefaults(
     defineProps<{
         providers: Provider[];
         defaultModel: string;
+        // When set, the super admin pinned this user to one model — the
+        // picker locks and the server forces it regardless.
+        lockedModel?: string | null;
         conversations: ConversationSummary[];
         projectId?: number | null;
         fullBleed?: boolean;
@@ -135,6 +138,7 @@ const props = withDefaults(
     }>(),
     {
         projectId: null,
+        lockedModel: null,
         fullBleed: false,
         uploads: () => ({
             enabled: false,
@@ -200,6 +204,11 @@ const allModels = computed(() =>
 );
 
 function initialModel(): string {
+    // A locked user always starts (and stays) on their assigned model.
+    if (props.lockedModel) {
+        return props.lockedModel;
+    }
+
     const saved = localStorage.getItem(MODEL_STORAGE_KEY);
 
     if (
@@ -580,6 +589,7 @@ function formatTokens(n: number): string {
 // --- Grouped model picker (LibreChat-style: providers → models) -----------------
 
 const modelMenuOpen = ref(false);
+const modelLocked = computed(() => Boolean(props.lockedModel));
 const menuProviderKey = ref(props.providers[0]?.key ?? '');
 // Locked provider the user tried to pick from — drives the request dialog.
 const requestTarget = ref<{ provider: Provider; model: ProviderModel } | null>(
@@ -608,6 +618,11 @@ const modelIsClaude = computed(
 );
 
 function openModelMenu() {
+    // Pinned users can't switch models — the picker is display-only.
+    if (modelLocked.value) {
+        return;
+    }
+
     modelMenuOpen.value = !modelMenuOpen.value;
     menuProviderKey.value =
         currentModel.value?.provider ?? props.providers[0]?.key ?? '';
@@ -951,7 +966,11 @@ async function selectConversation(id: number) {
         netsuiteAccountId.value =
             data.netsuite_connection_id ?? defaultNetsuiteAccountId();
 
-        if (typeof data.model === 'string') {
+        // A pinned user stays on their assigned model even when opening an
+        // older chat that ran on something else (the server forces it anyway).
+        if (props.lockedModel) {
+            model.value = props.lockedModel;
+        } else if (typeof data.model === 'string') {
             model.value = data.model;
         }
 
@@ -1800,23 +1819,35 @@ onMounted(() => {
                     <div class="relative">
                         <button
                             type="button"
-                            class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium transition-colors hover:bg-accent sm:min-w-[160px]"
+                            class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium transition-colors sm:min-w-[160px]"
+                            :class="
+                                modelLocked
+                                    ? 'cursor-default opacity-90'
+                                    : 'hover:bg-accent'
+                            "
                             :title="
-                                modelIsClaude
-                                    ? 'Choose a model'
-                                    : 'Plain-chat model — tools, web search, thinking & files need Claude'
+                                modelLocked
+                                    ? 'Your administrator has set your model — it can\'t be changed here'
+                                    : modelIsClaude
+                                      ? 'Choose a model'
+                                      : 'Plain-chat model — tools, web search, thinking & files need Claude'
                             "
                             @click="openModelMenu"
                         >
+                            <Lock
+                                v-if="modelLocked"
+                                class="size-3 text-muted-foreground"
+                            />
                             <span class="truncate">{{
                                 currentModelLabel
                             }}</span>
                             <ChevronDown
+                                v-if="!modelLocked"
                                 class="ml-auto size-3.5 text-muted-foreground"
                             />
                         </button>
 
-                        <template v-if="modelMenuOpen">
+                        <template v-if="modelMenuOpen && !modelLocked">
                             <div
                                 class="fixed inset-0 z-40"
                                 @click="modelMenuOpen = false"

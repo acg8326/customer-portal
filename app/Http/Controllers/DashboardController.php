@@ -132,7 +132,7 @@ class DashboardController extends Controller
      * Every user's token usage in their current window + the org total, and
      * the currently effective limit settings (super admin card).
      *
-     * @return array{users: array<int, array{id: int, name: string, role: string, used: int, percent: float, resets_at: string|null}>, total: int, limit: int, period_days: int, models: array<int, array{value: string, label: string}>, default_model: string|null, env_default_model: string}
+     * @return array{users: array<int, array{id: int, name: string, role: string, used: int, percent: float, resets_at: string|null, assigned_model: string|null, token_limit: int|null, effective_limit: int}>, total: int, limit: int, period_days: int, models: array<int, array{value: string, label: string}>, default_model: string|null, env_default_model: string}
      */
     private function teamUsage(TokenBudget $budget, AppSettings $settings): array
     {
@@ -156,6 +156,12 @@ class DashboardController extends Controller
                 'used' => $snapshot['used'],
                 'percent' => $snapshot['percent'],
                 'resets_at' => $snapshot['resets_at'],
+                // Per-user governance: the pinned model (null = free choice)
+                // and the user's own cap (null = inherits the workspace limit).
+                // effective_limit is what actually applies to this user.
+                'assigned_model' => $user->assigned_model,
+                'token_limit' => $user->token_limit,
+                'effective_limit' => $snapshot['limit'],
             ];
         }
 
@@ -206,6 +212,35 @@ class DashboardController extends Controller
         $settings->set('chat.default_model', $model === 'default' ? null : $model);
 
         Inertia::flash('toast', ['type' => 'success', 'message' => __('Usage settings updated.')]);
+
+        return to_route('dashboard');
+    }
+
+    /**
+     * Set one user's pinned model and/or personal token limit (super admin).
+     * Both are per-user overrides: 'default' model or a null limit clears the
+     * override so the user falls back to the workspace setting.
+     */
+    public function updateUserLimits(Request $request, User $user): RedirectResponse
+    {
+        abort_unless($request->user()->isSuperAdmin(), 403);
+
+        $validated = $request->validate([
+            // 'default' (or absent) clears the pin → workspace default model.
+            'assigned_model' => ['nullable', 'string', Rule::in([...array_keys(Config::array('services.anthropic.models')), 'default'])],
+            // null/absent = inherit the workspace limit; 0 = unlimited for this
+            // user; a positive value caps them specifically.
+            'token_limit' => ['nullable', 'integer', 'min:0', 'max:1000000000'],
+        ]);
+
+        $model = $validated['assigned_model'] ?? 'default';
+        $user->assigned_model = $model === 'default' ? null : $model;
+        $user->token_limit = array_key_exists('token_limit', $validated)
+            ? $validated['token_limit']
+            : null;
+        $user->save();
+
+        Inertia::flash('toast', ['type' => 'success', 'message' => __('Updated :name.', ['name' => $user->name])]);
 
         return to_route('dashboard');
     }

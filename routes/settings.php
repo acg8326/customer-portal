@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Settings\GatewayTokenController;
 use App\Http\Controllers\Settings\GeneralController;
 use App\Http\Controllers\Settings\ProfileController;
 use App\Http\Controllers\Settings\SecurityController;
@@ -40,6 +41,11 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('settings/skills/import', [SkillController::class, 'import'])->name('skills.import');
     Route::patch('settings/skills/{skill}', [SkillController::class, 'update'])->name('skills.update');
     Route::delete('settings/skills/{skill}', [SkillController::class, 'destroy'])->name('skills.destroy');
+
+    // Developer access — LLM gateway tokens (404s when the gateway is off).
+    Route::get('settings/developer-access', [GatewayTokenController::class, 'index'])->name('developer-access.index');
+    Route::post('settings/developer-access/tokens', [GatewayTokenController::class, 'store'])->name('developer-access.tokens.store');
+    Route::delete('settings/developer-access/tokens/{gatewayToken}', [GatewayTokenController::class, 'destroy'])->name('developer-access.tokens.destroy');
 });
 
 Route::get('.well-known/passkey-endpoints', function () {

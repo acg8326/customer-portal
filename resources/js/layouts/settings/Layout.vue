@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Link } from '@inertiajs/vue3';
+import { Link, usePage } from '@inertiajs/vue3';
 import { Search } from '@lucide/vue';
 import { computed, ref } from 'vue';
 import Heading from '@/components/Heading.vue';
@@ -11,24 +11,38 @@ import { edit as editProfile } from '@/routes/profile';
 import { edit as editSecurity } from '@/routes/security';
 import type { NavItem } from '@/types';
 
-const sidebarNavItems: NavItem[] = [
-    {
-        title: 'General',
-        href: '/settings/general',
-    },
-    {
-        title: 'Profile',
-        href: editProfile(),
-    },
-    {
-        title: 'Security',
-        href: editSecurity(),
-    },
-    {
-        title: 'Skills',
-        href: '/settings/skills',
-    },
-];
+const page = usePage();
+
+const sidebarNavItems = computed<NavItem[]>(() => {
+    const items: NavItem[] = [
+        {
+            title: 'General',
+            href: '/settings/general',
+        },
+        {
+            title: 'Profile',
+            href: editProfile(),
+        },
+        {
+            title: 'Security',
+            href: editSecurity(),
+        },
+        {
+            title: 'Skills',
+            href: '/settings/skills',
+        },
+    ];
+
+    // Developer access only exists when the LLM gateway is enabled.
+    if (page.props.gatewayEnabled) {
+        items.push({
+            title: 'Developer access',
+            href: '/settings/developer-access',
+        });
+    }
+
+    return items;
+});
 
 // Searchable index of every setting — label + keywords + the page it lives
 // on. Typing filters this list; clicking a result jumps to the page.
