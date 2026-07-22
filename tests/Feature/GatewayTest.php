@@ -98,7 +98,32 @@ test('a pinned user is forced onto their assigned model', function () use ($mess
         ->assertOk();
 
     // ...but the gateway rewrote it to their pinned model.
-    Http::assertSent(fn ($request) => $request['model'] === 'claude-haiku-4-5');
+    Http::assertSent(fn ($request) => (json_decode($request->body(), true)['model'] ?? null) === 'claude-haiku-4-5');
+});
+
+test('an empty tool input_schema is forwarded as {} and not flattened to []', function () use ($messageBody) {
+    Http::fake(['*/v1/messages' => Http::response($messageBody, 200)]);
+
+    $user = User::factory()->create();
+    $plaintext = issueToken($user);
+
+    // A no-parameter tool — Claude Code sends these — has "properties": {}.
+    $this->withToken($plaintext)
+        ->postJson('/llm/v1/messages', [
+            'model' => 'claude-opus-4-8',
+            'messages' => [['role' => 'user', 'content' => 'hi']],
+            'tools' => [[
+                'name' => 'get_time',
+                'description' => 'Return the current time',
+                'input_schema' => ['type' => 'object', 'properties' => (object) []],
+            ]],
+        ])
+        ->assertOk();
+
+    // The forwarded body must keep the empty object as {}, never [] — the
+    // Anthropic API rejects "input_schema.properties: Input should be an object".
+    Http::assertSent(fn ($request) => str_contains($request->body(), '"properties":{}')
+        && ! str_contains($request->body(), '"properties":[]'));
 });
 
 test('an over-budget user is blocked with a 429 before any upstream call', function () {

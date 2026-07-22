@@ -24,29 +24,32 @@ class AnthropicGateway
      * client asked to stream; otherwise buffers and returns JSON. Either way,
      * usage is recorded against the user's budget.
      *
-     * @param  array<string, mixed>  $payload
      * @param  array<string, string>  $forwardHeaders
      */
-    public function messages(User $user, array $payload, array $forwardHeaders, bool $wantsStream): Response
+    public function messages(User $user, string $rawBody, array $forwardHeaders, bool $wantsStream): Response
     {
-        $payload = $this->pinModel($user, $payload);
+        $body = $this->pinModel($user, $rawBody);
         $url = $this->url('/v1/messages');
         $headers = $this->headers($forwardHeaders);
 
         if (! $wantsStream) {
-            $response = Http::withHeaders($headers)->post($url, $payload);
-            $body = $response->json();
+            $response = Http::withHeaders($headers)->withBody($body, 'application/json')->post($url);
+            $decoded = $response->json();
 
-            if (is_array($body)) {
-                $this->budget->record($user, $this->usageFromBody($body));
+            if (is_array($decoded)) {
+                $this->budget->record($user, $this->usageFromBody($decoded));
             }
 
-            return response()->json(is_array($body) ? $body : [], $response->status());
+            // Relay the upstream bytes verbatim — re-encoding a decoded array
+            // would mangle any empty JSON objects in the response.
+            return response($response->body(), $response->status())
+                ->header('Content-Type', $response->header('Content-Type') ?: 'application/json');
         }
 
         $response = Http::withHeaders($headers)
             ->withOptions(['stream' => true])
-            ->post($url, $payload);
+            ->withBody($body, 'application/json')
+            ->post($url);
 
         $contentType = (string) $response->header('Content-Type');
 
@@ -63,18 +66,17 @@ class AnthropicGateway
     /**
      * Proxy POST /v1/messages/count_tokens (a metadata call — not budgeted).
      *
-     * @param  array<string, mixed>  $payload
      * @param  array<string, string>  $forwardHeaders
      */
-    public function countTokens(User $user, array $payload, array $forwardHeaders): Response
+    public function countTokens(User $user, string $rawBody, array $forwardHeaders): Response
     {
-        $payload = $this->pinModel($user, $payload);
+        $body = $this->pinModel($user, $rawBody);
         $response = Http::withHeaders($this->headers($forwardHeaders))
-            ->post($this->url('/v1/messages/count_tokens'), $payload);
+            ->withBody($body, 'application/json')
+            ->post($this->url('/v1/messages/count_tokens'));
 
-        $body = $response->json();
-
-        return response()->json(is_array($body) ? $body : [], $response->status());
+        return response($response->body(), $response->status())
+            ->header('Content-Type', $response->header('Content-Type') ?: 'application/json');
     }
 
     /**
@@ -115,15 +117,23 @@ class AnthropicGateway
      * Force the user's assigned model when one is pinned (governance); leave
      * the requested model otherwise.
      *
-     * @param  array<string, mixed>  $payload
-     * @return array<string, mixed>
+     * Decodes as objects (not associative arrays) so empty JSON objects — like
+     * a no-parameter tool's "input_schema": {"properties": {}} — survive the
+     * round trip as {} rather than being flattened to []. Only the top-level
+     * "model" field is touched; everything else is re-emitted unchanged.
      */
-    private function pinModel(User $user, array $payload): array
+    private function pinModel(User $user, string $rawBody): string
     {
-        $requested = (string) ($payload['model'] ?? config('services.anthropic.model'));
-        $payload['model'] = ChatController::effectiveModel($user, $requested);
+        $payload = json_decode($rawBody, false);
 
-        return $payload;
+        if (! $payload instanceof \stdClass) {
+            return $rawBody;
+        }
+
+        $requested = (string) ($payload->model ?? config('services.anthropic.model'));
+        $payload->model = ChatController::effectiveModel($user, $requested);
+
+        return json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: $rawBody;
     }
 
     /**

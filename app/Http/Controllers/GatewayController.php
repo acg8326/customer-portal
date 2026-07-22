@@ -36,11 +36,17 @@ class GatewayController extends Controller
             );
         }
 
-        /** @var array<string, mixed> $payload */
-        $payload = (array) $request->json()->all();
-        $wantsStream = (bool) ($payload['stream'] ?? false);
+        // Forward the RAW request body verbatim. Decoding to a PHP associative
+        // array and re-encoding would turn empty JSON objects (e.g. a tool's
+        // "input_schema": {"properties": {}}) into empty arrays ([]), which the
+        // Anthropic API rejects. We only need to peek at "stream" to decide how
+        // to relay the response; the model is pinned downstream on an
+        // object-decode that preserves {}.
+        $raw = $request->getContent();
+        $decoded = json_decode($raw, true);
+        $wantsStream = is_array($decoded) && (bool) ($decoded['stream'] ?? false);
 
-        return $this->gateway->messages($user, $payload, $this->forwardHeaders($request), $wantsStream);
+        return $this->gateway->messages($user, $raw, $this->forwardHeaders($request), $wantsStream);
     }
 
     /**
@@ -48,10 +54,7 @@ class GatewayController extends Controller
      */
     public function countTokens(Request $request): Response
     {
-        /** @var array<string, mixed> $payload */
-        $payload = (array) $request->json()->all();
-
-        return $this->gateway->countTokens($request->user(), $payload, $this->forwardHeaders($request));
+        return $this->gateway->countTokens($request->user(), $request->getContent(), $this->forwardHeaders($request));
     }
 
     /**

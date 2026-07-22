@@ -3,6 +3,17 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## LLM gateway — forward request/response bodies verbatim (bug fix)
+
+- Fixed `API Error: 400 tools.N.custom.input_schema.properties: Input should
+  be an object` when using Claude Code through the gateway. The gateway used to
+  decode the request into a PHP associative array and re-encode it; empty JSON
+  objects (e.g. a no-parameter tool's `"properties": {}`) collapsed to `[]`,
+  which Anthropic rejects. The gateway now forwards the **raw** request body and
+  only rewrites the top-level `model` (via an object-decode that preserves
+  `{}`), and relays the upstream response bytes unchanged. Files:
+  `AnthropicGateway`, `GatewayController`.
+
 ## LLM gateway — Claude Code through AiMe (feature-flagged, off by default)
 
 - New Anthropic-compatible surface at `/llm/v1` so developers can use **Claude
