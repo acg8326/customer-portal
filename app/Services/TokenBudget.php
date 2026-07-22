@@ -47,13 +47,13 @@ class TokenBudget
     {
         // Not tracking, or no cap configured (limit <= 0 = unlimited) → never
         // blocks. Usage is still recorded and shown; there's just no ceiling.
-        if (! $this->enabled() || $this->limit() <= 0) {
+        if (! $this->enabled() || $this->limit($user) <= 0) {
             return false;
         }
 
         $this->refresh($user);
 
-        return $user->token_budget_used >= $this->limit();
+        return $user->token_budget_used >= $this->limit($user);
     }
 
     /**
@@ -92,7 +92,7 @@ class TokenBudget
     {
         $this->refresh($user);
 
-        $limit = $this->limit();
+        $limit = $this->limit($user);
         $used = (int) $user->token_budget_used;
         $capActive = $this->enabled() && $limit > 0;
         $remaining = $capActive ? max(0, $limit - $used) : 0;
@@ -122,11 +122,19 @@ class TokenBudget
     }
 
     /**
-     * Limit and period read the UI-set override first (app_settings, super
-     * admin editable on the dashboard) and fall back to the .env config.
+     * The user's effective token limit. A per-user override (super admin sets
+     * it on the dashboard) wins; otherwise the workspace limit — the UI-set
+     * app_settings value, falling back to the .env config.
+     *
+     * A null per-user value means "inherit the workspace limit"; a non-null
+     * value (including 0 = unlimited) applies to this user specifically.
      */
-    private function limit(): int
+    private function limit(User $user): int
     {
+        if ($user->token_limit !== null) {
+            return (int) $user->token_limit;
+        }
+
         return app(AppSettings::class)->int(
             'usage.token_limit',
             (int) config('usage.token_limit', 1_000_000),

@@ -26,6 +26,7 @@ defineProps<{
         models: { value: string; label: string; hint: string }[];
     }[];
     defaultModel: string;
+    lockedModel: string | null;
     conversations: { id: number; title: string }[];
     uploads: {
         enabled: boolean;
@@ -68,6 +69,7 @@ const railClass = computed(() =>
                 <ChatPanel
                     :providers="providers"
                     :default-model="defaultModel"
+                    :locked-model="lockedModel"
                     :conversations="conversations"
                     :uploads="uploads"
                     :skills="skills"

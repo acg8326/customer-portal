@@ -63,6 +63,9 @@ const props = defineProps<{
             used: number;
             percent: number;
             resets_at: string | null;
+            assigned_model: string | null;
+            token_limit: number | null;
+            effective_limit: number;
         }[];
         total: number;
         limit: number;
@@ -221,15 +224,56 @@ function saveUsageSettings() {
     );
 }
 
-function resetLabel(iso: string | null): string {
-    if (!iso) {
-        return '—';
+// --- Per-user model + limit (super admin) ---------------------------------------
+
+type TeamUser = NonNullable<typeof props.teamUsage>['users'][number];
+
+// Which user row is expanded for editing (null = none).
+const editingUserId = ref<number | null>(null);
+// Drafts for the row being edited: model ('default' = inherit) and limit
+// ('' = inherit workspace limit).
+const userModelDraft = ref('default');
+const userLimitDraft = ref('');
+const savingUser = ref(false);
+
+const modelLabel = (value: string | null): string =>
+    props.teamUsage?.models.find((m) => m.value === value)?.label ??
+    value ??
+    '';
+
+function toggleUserEditor(u: TeamUser) {
+    if (editingUserId.value === u.id) {
+        editingUserId.value = null;
+
+        return;
     }
 
-    return new Date(iso).toLocaleDateString(undefined, {
-        month: 'short',
-        day: 'numeric',
-    });
+    editingUserId.value = u.id;
+    userModelDraft.value = u.assigned_model ?? 'default';
+    userLimitDraft.value = u.token_limit === null ? '' : String(u.token_limit);
+}
+
+function saveUserLimits(u: TeamUser) {
+    if (savingUser.value) {
+        return;
+    }
+
+    savingUser.value = true;
+
+    const trimmed = userLimitDraft.value.trim();
+
+    router.patch(
+        `/dashboard/users/${u.id}/limits`,
+        {
+            assigned_model: userModelDraft.value,
+            token_limit: trimmed === '' ? null : Number(trimmed),
+        },
+        {
+            preserveScroll: true,
+            onSuccess: () => (editingUserId.value = null),
+            onFinish: () => (savingUser.value = false),
+        },
+    );
 }
 
 // --- Feedback & suggestions (everyone) --------------------------------------------
@@ -592,51 +636,146 @@ function sendFeedback() {
                 </form>
 
                 <ul class="divide-y">
-                    <li
-                        v-for="u in teamUsage.users"
-                        :key="u.id"
-                        class="flex items-center gap-3 py-2"
-                    >
-                        <span class="w-44 truncate text-sm font-medium">
-                            {{ u.name }}
-                            <span
-                                v-if="u.role !== 'user'"
-                                class="ml-1 text-xs font-normal text-brand-gold"
-                                >{{
-                                    u.role === 'super_admin'
-                                        ? 'super admin'
-                                        : 'admin'
-                                }}</span
-                            >
-                        </span>
-                        <div
-                            class="h-2 flex-1 overflow-hidden rounded-full bg-muted"
-                        >
+                    <li v-for="u in teamUsage.users" :key="u.id" class="py-2">
+                        <div class="flex items-center gap-3">
+                            <span class="w-44 truncate text-sm font-medium">
+                                {{ u.name }}
+                                <span
+                                    v-if="u.role !== 'user'"
+                                    class="ml-1 text-xs font-normal text-brand-gold"
+                                    >{{
+                                        u.role === 'super_admin'
+                                            ? 'super admin'
+                                            : 'admin'
+                                    }}</span
+                                >
+                            </span>
                             <div
-                                v-if="teamUsage.limit > 0"
-                                class="h-full rounded-full"
-                                :class="
-                                    u.percent >= 90
-                                        ? 'bg-destructive'
-                                        : u.percent >= 75
-                                          ? 'bg-amber-500'
-                                          : 'bg-brand-gold'
-                                "
-                                :style="{
-                                    width: `${Math.min(100, u.percent)}%`,
-                                }"
-                            />
+                                class="h-2 flex-1 overflow-hidden rounded-full bg-muted"
+                            >
+                                <div
+                                    v-if="u.effective_limit > 0"
+                                    class="h-full rounded-full"
+                                    :class="
+                                        u.percent >= 90
+                                            ? 'bg-destructive'
+                                            : u.percent >= 75
+                                              ? 'bg-amber-500'
+                                              : 'bg-brand-gold'
+                                    "
+                                    :style="{
+                                        width: `${Math.min(100, u.percent)}%`,
+                                    }"
+                                />
+                            </div>
+                            <span
+                                class="w-24 text-right text-sm text-muted-foreground tabular-nums"
+                            >
+                                {{ compact(u.used) }}
+                            </span>
+                            <button
+                                type="button"
+                                class="rounded-md border p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                                :title="`Set model & token limit for ${u.name}`"
+                                @click="toggleUserEditor(u)"
+                            >
+                                <Settings2 class="size-3.5" />
+                            </button>
                         </div>
-                        <span
-                            class="w-24 text-right text-sm text-muted-foreground tabular-nums"
+
+                        <!-- Per-user model + limit badges (when overridden) -->
+                        <div
+                            v-if="
+                                editingUserId !== u.id &&
+                                (u.assigned_model || u.token_limit !== null)
+                            "
+                            class="mt-1 ml-44 flex flex-wrap gap-1.5"
                         >
-                            {{ compact(u.used) }}
-                        </span>
-                        <span
-                            class="hidden w-24 text-right text-xs text-muted-foreground sm:block"
+                            <span
+                                v-if="u.assigned_model"
+                                class="inline-flex items-center rounded-full bg-brand-navy/5 px-2 py-0.5 text-xs text-brand-navy dark:bg-brand-gold/10 dark:text-brand-gold"
+                            >
+                                {{ modelLabel(u.assigned_model) }}
+                            </span>
+                            <span
+                                v-if="u.token_limit !== null"
+                                class="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                            >
+                                {{
+                                    u.token_limit === 0
+                                        ? 'unlimited'
+                                        : `${compact(u.token_limit)} cap`
+                                }}
+                            </span>
+                        </div>
+
+                        <!-- Inline editor -->
+                        <form
+                            v-if="editingUserId === u.id"
+                            class="mt-2 flex flex-wrap items-end gap-3 rounded-lg border bg-muted/30 p-3"
+                            @submit.prevent="saveUserLimits(u)"
                         >
-                            resets {{ resetLabel(u.resets_at) }}
-                        </span>
+                            <div>
+                                <label
+                                    :for="`user-model-${u.id}`"
+                                    class="mb-1 block text-xs font-medium text-muted-foreground"
+                                >
+                                    Model
+                                </label>
+                                <select
+                                    :id="`user-model-${u.id}`"
+                                    v-model="userModelDraft"
+                                    class="h-9 w-56 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                                >
+                                    <option value="default">
+                                        Free choice (workspace default)
+                                    </option>
+                                    <option
+                                        v-for="m in teamUsage.models"
+                                        :key="m.value"
+                                        :value="m.value"
+                                    >
+                                        Locked to {{ m.label }}
+                                    </option>
+                                </select>
+                            </div>
+                            <div>
+                                <label
+                                    :for="`user-limit-${u.id}`"
+                                    class="mb-1 block text-xs font-medium text-muted-foreground"
+                                >
+                                    Token limit
+                                </label>
+                                <input
+                                    :id="`user-limit-${u.id}`"
+                                    v-model="userLimitDraft"
+                                    type="number"
+                                    min="0"
+                                    step="50000"
+                                    placeholder="Inherit workspace"
+                                    class="h-9 w-44 rounded-md border border-input bg-background px-3 text-sm tabular-nums outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                                />
+                            </div>
+                            <button
+                                type="submit"
+                                :disabled="savingUser"
+                                class="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+                            >
+                                Save
+                            </button>
+                            <button
+                                type="button"
+                                class="h-9 rounded-md px-3 text-sm text-muted-foreground hover:text-foreground"
+                                @click="editingUserId = null"
+                            >
+                                Cancel
+                            </button>
+                            <p class="basis-full text-xs text-muted-foreground">
+                                Leave the limit blank to inherit the workspace
+                                limit; 0 = unlimited for {{ u.name }}. A locked
+                                model overrides their picker.
+                            </p>
+                        </form>
                     </li>
                 </ul>
             </div>

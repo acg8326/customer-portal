@@ -20,6 +20,8 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property string $name
  * @property string $email
  * @property string $role
+ * @property string|null $assigned_model
+ * @property int|null $token_limit
  * @property string|null $chat_preferences
  * @property string|null $preferred_language
  * @property bool $memory_enabled
@@ -34,7 +36,7 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  */
-#[Fillable(['name', 'email', 'password', 'role'])]
+#[Fillable(['name', 'email', 'password', 'role', 'assigned_model', 'token_limit'])]
 #[Hidden(['password', 'two_factor_secret', 'two_factor_recovery_codes', 'remember_token'])]
 class User extends Authenticatable implements PasskeyUser
 {
@@ -76,6 +78,7 @@ class User extends Authenticatable implements PasskeyUser
         return [
             'email_verified_at' => 'datetime',
             'memory_enabled' => 'boolean',
+            'token_limit' => 'integer',
             'password' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
             'token_budget_started_at' => 'datetime',
@@ -154,5 +157,15 @@ class User extends Authenticatable implements PasskeyUser
     public function netsuiteConnections(): HasMany
     {
         return $this->hasMany(NetsuiteConnection::class);
+    }
+
+    /**
+     * Personal access tokens for the LLM gateway (Claude Code via AiMe).
+     *
+     * @return HasMany<GatewayToken, $this>
+     */
+    public function gatewayTokens(): HasMany
+    {
+        return $this->hasMany(GatewayToken::class);
     }
 }

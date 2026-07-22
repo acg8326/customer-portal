@@ -266,6 +266,42 @@ the **Claude API**.
   insights** card with segmented tabs (**Team usage / Cost & efficiency /
   Feedback**) so only one detail view is open at a time, instead of five
   stacked full-width cards.
+- **LLM gateway — Claude Code through AiMe (feature-flagged, off by default):**
+  with `CHAT_GATEWAY_ENABLED=true`, AiMe exposes an Anthropic-compatible
+  surface at `/llm/v1` (`messages` + `messages/count_tokens`) that developers
+  point Claude Code at (`ANTHROPIC_BASE_URL=<APP_URL>/llm`,
+  `ANTHROPIC_AUTH_TOKEN=<their AiMe token>`). AiMe is a **transparent proxy**:
+  it authenticates each request by a per-user token, **forces the user's
+  assigned model**, checks their **token budget** (429 when over), forwards to
+  Anthropic on the server's central key, and records usage — streaming SSE is
+  passed through verbatim while a lightweight parser
+  ([`SseUsageParser`](../app/Services/SseUsageParser.php)) tallies tokens as
+  they flow. The developer never holds the Anthropic key, so access is
+  revocable and governed centrally. Routes are token-authenticated (no web
+  session/CSRF), wired in `bootstrap/app.php`; the proxy lives in
+  [`AnthropicGateway`](../app/Services/AnthropicGateway.php) behind
+  [`GatewayController`](../app/Http/Controllers/GatewayController.php) +
+  [`GatewayAuth`](../app/Http/Middleware/GatewayAuth.php). Config:
+  `services.anthropic.gateway` (`CHAT_GATEWAY_ENABLED`,
+  `CHAT_GATEWAY_TOKEN_PREFIX`).
+- **Developer access (Settings):** when the gateway is on, each user gets a
+  **Settings → Developer access** page to generate/revoke their own gateway
+  tokens (shown once, stored as a SHA-256 hash — only a `last_four` hint is
+  kept), with copy-paste setup steps and the exact env vars. The page and its
+  nav item 404/hide when the gateway is off.
+  ([`GatewayToken`](../app/Models/GatewayToken.php),
+  [`GatewayTokenController`](../app/Http/Controllers/Settings/GatewayTokenController.php).)
+- **Per-user model + token limit (super admin):** each member row in the
+  Team usage card has a gear that opens an inline editor to **pin that user to
+  a specific model** and/or give them **their own token cap**. A pinned model
+  is enforced **server-side** (`ChatController::effectiveModel()` forces it
+  whatever the client sends) and the chat's model picker **locks** with a 🔒
+  for that user; "Free choice" clears the pin. The per-user cap overrides the
+  workspace limit in [`TokenBudget`](app/Services/TokenBudget.php) — blank =
+  inherit the workspace limit, `0` = unlimited for that user. Stored on the
+  `users` table (`assigned_model`, `token_limit`); both are also the policy
+  the future LLM gateway will enforce for developer Claude Code access.
+  (`PATCH /dashboard/users/{user}/limits`, super admin only.)
 - **Team usage screen + in-app limit settings (super admin):** the Dashboard's
   **Team usage** card lists every member's tokens in their current window
   (heaviest first, with per-user progress bars against the limit) plus the

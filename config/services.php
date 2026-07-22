@@ -164,6 +164,18 @@ return [
         // the assistant look things up online and read a URL. Only active on the
         // plain / MCP chat paths (not when Composio/NetSuite tools are in use).
         // Web fetch needs a beta header; bump it if the API version changes.
+        // LLM gateway: let developers point Claude Code (or any Anthropic
+        // client) at AiMe instead of api.anthropic.com, so their traffic is
+        // authenticated per-user, forced onto that user's assigned model, and
+        // counted against their token budget. Off by default. Base URL for
+        // developers is <APP_URL>/llm.
+        'gateway' => [
+            'enabled' => (bool) env('CHAT_GATEWAY_ENABLED', false),
+            // Visible prefix on issued tokens (also the only thing shown after
+            // creation, as a hint). The secret itself is stored hashed.
+            'token_prefix' => env('CHAT_GATEWAY_TOKEN_PREFIX', 'aime'),
+        ],
+
         'web_tools' => (bool) env('ANTHROPIC_WEB_TOOLS', true),
         'web_tool_max_uses' => (int) env('ANTHROPIC_WEB_TOOL_MAX_USES', 5),
         // Web search is GA. Web fetch needs a beta header — kept as its own

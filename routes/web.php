@@ -20,6 +20,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('dashboard', [DashboardController::class, 'index'])->name('dashboard');
     Route::patch('dashboard/usage-settings', [DashboardController::class, 'updateUsageSettings'])
         ->name('dashboard.usage-settings');
+    Route::patch('dashboard/users/{user}/limits', [DashboardController::class, 'updateUserLimits'])
+        ->name('dashboard.user-limits');
     Route::post('feedback', [DashboardController::class, 'storeFeedback'])
         ->middleware('throttle:integrations')
         ->name('feedback.store');
