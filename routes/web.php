@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AnalyticsController;
 use App\Http\Controllers\ChatController;
 use App\Http\Controllers\ChatExportController;
 use App\Http\Controllers\ComposioController;
@@ -18,13 +19,18 @@ Route::get('/', function () {
 
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('dashboard', [DashboardController::class, 'index'])->name('dashboard');
-    Route::patch('dashboard/usage-settings', [DashboardController::class, 'updateUsageSettings'])
-        ->name('dashboard.usage-settings');
-    Route::patch('dashboard/users/{user}/limits', [DashboardController::class, 'updateUserLimits'])
-        ->name('dashboard.user-limits');
     Route::post('feedback', [DashboardController::class, 'storeFeedback'])
         ->middleware('throttle:integrations')
         ->name('feedback.store');
+
+    // Org-wide insights (team usage, cost/cache efficiency) — super admin
+    // only. We're the only ones who can see per-developer usage against the
+    // one shared Anthropic key, so this visibility lives here or nowhere.
+    Route::middleware('super_admin')->prefix('analytics')->name('analytics.')->group(function () {
+        Route::get('/', [AnalyticsController::class, 'index'])->name('index');
+        Route::patch('usage-settings', [AnalyticsController::class, 'updateUsageSettings'])->name('usage-settings');
+        Route::patch('users/{user}/limits', [AnalyticsController::class, 'updateUserLimits'])->name('user-limits');
+    });
 
     // User management — admins only (no public registration).
     Route::middleware('admin')->group(function () {

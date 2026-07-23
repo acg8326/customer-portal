@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Link, usePage } from '@inertiajs/vue3';
 import {
+    ChartNoAxesCombined,
     FolderOpen,
     LayoutGrid,
     MessageSquare,
@@ -31,6 +32,10 @@ const page = usePage();
 const isAdmin = computed(() =>
     ['admin', 'super_admin'].includes(page.props.auth?.user?.role ?? ''),
 );
+// Analytics is stricter — super admin only (matches User::isSuperAdmin()).
+const isSuperAdmin = computed(
+    () => page.props.auth?.user?.role === 'super_admin',
+);
 
 const mainNavItems = computed<NavItem[]>(() => [
     {
@@ -53,6 +58,16 @@ const mainNavItems = computed<NavItem[]>(() => [
         href: '/integrations',
         icon: Plug,
     },
+    // Super-admin only. Users stays below every other admin/super-admin page.
+    ...(isSuperAdmin.value
+        ? [
+              {
+                  title: 'Analytics',
+                  href: '/analytics',
+                  icon: ChartNoAxesCombined,
+              },
+          ]
+        : []),
     // Admin-only.
     ...(isAdmin.value ? [{ title: 'Users', href: '/users', icon: Users }] : []),
 ]);

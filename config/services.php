@@ -176,6 +176,16 @@ return [
             'token_prefix' => env('CHAT_GATEWAY_TOKEN_PREFIX', 'aime'),
         ],
 
+        // Anthropic's own org-wide rate-limit headers (anthropic-ratelimit-*),
+        // captured from gateway responses only — the in-app chat uses the SDK,
+        // which doesn't expose raw response headers. Shown on Analytics.
+        'rate_limit_capture_enabled' => (bool) env('ANTHROPIC_RATE_LIMIT_CAPTURE', true),
+        'rate_limit_cache_ttl' => (int) env('ANTHROPIC_RATE_LIMIT_CACHE_TTL', 300),
+
+        // Per-request logging (Analytics → Logs): who, when, model, tokens,
+        // latency, status — covers both the in-app chat and the gateway.
+        'request_log_enabled' => (bool) env('CHAT_REQUEST_LOG_ENABLED', true),
+
         'web_tools' => (bool) env('ANTHROPIC_WEB_TOOLS', true),
         'web_tool_max_uses' => (int) env('ANTHROPIC_WEB_TOOL_MAX_USES', 5),
         // Web search is GA. Web fetch needs a beta header — kept as its own

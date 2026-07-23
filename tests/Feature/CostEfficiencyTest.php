@@ -24,9 +24,9 @@ test('super admin sees the cost & efficiency card with correct math', function (
     seedCostConversation($superAdmin);
 
     $this->actingAs($superAdmin)
-        ->get('/dashboard')
+        ->get('/analytics')
         ->assertInertia(fn ($page) => $page
-            ->component('Dashboard')
+            ->component('Analytics')
             ->has('costEfficiency', fn ($ce) => $ce
                 // opus-4-8 at $5/$25 per MTok: 1M uncached (5.00) + 3M reads
                 // at 0.1x (1.50) + 1M writes at 1.25x (6.25) + 0.2M output
@@ -51,13 +51,10 @@ test('admins and members do not get cost data', function () {
     $admin = User::factory()->admin()->create();
     seedCostConversation($admin);
 
-    $this->actingAs($admin)
-        ->get('/dashboard')
-        ->assertInertia(fn ($page) => $page->where('costEfficiency', null));
-
-    $this->actingAs(User::factory()->create())
-        ->get('/dashboard')
-        ->assertInertia(fn ($page) => $page->where('costEfficiency', null));
+    // Analytics (where cost data lives) is super-admin only — a plain admin
+    // or member is blocked at the route, never sees the page at all.
+    $this->actingAs($admin)->get('/analytics')->assertStatus(403);
+    $this->actingAs(User::factory()->create())->get('/analytics')->assertStatus(403);
 });
 
 test('LLM_PRICES-style config override changes the estimate', function () {
@@ -67,7 +64,7 @@ test('LLM_PRICES-style config override changes the estimate', function () {
     seedCostConversation($superAdmin);
 
     $this->actingAs($superAdmin)
-        ->get('/dashboard')
+        ->get('/analytics')
         ->assertInertia(fn ($page) => $page
             // Doubled prices → doubled estimate.
             ->where('costEfficiency.total_usd', 35.5)

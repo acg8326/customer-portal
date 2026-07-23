@@ -38,6 +38,7 @@ class SecurityController extends Controller
                     ->all()
                 : [],
             'passwordRules' => Password::defaults()->toPasswordRulesString(),
+            'mustChangePassword' => $request->user()->must_change_password,
         ];
 
         if (Features::canManageTwoFactorAuthentication()) {
@@ -55,9 +56,12 @@ class SecurityController extends Controller
      */
     public function update(PasswordUpdateRequest $request): RedirectResponse
     {
-        $request->user()->update([
-            'password' => $request->password,
-        ]);
+        // Direct assignment, not update(): must_change_password isn't
+        // mass-assignable (it's only ever set server-side via forceFill).
+        $user = $request->user();
+        $user->password = $request->password;
+        $user->must_change_password = false;
+        $user->save();
 
         Inertia::flash('toast', ['type' => 'success', 'message' => __('Password updated.')]);
 

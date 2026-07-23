@@ -15,6 +15,7 @@ import { edit } from '@/routes/security';
 
 type Props = {
     passwordRules: string;
+    mustChangePassword: boolean;
 } & ManagePasskeysProps &
     ManageTwoFactorProps;
 
@@ -43,6 +44,15 @@ defineOptions({
             title="Security"
             description="Password, two-factor authentication, and passkeys"
         />
+
+        <div
+            v-if="props.mustChangePassword"
+            class="rounded-lg border border-brand-gold/40 bg-brand-gold/5 px-4 py-3 text-sm"
+        >
+            <strong class="font-medium">Set a new password to continue.</strong>
+            An admin created this account for you — replace the password they
+            gave you with one only you know before using the rest of the app.
+        </div>
 
         <SettingsSection label="Password">
             <p class="mb-4 text-sm text-muted-foreground">

@@ -21,10 +21,15 @@ are wired up and reachable but don't have real functionality yet.
 **Roles & user management (admin-only).** Three roles: **`super_admin`**,
 **`admin`**, and **`user`** (a `role` column on `users`). Since there's no
 public registration, **admins add members** on the **Users** page (`/users`,
-in the sidebar for admins only) — create with name/email/password/role (the
-UI only assigns admin/user; super admin is granted by migration/seed), or
-remove a user (can't remove yourself; **only the super admin can remove a
-super admin**). New accounts are pre-verified so they can sign in immediately.
+in the sidebar for admins only, positioned below Analytics) — create with
+name/email/role (the UI only assigns admin/user; super admin is granted by
+migration/seed). The password field is pre-filled with a random,
+cryptographically-generated password (Web Crypto `getRandomValues`, 20
+chars, guaranteed upper/lower/digit/symbol) the admin can copy with a button
+right there in the form, or regenerate with another; the member changes it
+themselves at **Settings → Security** after logging in. Or remove a user
+(can't remove yourself; **only the super admin can remove a super admin**).
+New accounts are pre-verified so they can sign in immediately.
 Enforced by the `admin` middleware
 ([`EnsureUserIsAdmin`](../app/Http/Middleware/EnsureUserIsAdmin.php)) on the
 routes and by `User::isAdmin()` (true for both admin tiers) /
@@ -66,7 +71,11 @@ A bespoke, modern "AI product" login:
   slides in as an overlay drawer.
 - Brand: **CW Global People** (logo at the top of the sidebar, in
   [`AppLogo.vue`](../resources/js/components/AppLogo.vue)).
-- Nav items: **Dashboard**, **Chat**, **Projects**, **Integrations**.
+- Nav items: **Dashboard**, **Chat**, **Projects**, **Integrations**, plus
+  **Analytics** (super admin only) and, always last, **Users** (admin + super
+  admin) — both conditionally spread into the nav based on `auth.user.role`.
+  Users is deliberately kept below every other admin/super-admin page so new
+  pages don't get buried under it.
 - Also in the sidebar: a **Search** action (or ⌘/Ctrl-K, see §7) and, pinned to
   the bottom, the user menu (settings, logout).
 - Main pages still use the full window width; the sidebar sits beside the
@@ -102,7 +111,14 @@ A bespoke, modern "AI product" login:
   delete account (requires verified email).
 - **Security:** change password; enable/disable two-factor auth (with QR code
   and recovery codes); register and manage passkeys. Viewing this page requires
-  re-confirming your password.
+  re-confirming your password. **Forced first-time password change:** an
+  admin-created account (`must_change_password` on `users`, set by
+  `UserController::store()`) is redirected here from **every other page** —
+  enforced globally by
+  [`EnsurePasswordHasBeenChanged`](../app/Http/Middleware/EnsurePasswordHasBeenChanged.php),
+  not just hidden behind a link — until they set a password of their own; a
+  banner explains why they landed here. Updating the password
+  (`SecurityController::update()`) clears the flag.
 - **Skills:** create reusable **instruction presets**, add ready-made ones from a
   **starter library** (config `config/skills.php`), or **import a `SKILL.md`**
   (front-matter `name`/`description` + body). Each skill = name, emoji icon,
@@ -166,7 +182,7 @@ the **Claude API**.
   500) tokens per request.
 - **Workspace default model:** where a new chat starts is resolved as
   **workspace default → `ANTHROPIC_MODEL`**. The **super admin** sets the
-  workspace default for everyone from **Dashboard → Team usage → gear**
+  workspace default for everyone from **Analytics → Usage → gear**
   (stored in `app_settings` as `chat.default_model`, cleared = back to
   `.env`). A per-chat pick in the header still wins for that browser
   (`localStorage`). Values that drop off the allowlist are skipped
@@ -250,22 +266,32 @@ the **Claude API**.
 - **Token usage:** each reply's input/output tokens (from the Claude API `usage`)
   accumulate on the conversation and show as a small **"N tokens"** pill in the
   composer footer (hover for the in/out breakdown). Resets on New chat.
-- **Per-user token usage (+ optional cap):** usage is tracked per reply over a
-  rolling window (`USAGE_PERIOD_DAYS`, default 30) and shown on the **Dashboard**.
-  A cap is **optional**: `USAGE_TOKEN_LIMIT=0` (the default) means **unlimited** —
-  usage is still counted and displayed, but never blocks. Set a positive
-  `USAGE_TOKEN_LIMIT` to enforce a cap (then over-budget sends are blocked with a
-  "resets on <date>" message until the window rolls over). Turn tracking off
-  entirely with `USAGE_LIMIT_ENABLED=false`.
-  ([`TokenBudget`](../app/Services/TokenBudget.php).)
+- **Per-user token usage — three rolling windows (+ optional caps):** mirroring
+  Claude's own usage limits, every user has **three independent** rolling
+  windows — **session** (`USAGE_SESSION_HOURS`, default 5), **weekly**
+  (`USAGE_WEEKLY_DAYS`, default 7), and **period** (`USAGE_PERIOD_DAYS`,
+  default 30). Each window rolls forward from the user's first message in
+  that window and resets automatically once it elapses. A cap on any window is
+  **optional**: `*_TOKEN_LIMIT=0` (the default for all three) means
+  **unlimited** for that window — usage is still counted and displayed, but
+  never blocks. A request is blocked by whichever **enabled** window is
+  exhausted (checked shortest-first: session → weekly → period), and the 429
+  names the actual window ("this session" / "this week" / "this period").
+  Turn tracking off entirely with `USAGE_LIMIT_ENABLED=false`. The three
+  windows share one implementation — a small `TokenBudgetTier` value object
+  describes each window's columns/config, and `TokenBudget` iterates them
+  instead of repeating the same refresh/exceeded/record/snapshot logic three
+  times. ([`TokenBudget`](../app/Services/TokenBudget.php),
+  [`TokenBudgetTier`](../app/Services/TokenBudgetTier.php).)
 - **Dashboard layout:** the page opens with a time-of-day greeting
-  ("Good morning, Alex" + date). Members see their token-usage card and the
-  feedback form. Super admins instead get a **KPI strip** — four glanceable
-  tiles (your tokens with mini progress bar, team total, est. API spend with
-  $-saved-by-caching, 👍/👎 feedback score) — and a single **Organization
-  insights** card with segmented tabs (**Team usage / Cost & efficiency /
-  Feedback**) so only one detail view is open at a time, instead of five
-  stacked full-width cards.
+  ("Good morning, Alex" + date), then a **Token usage** card shown to
+  **everyone** (super admins included) with a compact row per window —
+  Session / Weekly / Period — each showing `used / limit`, a thin bar, and a
+  "resets in Xh/Xd" caption; a warning banner names whichever window is
+  ≥90% used. Super admins additionally see an **Answer feedback** section
+  (thumbs-up/down + written feedback, viewing only) and a **View analytics**
+  link to the Analytics page (below) — org-wide numbers no longer live on the
+  Dashboard.
 - **LLM gateway — Claude Code through AiMe (feature-flagged, off by default):**
   with `CHAT_GATEWAY_ENABLED=true`, AiMe exposes an Anthropic-compatible
   surface at `/llm/v1` (`messages` + `messages/count_tokens`) that developers
@@ -291,47 +317,78 @@ the **Claude API**.
   nav item 404/hide when the gateway is off.
   ([`GatewayToken`](../app/Models/GatewayToken.php),
   [`GatewayTokenController`](../app/Http/Controllers/Settings/GatewayTokenController.php).)
-- **Per-user model + token limit (super admin):** on the **Dashboard → Team
-  usage** card, each member row has a gear that opens an inline editor to
-  **pin that user to a specific model** and/or give them **their own token
-  cap**. A pinned model is enforced **server-side**
-  (`ChatController::effectiveModel()` forces it whatever the client sends) — in
-  the portal the chat's model picker **locks** with a 🔒, and via the LLM
-  gateway the developer's Claude Code model choice is overridden the same way.
-  "Free choice" clears the pin. The per-user cap overrides the workspace limit
-  in [`TokenBudget`](app/Services/TokenBudget.php) — blank = inherit the
-  workspace limit, `0` = unlimited for that user. Stored on the `users` table
-  (`assigned_model`, `token_limit`). The Team usage list has a **filter box**
-  to find a member by name or role. (`PATCH /dashboard/users/{user}/limits`,
-  super admin only.)
+- **Analytics (super admin only, `/analytics`):** a standalone page — separate
+  from the Dashboard — that consolidates every org-wide number the super admin
+  needs. It exists because AiMe is the *only* place this data can live:
+  Anthropic's own console sees one undifferentiated account, never a
+  per-developer breakdown, since every request carries the same central key.
+  Gated by **route middleware** (`super_admin`, stricter than the `admin`
+  middleware guarding `/users`) rather than a controller check —
+  [`AnalyticsController`](../app/Http/Controllers/AnalyticsController.php),
+  [`EnsureUserIsSuperAdmin`](../app/Http/Middleware/EnsureUserIsSuperAdmin.php).
+  Four tabs:
+  - **Usage** — every member's tokens across all three windows (heaviest-used
+    first, with a three-segment Session/Weekly/Period bar per row) plus the
+    org total; a **filter box** to find a member by name or role. A gear opens
+    an inline editor to **pin a member to a specific model** and/or give them
+    **their own cap on each of the three windows**. A pinned model is enforced
+    **server-side** (`ChatController::effectiveModel()` forces it whatever the
+    client sends) — in the portal the chat's model picker **locks** with a 🔒,
+    and via the LLM gateway the developer's Claude Code model choice is
+    overridden the same way. "Free choice"/blank clears a pin or cap; `0` on
+    any cap means unlimited for that user on that window. Stored on the
+    `users` table (`assigned_model`, `token_limit`, `session_token_limit`,
+    `weekly_token_limit`). A second gear opens **workspace-wide** settings —
+    limit + duration for all three windows, plus the default model for new
+    chats — stored in `app_settings` ([`AppSettings`](../app/Services/AppSettings.php))
+    and overriding `.env` immediately, no redeploy; clearing falls back to
+    `.env`. (`PATCH /analytics/users/{user}/limits`,
+    `PATCH /analytics/usage-settings`.)
+  - **Cost & caching** — estimated API spend in dollars, aggregated over all
+    stored conversations. Three tiles — **prompt-cache hit rate** (Claude
+    input tokens served from cache), **$ saved by caching** (reads bill at
+    ~10% of input price), and uncached input — plus a per-model table (model,
+    provider, input/output tokens, est. cost, sorted by cost). Prices are
+    config, not code: per-model `[input, output]` USD/MTok in
+    `services.llm_pricing` with a single-line override
+    `LLM_PRICES="model:input:output,…"`, a `LLM_PRICE_DEFAULT_INPUT/_OUTPUT`
+    fallback for unlisted models, and cache multipliers
+    (`LLM_CACHE_READ_MULTIPLIER` 0.1 / `LLM_CACHE_WRITE_MULTIPLIER` 1.25).
+    Estimates only — deleted chats drop out, and cache columns count from
+    the day caching was deployed, not from account creation.
+  - **Rate limits** — Anthropic's own org-wide rate-limit response headers
+    (`anthropic-ratelimit-{dimension}-{limit|remaining|reset}`), captured
+    from **gateway traffic only** — the in-app chat goes through the
+    Anthropic PHP SDK, which returns typed objects and doesn't expose raw
+    response headers, so there's no capture point on that path (stated
+    plainly in the UI, not silently omitted). Held in a short-TTL cache
+    (`ANTHROPIC_RATE_LIMIT_CACHE_TTL`, default 300s) rather than a table —
+    these headers are a point-in-time gauge of shared account state, not
+    per-user history, and the TTL naturally shows "no data" once gateway
+    traffic goes quiet. Toggle with `ANTHROPIC_RATE_LIMIT_CAPTURE`.
+    ([`AnthropicRateLimits`](../app/Services/AnthropicRateLimits.php).)
+  - **Logs** — a filterable, paginated request log (who, when, model, tokens,
+    latency, status) covering **both** the in-app chat and the gateway.
+    Filter by surface (chat/gateway), status bucket (2xx/4xx/5xx), member, or
+    date range. One row per request, written synchronously right after the
+    turn completes (or fails) — no queue, since the DB insert is negligible
+    next to the outbound HTTPS call already on that path. `count_tokens`
+    calls are deliberately not logged (metadata-only, would dilute the "real
+    request" signal). Toggle with `CHAT_REQUEST_LOG_ENABLED`.
+    ([`RequestLog`](../app/Models/RequestLog.php).)
 - **Member management (Users page):** admins **add, edit, and remove** members
-  at `/users`. The row **pencil** opens a modal to change **name, email, and
+  at `/users` (below Analytics in the sidebar). Adding a member only takes
+  name/email/role — the password field is auto-filled with a random,
+  cryptographically-strong password (client-generated), with a **Generate**
+  button to reroll it and a **Copy** button to grab it before submitting. The
+  new member is **forced to change it** on first login (see Security, §5)
+  before they can use anything else. The row **pencil** opens a modal to
+  change **name, email, and
   role**; a **search box** filters by name/email/role. Guardrails (mirrored
   server-side): only the super admin can act on a super-admin account, you
   can't change **your own** role, and a super admin's role isn't changed via
   this form. Membership only — the per-user *model/limit* governance lives on
-  the dashboard (above), not here. (`POST/PATCH/DELETE /users`, admin only.)
-- **Team usage screen + in-app limit settings (super admin):** the Dashboard's
-  **Team usage** card lists every member's tokens in their current window
-  (heaviest first, with per-user progress bars against the limit) plus the
-  **org total**, and a gear opens inline settings to change the **token limit
-  per user**, **period days**, and the **workspace default model** for everyone
-  at once. UI-set values are stored in the new `app_settings` table
-  ([`AppSettings`](../app/Services/AppSettings.php)) and **override the
-  `.env` defaults** immediately — no redeploy; clearing falls back to `.env`.
-  (`PATCH /dashboard/usage-settings`, super admin only.)
-- **Cost & efficiency card (super admin):** estimated API spend in dollars,
-  aggregated over all stored conversations. Three tiles — **prompt-cache hit
-  rate** (Claude input tokens served from cache), **$ saved by caching**
-  (reads bill at ~10% of input price), and uncached input — plus a per-model
-  table (model, provider, input/output tokens, est. cost, sorted by cost).
-  Prices are config, not code: per-model `[input, output]` USD/MTok in
-  `services.llm_pricing` with a single-line override
-  `LLM_PRICES="model:input:output,…"`, a `LLM_PRICE_DEFAULT_INPUT/_OUTPUT`
-  fallback for unlisted models, and cache multipliers
-  (`LLM_CACHE_READ_MULTIPLIER` 0.1 / `LLM_CACHE_WRITE_MULTIPLIER` 1.25).
-  Estimates only — deleted chats drop out, and cache columns count from
-  deployment day.
+  Analytics (above), not here. (`POST/PATCH/DELETE /users`, admin only.)
 - **Prompt caching + history trimming:** two `cache_control` breakpoints on
   **every** Claude path — plain, MCP/web (beta), and the connected-tools loop.
   The first sits on the system block; because the API builds the cache prefix

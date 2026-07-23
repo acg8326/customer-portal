@@ -107,7 +107,9 @@ The upstream response is likewise relayed verbatim.
 ## 4. Governance: model pin + token budget
 
 Both are **per-user overrides** on the `users` table, set by the super admin on
-**Dashboard → Team usage** (see [features.md](features.md)):
+**Analytics → Usage** (see [features.md](features.md)). Session and weekly
+token budgets exist too, same override semantics — see the tiered-budget
+entry in [changelog.md](changelog.md).
 
 - **`assigned_model`** (nullable) — pins the model. Enforced **server-side** in
   `ChatController::effectiveModel()`, so it applies identically to the portal
@@ -180,6 +182,24 @@ The upstream is `config('services.anthropic.base_url')` (default
 
 ---
 
+## 7a. Visibility into gateway traffic (Analytics)
+
+The super admin can see gateway activity at **Analytics** (`/analytics`, see
+[features.md](features.md)):
+
+- **Rate limits tab** — Anthropic's own org-wide rate-limit response headers,
+  captured from every gateway request. **This is gateway-only.** The in-app
+  chat calls Anthropic through the official PHP SDK, which returns typed
+  response objects and never exposes the raw HTTP response — there is no
+  capture point on that path. Toggle: `ANTHROPIC_RATE_LIMIT_CAPTURE` (default
+  on); `ANTHROPIC_RATE_LIMIT_CACHE_TTL` controls how quickly a quiet gateway
+  shows as "no data" (default 300s).
+- **Logs tab** — every gateway request (and every chat request) as a row:
+  user, model, tokens, latency, status. Filterable by surface, so you can
+  isolate `gateway`-only traffic. Toggle: `CHAT_REQUEST_LOG_ENABLED`.
+
+---
+
 ## 8. Deploy notes
 
 - The `assigned_model` / `token_limit` columns and the `gateway_tokens` table
@@ -203,8 +223,10 @@ The upstream is `config('services.anthropic.base_url')` (default
 | `bootstrap/app.php` | Registers the group + `GatewayAuth`; adds `llm/*` to JSON rendering |
 | `app/Http/Middleware/GatewayAuth.php` | Token → user; Anthropic-style 401; enable check |
 | `app/Http/Controllers/GatewayController.php` | Budget gate (429), raw-body forward |
-| `app/Services/AnthropicGateway.php` | Model pin, upstream forward, stream relay, usage record |
-| `app/Services/SseUsageParser.php` | Tallies token usage from the SSE stream |
+| `app/Services/AnthropicGateway.php` | Model pin, upstream forward, stream relay, usage record, request log |
+| `app/Services/SseUsageParser.php` | Tallies token usage (input/output split) from the SSE stream |
+| `app/Services/AnthropicRateLimits.php` | Captures rate-limit headers into a short-TTL cache (Analytics) |
+| `app/Models/RequestLog.php` | Per-request log row (Analytics → Logs) |
 | `app/Models/GatewayToken.php` | Hashed tokens: `issue()`, `findActive()`, `hash()` |
 | `app/Http/Controllers/Settings/GatewayTokenController.php` | Developer access page + token CRUD |
 | `resources/js/pages/settings/DeveloperAccess.vue` | The setup UI |

@@ -47,6 +47,16 @@ test('an admin can add a user with a role', function () {
         ->and($created->email_verified_at)->not->toBeNull(); // pre-verified
 });
 
+test('adding a user requires a password', function () {
+    $admin = User::factory()->admin()->create();
+
+    $this->actingAs($admin)->post('/users', [
+        'name' => 'No Password', 'email' => 'no.password@cwglobalpeople.com', 'role' => 'user',
+    ])->assertSessionHasErrors('password');
+
+    expect(User::where('email', 'no.password@cwglobalpeople.com')->exists())->toBeFalse();
+});
+
 test('adding a user validates email uniqueness and role', function () {
     $admin = User::factory()->admin()->create();
     $existing = User::factory()->create();

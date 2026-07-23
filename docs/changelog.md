@@ -3,6 +3,103 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Forced first-time password change for admin-created accounts
+
+- New `must_change_password` column on `users` (default `false`), set `true`
+  whenever `UserController::store()` creates an account. A new global
+  middleware, [`EnsurePasswordHasBeenChanged`](../app/Http/Middleware/EnsurePasswordHasBeenChanged.php)
+  (appended to the `web` group in `bootstrap/app.php`), redirects **every**
+  page to Settings → Security while the flag is set — not just a link the
+  member might not notice — with a small allow-list of routes needed to get
+  there (login, logout, 2FA challenge, password confirm/reset, verification,
+  and the security page + its update endpoint itself).
+- Security.vue shows a banner explaining why they landed there when the flag
+  is set. `SecurityController::update()` clears the flag the moment the
+  member sets their own password (direct attribute assignment, not
+  `update()` — `must_change_password` is deliberately not mass-assignable).
+
+## Auto-generated passwords for new members; Users pinned below Analytics
+
+- The Add-user form's password field is now pre-filled with a random,
+  cryptographically-strong password generated client-side (Web Crypto
+  `getRandomValues`, 20 chars, guaranteed upper/lower/digit/symbol, no
+  ambiguous characters) instead of asking the admin to type one. A
+  **Generate** button rerolls it and a **Copy** button grabs it — both right
+  in the form, before submitting — so the admin has it ready to hand off the
+  moment the member is created. The member changes it themselves at
+  Settings → Security after logging in. The server still validates the
+  submitted password against the same `Password::defaults()` policy as
+  before.
+- Sidebar order: **Users** now always renders after every other admin/
+  super-admin page (currently just Analytics) instead of before it, so new
+  admin pages don't get buried below member management.
+
+## Analytics — Rate limits + Logs
+
+- Added **Rate limits** and **Logs** as two more Analytics tabs.
+- **Rate limits**: captures Anthropic's own `anthropic-ratelimit-*` response
+  headers from **gateway traffic only** (the in-app chat's SDK doesn't expose
+  raw response headers — stated plainly in the UI as a known limitation, not
+  silently dropped). Held in a short-TTL cache
+  (`ANTHROPIC_RATE_LIMIT_CACHE_TTL`, default 300s), not a table — these are a
+  point-in-time gauge of shared account state, not per-user history,
+  and the TTL naturally shows "no data" once traffic goes quiet. Toggle:
+  `ANTHROPIC_RATE_LIMIT_CAPTURE`. New `AnthropicRateLimits` service.
+- **Logs**: a new `request_logs` table (append-only, `nullOnDelete` on the
+  user so the audit trail survives account removal) records every chat and
+  gateway request — user, surface, model, input/output tokens, status,
+  latency — written synchronously right after the turn (no queue; the insert
+  is negligible next to the outbound HTTPS call already on that path).
+  `count_tokens` calls aren't logged (metadata-only). The Logs tab filters by
+  surface/status-bucket/member/date range and paginates. Toggle:
+  `CHAT_REQUEST_LOG_ENABLED`. New `RequestLog` model + migration;
+  `SseUsageParser` gained `inputTokens()`/`outputTokens()` getters so streamed
+  gateway requests can log a real split instead of nulls.
+
+## Tiered token budgets — session + weekly, on top of the existing period
+
+- Mirrors Claude's own usage-limit UX: every user now has **three**
+  independent rolling windows instead of one — **session** (resets
+  `USAGE_SESSION_HOURS` after the first message, default 5) and **weekly**
+  (`USAGE_WEEKLY_DAYS`, default 7), alongside the existing 30-day **period**.
+  A request is blocked by whichever **enabled** window is exhausted, checked
+  shortest-first (session → weekly → period); the 429 names the actual window
+  instead of always saying "period."
+- All three windows are **per-user overridable**, same semantics as the
+  existing `token_limit` (blank = inherit the workspace default, `0` =
+  unlimited for that user). New `users` columns: `session_budget_used`/
+  `_started_at`, `weekly_budget_used`/`_started_at`, `session_token_limit`,
+  `weekly_token_limit`.
+- `TokenBudget` was redesigned around a small `TokenBudgetTier` value object
+  so the three windows share one refresh/exceeded/record/snapshot
+  implementation instead of copy-pasting it three times. `snapshot()` keeps
+  its existing flat shape for backward compatibility (those fields are now
+  the *period* tier) and adds nested `period`/`session`/`weekly` objects. New
+  `firstExceededTier()` names which window is blocking, used only to make the
+  chat's 429 message accurate.
+- Both the Analytics **Usage** tab (workspace settings + per-user editor) and
+  the Dashboard's personal usage card show all three windows now.
+
+## Analytics — a new super-admin-only page
+
+- Why: AiMe is the *only* place that can show **per-developer** usage against
+  the shared Anthropic key — Anthropic's own console sees one undifferentiated
+  account, never a breakdown by user. That visibility has to live here.
+- Extracted **Team usage** and **Cost & efficiency** off the Dashboard into a
+  new standalone `/analytics` page (pure move, no behavior change at the time
+  of extraction — the tiered-budget and Rate-limits/Logs work above landed
+  directly on the new page afterward). Gated by a new **route middleware**
+  (`super_admin`, stricter than the `admin` middleware already guarding
+  `/users`) instead of a controller-level check. New `AnalyticsController`,
+  `EnsureUserIsSuperAdmin` middleware, `Analytics.vue`, sidebar item.
+- The Dashboard is simpler now: the KPI-strip-vs-plain-card branching is gone
+  — **everyone**, including super admins, sees the same personal "Token
+  usage" card. Super admins keep an **Answer feedback** section and get a
+  **View analytics** link.
+- The per-user model/limit editor and the workspace usage-settings form moved
+  with Team usage — their routes are now `PATCH /analytics/users/{user}/limits`
+  and `PATCH /analytics/usage-settings` (was `/dashboard/...`).
+
 ## Developer access — beginner-proof VS Code setup guide
 
 - Rewrote the **Settings → Developer access** setup section into six numbered

@@ -48,6 +48,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\NetsuiteConnection;
 use App\Models\Project;
+use App\Models\RequestLog;
 use App\Models\Skill;
 use App\Models\User;
 use App\Services\AppSettings;
@@ -111,6 +112,12 @@ class ChatController extends Controller
     private int $cacheReadTokens = 0;
 
     private int $cacheWriteTokens = 0;
+
+    /**
+     * When this turn's request started (set at the top of send()/stream()),
+     * for the request log's latency_ms (Analytics → Logs).
+     */
+    private float $turnStartedAt = 0;
 
     /**
      * Render the chat page with the user's saved conversations and model list.
@@ -314,6 +321,7 @@ class ChatController extends Controller
      */
     public function send(Request $request): JsonResponse
     {
+        $this->turnStartedAt = microtime(true);
         $uploads = self::uploadsProps();
         $hasFiles = $uploads['enabled'] && $request->hasFile('files');
 
@@ -343,13 +351,7 @@ class ChatController extends Controller
         $budget = app(TokenBudget::class);
 
         if ($budget->exceeded($request->user())) {
-            $snapshot = $budget->snapshot($request->user());
-
-            return response()->json([
-                'message' => 'You have used your token allowance for this period. It resets on '
-                    .Carbon::parse($snapshot['resets_at'])->toDayDateTimeString().'.',
-                'usage_limit' => $snapshot,
-            ], 429);
+            return response()->json($this->usageLimitResponse($budget, $request->user()), 429);
         }
 
         [$conversation, $userId, $selectedModel] = $this->startTurn($request, $hasFiles);
@@ -468,6 +470,7 @@ class ChatController extends Controller
                 'error' => $e->getMessage(),
             ]);
             report($e);
+            $this->logChatRequest($userId, $selectedModel, null, null, 502);
 
             return response()->json([
                 'message' => 'Sorry — the assistant could not respond right now. Please try again.',
@@ -482,6 +485,7 @@ class ChatController extends Controller
      */
     public function stream(Request $request): JsonResponse|StreamedResponse
     {
+        $this->turnStartedAt = microtime(true);
         $uploads = self::uploadsProps();
         $hasFiles = $uploads['enabled'] && $request->hasFile('files');
 
@@ -523,14 +527,10 @@ class ChatController extends Controller
             ], 503);
         }
 
-        if (app(TokenBudget::class)->exceeded($request->user())) {
-            $snapshot = app(TokenBudget::class)->snapshot($request->user());
+        $budget = app(TokenBudget::class);
 
-            return response()->json([
-                'message' => 'You have used your token allowance for this period. It resets on '
-                    .Carbon::parse($snapshot['resets_at'])->toDayDateTimeString().'.',
-                'usage_limit' => $snapshot,
-            ], 429);
+        if ($budget->exceeded($request->user())) {
+            return response()->json($this->usageLimitResponse($budget, $request->user()), 429);
         }
 
         [$conversation, $userId, $selectedModel] = $this->startTurn($request, $hasFiles);
@@ -796,6 +796,9 @@ class ChatController extends Controller
                     'error' => $e->getMessage(),
                 ]);
                 report($e);
+                // The SSE transport already sent HTTP 200 (headers went out
+                // before the failure); log the turn's real outcome instead.
+                $this->logChatRequest($userId, $selectedModel, null, null, 500);
 
                 $this->emit('error', [
                     'message' => 'Sorry — the assistant could not respond right now. Please try again.',
@@ -880,6 +883,28 @@ class ChatController extends Controller
     {
         $this->cacheReadTokens += (int) $usage->cacheReadInputTokens;
         $this->cacheWriteTokens += (int) $usage->cacheCreationInputTokens;
+    }
+
+    /**
+     * The 429 body for an over-budget user, naming whichever window
+     * (session/weekly/period) is actually the tightest one right now instead
+     * of always blaming the period.
+     *
+     * @return array{message: string, usage_limit: array<string, mixed>}
+     */
+    private function usageLimitResponse(TokenBudget $budget, User $user): array
+    {
+        $snapshot = $budget->snapshot($user);
+        $tier = $budget->firstExceededTier($user) ?? 'period';
+        /** @var array{resets_at: string|null} $tierSnapshot */
+        $tierSnapshot = $snapshot[$tier];
+        $label = ['session' => 'session', 'weekly' => 'week', 'period' => 'period'][$tier];
+
+        return [
+            'message' => "You have used your token allowance for this {$label}. It resets on "
+                .Carbon::parse($tierSnapshot['resets_at'])->toDayDateTimeString().'.',
+            'usage_limit' => $snapshot,
+        ];
     }
 
     /**
@@ -1845,6 +1870,27 @@ class ChatController extends Controller
     }
 
     /**
+     * Record one chat request to the Logs table (Analytics → Logs). A no-op
+     * when disabled via config('services.anthropic.request_log_enabled').
+     */
+    private function logChatRequest(int $userId, ?string $model, ?int $inputTokens, ?int $outputTokens, int $status): void
+    {
+        if (! config('services.anthropic.request_log_enabled', true)) {
+            return;
+        }
+
+        RequestLog::create([
+            'user_id' => $userId,
+            'surface' => 'chat',
+            'model' => $model,
+            'input_tokens' => $inputTokens,
+            'output_tokens' => $outputTokens,
+            'status' => $status,
+            'latency_ms' => (int) round((microtime(true) - $this->turnStartedAt) * 1000),
+        ]);
+    }
+
+    /**
      * Persist the assistant reply, update token totals, charge the user's
      * budget, and queue the n8n event. Shared by send() and stream().
      */
@@ -1866,6 +1912,7 @@ class ChatController extends Controller
             $conversation->completion_tokens += $outputTokens;
 
             app(TokenBudget::class)->record($request->user(), $inputTokens + $outputTokens);
+            $this->logChatRequest($userId, $selectedModel, $inputTokens, $outputTokens, 200);
 
             $assistantMessage = new Message;
             $assistantMessage->role = 'assistant';
@@ -1934,6 +1981,8 @@ class ChatController extends Controller
         foreach ($request->user()->integrations()->whereIn('provider', $providers)->pluck('provider') as $provider) {
             DispatchN8nEvent::dispatch($userId, 'chat.completed', $payload, (string) $provider);
         }
+
+        $this->logChatRequest($userId, $selectedModel, $inputTokens, $outputTokens, 200);
 
         return $assistantMessage;
     }

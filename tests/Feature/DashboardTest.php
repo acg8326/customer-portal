@@ -14,3 +14,15 @@ test('authenticated users can visit the dashboard', function () {
     $response = $this->get(route('dashboard'));
     $response->assertOk();
 });
+
+test('the dashboard no longer carries team usage or cost efficiency (moved to Analytics)', function () {
+    $superAdmin = User::factory()->superAdmin()->create();
+
+    $this->actingAs($superAdmin)
+        ->get(route('dashboard'))
+        ->assertInertia(fn ($page) => $page
+            ->component('Dashboard')
+            ->missing('teamUsage')
+            ->missing('costEfficiency')
+            ->has('feedback'));
+});

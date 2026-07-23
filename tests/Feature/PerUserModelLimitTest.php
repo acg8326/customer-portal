@@ -79,53 +79,6 @@ test('the chat page sends the locked model to a pinned user', function () {
         ->assertInertia(fn ($page) => $page->where('lockedModel', null));
 });
 
-// --- Super admin editing --------------------------------------------------------
-
-test('the super admin can set a user model and limit; others cannot', function () {
-    $superAdmin = User::factory()->superAdmin()->create();
-    $target = User::factory()->create();
-
-    $this->actingAs($superAdmin)
-        ->patch("/dashboard/users/{$target->id}/limits", [
-            'assigned_model' => 'claude-haiku-4-5',
-            'token_limit' => 250000,
-        ])
-        ->assertRedirect();
-
-    $target->refresh();
-    expect($target->assigned_model)->toBe('claude-haiku-4-5')
-        ->and($target->token_limit)->toBe(250000);
-
-    // 'default' + blank limit clears both overrides.
-    $this->actingAs($superAdmin)
-        ->patch("/dashboard/users/{$target->id}/limits", ['assigned_model' => 'default'])
-        ->assertRedirect();
-
-    $target->refresh();
-    expect($target->assigned_model)->toBeNull()
-        ->and($target->token_limit)->toBeNull();
-
-    $this->actingAs(User::factory()->admin()->create())
-        ->patch("/dashboard/users/{$target->id}/limits", ['assigned_model' => 'claude-opus-4-8'])
-        ->assertStatus(403);
-});
-
-test('the team usage card exposes each user\'s model and limit to the super admin', function () {
-    $superAdmin = User::factory()->superAdmin()->create(['name' => 'Root']);
-    User::factory()->create([
-        'name' => 'Pinned Dev',
-        'assigned_model' => 'claude-haiku-4-5',
-        'token_limit' => 300000,
-    ]);
-
-    $this->actingAs($superAdmin)
-        ->get('/dashboard')
-        ->assertInertia(fn ($page) => $page
-            ->has('teamUsage.users', 2)
-            ->where('teamUsage.users', fn ($users) => collect($users)->contains(
-                fn ($u) => $u['name'] === 'Pinned Dev'
-                    && $u['assigned_model'] === 'claude-haiku-4-5'
-                    && $u['token_limit'] === 300000
-                    && $u['effective_limit'] === 300000
-            )));
-});
+// Route-level coverage (updateUserLimits endpoint authorization, teamUsage
+// row shape) lives in tests/Feature/AnalyticsTest.php — the per-user editor
+// and team-usage card moved to the Analytics page.

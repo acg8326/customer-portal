@@ -1,7 +1,9 @@
 <?php
 
 use App\Models\GatewayToken;
+use App\Models\RequestLog;
 use App\Models\User;
+use App\Services\AnthropicRateLimits;
 use App\Services\TokenBudget;
 use Illuminate\Support\Facades\Http;
 
@@ -124,6 +126,95 @@ test('an empty tool input_schema is forwarded as {} and not flattened to []', fu
     // Anthropic API rejects "input_schema.properties: Input should be an object".
     Http::assertSent(fn ($request) => str_contains($request->body(), '"properties":{}')
         && ! str_contains($request->body(), '"properties":[]'));
+});
+
+// --- Rate limits + request logging ----------------------------------------------
+
+test('rate-limit headers are captured from a gateway response', function () use ($messageBody) {
+    Http::fake(['*/v1/messages' => Http::response($messageBody, 200, [
+        'anthropic-ratelimit-requests-limit' => '1000',
+        'anthropic-ratelimit-requests-remaining' => '999',
+        'anthropic-ratelimit-requests-reset' => '2026-07-23T00:01:00Z',
+    ])]);
+
+    $user = User::factory()->create();
+    $plaintext = issueToken($user);
+
+    $this->withToken($plaintext)
+        ->postJson('/llm/v1/messages', [
+            'model' => 'claude-opus-4-8',
+            'messages' => [['role' => 'user', 'content' => 'hi']],
+        ])
+        ->assertOk();
+
+    $current = AnthropicRateLimits::current();
+
+    expect($current)->not->toBeNull()
+        ->and($current['dimensions']['requests']['limit'])->toBe('1000')
+        ->and($current['dimensions']['requests']['remaining'])->toBe('999');
+});
+
+test('rate-limit capture is skipped when disabled', function () use ($messageBody) {
+    config(['services.anthropic.rate_limit_capture_enabled' => false]);
+
+    Http::fake(['*/v1/messages' => Http::response($messageBody, 200, [
+        'anthropic-ratelimit-requests-limit' => '1000',
+        'anthropic-ratelimit-requests-remaining' => '999',
+    ])]);
+
+    $user = User::factory()->create();
+    $plaintext = issueToken($user);
+
+    $this->withToken($plaintext)
+        ->postJson('/llm/v1/messages', [
+            'model' => 'claude-opus-4-8',
+            'messages' => [['role' => 'user', 'content' => 'hi']],
+        ])
+        ->assertOk();
+
+    expect(AnthropicRateLimits::current())->toBeNull();
+});
+
+test('a successful non-streaming gateway call is recorded in the request log', function () use ($messageBody) {
+    Http::fake(['*/v1/messages' => Http::response($messageBody, 200)]);
+
+    $user = User::factory()->create();
+    $plaintext = issueToken($user);
+
+    $this->withToken($plaintext)
+        ->postJson('/llm/v1/messages', [
+            'model' => 'claude-opus-4-8',
+            'messages' => [['role' => 'user', 'content' => 'hi']],
+        ])
+        ->assertOk();
+
+    $log = RequestLog::query()->where('surface', 'gateway')->first();
+
+    expect($log)->not->toBeNull()
+        ->and($log->user_id)->toBe($user->id)
+        ->and($log->model)->toBe('claude-opus-4-8')
+        ->and($log->input_tokens)->toBe(100)
+        ->and($log->output_tokens)->toBe(40)
+        ->and($log->status)->toBe(200)
+        ->and($log->latency_ms)->not->toBeNull();
+});
+
+test('request logging is skipped when disabled', function () use ($messageBody) {
+    config(['services.anthropic.request_log_enabled' => false]);
+
+    Http::fake(['*/v1/messages' => Http::response($messageBody, 200)]);
+
+    $user = User::factory()->create();
+    $plaintext = issueToken($user);
+
+    $this->withToken($plaintext)
+        ->postJson('/llm/v1/messages', [
+            'model' => 'claude-opus-4-8',
+            'messages' => [['role' => 'user', 'content' => 'hi']],
+        ])
+        ->assertOk();
+
+    expect(RequestLog::query()->count())->toBe(0);
 });
 
 test('an over-budget user is blocked with a 429 before any upstream call', function () {

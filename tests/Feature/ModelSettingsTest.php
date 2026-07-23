@@ -36,9 +36,13 @@ test('only the super admin can set the workspace default model', function () {
     $superAdmin = User::factory()->superAdmin()->create();
 
     $this->actingAs($superAdmin)
-        ->patch('/dashboard/usage-settings', [
+        ->patch('/analytics/usage-settings', [
             'token_limit' => 0,
             'period_days' => 30,
+            'session_token_limit' => 0,
+            'session_hours' => 5,
+            'weekly_token_limit' => 0,
+            'weekly_days' => 7,
             'default_model' => 'claude-sonnet-5',
         ])
         ->assertRedirect();
@@ -47,9 +51,13 @@ test('only the super admin can set the workspace default model', function () {
 
     // Picking "default" clears the override.
     $this->actingAs($superAdmin)
-        ->patch('/dashboard/usage-settings', [
+        ->patch('/analytics/usage-settings', [
             'token_limit' => 0,
             'period_days' => 30,
+            'session_token_limit' => 0,
+            'session_hours' => 5,
+            'weekly_token_limit' => 0,
+            'weekly_days' => 7,
             'default_model' => 'default',
         ])
         ->assertRedirect();
@@ -57,9 +65,13 @@ test('only the super admin can set the workspace default model', function () {
     expect(app(AppSettings::class)->get('chat.default_model'))->toBeNull();
 
     $this->actingAs(User::factory()->admin()->create())
-        ->patch('/dashboard/usage-settings', [
+        ->patch('/analytics/usage-settings', [
             'token_limit' => 0,
             'period_days' => 30,
+            'session_token_limit' => 0,
+            'session_hours' => 5,
+            'weekly_token_limit' => 0,
+            'weekly_days' => 7,
             'default_model' => 'claude-haiku-4-5',
         ])
         ->assertStatus(403);
@@ -69,9 +81,13 @@ test('an unlisted workspace default is rejected and the dashboard reports the st
     $superAdmin = User::factory()->superAdmin()->create();
 
     $this->actingAs($superAdmin)
-        ->patch('/dashboard/usage-settings', [
+        ->patch('/analytics/usage-settings', [
             'token_limit' => 0,
             'period_days' => 30,
+            'session_token_limit' => 0,
+            'session_hours' => 5,
+            'weekly_token_limit' => 0,
+            'weekly_days' => 7,
             'default_model' => 'gpt-4o',
         ]);
 
@@ -80,7 +96,7 @@ test('an unlisted workspace default is rejected and the dashboard reports the st
     app(AppSettings::class)->set('chat.default_model', 'claude-sonnet-5');
 
     $this->actingAs($superAdmin)
-        ->get('/dashboard')
+        ->get('/analytics')
         ->assertInertia(fn ($page) => $page
             ->where('teamUsage.default_model', 'claude-sonnet-5')
             ->where('teamUsage.env_default_model', config('services.anthropic.model')));

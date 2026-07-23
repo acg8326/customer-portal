@@ -70,4 +70,14 @@ class SseUsageParser
     {
         return $this->input + $this->output;
     }
+
+    public function inputTokens(): int
+    {
+        return $this->input;
+    }
+
+    public function outputTokens(): int
+    {
+        return $this->output;
+    }
 }

@@ -36,6 +36,9 @@ class UserController extends Controller
 
     public function store(Request $request): RedirectResponse
     {
+        // The member never types this themselves — the UI generates a random
+        // password client-side and lets the admin copy it before submitting;
+        // the member changes it at Settings → Security after logging in.
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'string', 'email', 'max:255', Rule::unique('users', 'email')],
@@ -45,13 +48,15 @@ class UserController extends Controller
 
         // forceFill so email_verified_at (not a fillable field) is set too;
         // the password 'hashed' cast still applies. Admin-created accounts are
-        // pre-verified so they can sign in immediately.
+        // pre-verified so they can sign in immediately, but must change the
+        // password an admin just saw before they can use the app.
         (new User)->forceFill([
             'name' => $validated['name'],
             'email' => $validated['email'],
             'role' => $validated['role'],
             'password' => $validated['password'],
             'email_verified_at' => now(),
+            'must_change_password' => true,
         ])->save();
 
         return back()->with('success', "Added {$validated['name']}.");

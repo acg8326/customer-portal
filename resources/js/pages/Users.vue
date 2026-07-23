@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { Head, router, useForm, usePage } from '@inertiajs/vue3';
 import {
+    Check,
+    Copy,
     Crown,
     Pencil,
     Plus,
+    RefreshCw,
     Search,
     Shield,
     Trash2,
@@ -92,6 +95,47 @@ const filteredUsers = computed(() => {
 
 // --- Add user ---------------------------------------------------------------------
 
+// Ambiguous characters (I, l, 1, O, 0) are excluded so a password read off
+// the screen can't be misread — copy/paste is still the expected path.
+const PASSWORD_CHARSETS = {
+    lower: 'abcdefghijkmnopqrstuvwxyz',
+    upper: 'ABCDEFGHJKLMNPQRSTUVWXYZ',
+    digits: '23456789',
+    symbols: '!@#$%^&*-_=+',
+};
+const PASSWORD_LENGTH = 20;
+
+function randomInt(max: number): number {
+    const buf = new Uint32Array(1);
+    crypto.getRandomValues(buf);
+
+    return buf[0] % max;
+}
+
+function pick(charset: string): string {
+    return charset[randomInt(charset.length)];
+}
+
+// Guarantees one char from each category (satisfies the mixedCase/letters/
+// numbers/symbols password policy), then fills and shuffles the rest.
+function generatePassword(length = PASSWORD_LENGTH): string {
+    const all = Object.values(PASSWORD_CHARSETS).join('');
+    const chars = [
+        pick(PASSWORD_CHARSETS.lower),
+        pick(PASSWORD_CHARSETS.upper),
+        pick(PASSWORD_CHARSETS.digits),
+        pick(PASSWORD_CHARSETS.symbols),
+        ...Array.from({ length: length - 4 }, () => pick(all)),
+    ];
+
+    for (let i = chars.length - 1; i > 0; i--) {
+        const j = randomInt(i + 1);
+        [chars[i], chars[j]] = [chars[j], chars[i]];
+    }
+
+    return chars.join('');
+}
+
 const open = ref(false);
 const form = useForm<{
     name: string;
@@ -103,6 +147,7 @@ const form = useForm<{
 function openAdd() {
     form.clearErrors();
     form.reset();
+    form.password = generatePassword();
     open.value = true;
 }
 
@@ -113,6 +158,19 @@ function save() {
             open.value = false;
             form.reset();
         },
+    });
+}
+
+const copied = ref<string | null>(null);
+
+function copy(text: string, key: string) {
+    navigator.clipboard?.writeText(text).then(() => {
+        copied.value = key;
+        setTimeout(() => {
+            if (copied.value === key) {
+                copied.value = null;
+            }
+        }, 1500);
     });
 }
 
@@ -305,9 +363,9 @@ function confirmRemove() {
             <DialogHeader>
                 <DialogTitle>Add user</DialogTitle>
                 <DialogDescription>
-                    They'll sign in with this email and password. Share the
-                    credentials securely; they can change their password after
-                    logging in.
+                    They'll sign in with this email and the generated password
+                    below — copy it now to share it securely. They can change it
+                    at Settings → Security after logging in.
                 </DialogDescription>
             </DialogHeader>
 
@@ -331,11 +389,35 @@ function confirmRemove() {
                 </div>
                 <div class="space-y-2">
                     <Label for="u-password">Password</Label>
-                    <Input
-                        id="u-password"
-                        v-model="form.password"
-                        type="password"
-                    />
+                    <div class="flex items-center gap-2">
+                        <Input
+                            id="u-password"
+                            v-model="form.password"
+                            type="text"
+                            class="font-mono"
+                        />
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="icon"
+                            title="Generate a new password"
+                            @click="form.password = generatePassword()"
+                        >
+                            <RefreshCw class="size-4" />
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="icon"
+                            title="Copy password"
+                            @click="copy(form.password, 'password')"
+                        >
+                            <component
+                                :is="copied === 'password' ? Check : Copy"
+                                class="size-4"
+                            />
+                        </Button>
+                    </div>
                     <p
                         v-if="form.errors.password"
                         class="text-sm text-destructive"
@@ -381,7 +463,7 @@ function confirmRemove() {
                             form.processing ||
                             form.name.trim() === '' ||
                             form.email.trim() === '' ||
-                            form.password === ''
+                            form.password.trim() === ''
                         "
                     >
                         Add user

@@ -1,6 +1,8 @@
 <?php
 
+use App\Http\Middleware\EnsurePasswordHasBeenChanged;
 use App\Http\Middleware\EnsureUserIsAdmin;
+use App\Http\Middleware\EnsureUserIsSuperAdmin;
 use App\Http\Middleware\GatewayAuth;
 use App\Http\Middleware\HandleAppearance;
 use App\Http\Middleware\HandleInertiaRequests;
@@ -33,9 +35,13 @@ return Application::configure(basePath: dirname(__DIR__))
             HandleInertiaRequests::class,
             AddLinkHeadersForPreloadedAssets::class,
             SecurityHeaders::class,
+            EnsurePasswordHasBeenChanged::class,
         ]);
 
-        $middleware->alias(['admin' => EnsureUserIsAdmin::class]);
+        $middleware->alias([
+            'admin' => EnsureUserIsAdmin::class,
+            'super_admin' => EnsureUserIsSuperAdmin::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

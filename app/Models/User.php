@@ -22,21 +22,28 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property string $role
  * @property string|null $assigned_model
  * @property int|null $token_limit
+ * @property int|null $session_token_limit
+ * @property int|null $weekly_token_limit
  * @property string|null $chat_preferences
  * @property string|null $preferred_language
  * @property bool $memory_enabled
  * @property Carbon|null $email_verified_at
  * @property string $password
+ * @property bool $must_change_password
  * @property string|null $two_factor_secret
  * @property string|null $two_factor_recovery_codes
  * @property Carbon|null $two_factor_confirmed_at
  * @property string|null $remember_token
  * @property int $token_budget_used
  * @property Carbon|null $token_budget_started_at
+ * @property int $session_budget_used
+ * @property Carbon|null $session_budget_started_at
+ * @property int $weekly_budget_used
+ * @property Carbon|null $weekly_budget_started_at
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  */
-#[Fillable(['name', 'email', 'password', 'role', 'assigned_model', 'token_limit'])]
+#[Fillable(['name', 'email', 'password', 'role', 'assigned_model', 'token_limit', 'session_token_limit', 'weekly_token_limit'])]
 #[Hidden(['password', 'two_factor_secret', 'two_factor_recovery_codes', 'remember_token'])]
 class User extends Authenticatable implements PasskeyUser
 {
@@ -78,10 +85,15 @@ class User extends Authenticatable implements PasskeyUser
         return [
             'email_verified_at' => 'datetime',
             'memory_enabled' => 'boolean',
+            'must_change_password' => 'boolean',
             'token_limit' => 'integer',
+            'session_token_limit' => 'integer',
+            'weekly_token_limit' => 'integer',
             'password' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
             'token_budget_started_at' => 'datetime',
+            'session_budget_started_at' => 'datetime',
+            'weekly_budget_started_at' => 'datetime',
         ];
     }
 

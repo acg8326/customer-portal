@@ -35,7 +35,8 @@ starter kit, then extended and rebranded for CW Global People.
 ## TL;DR — current state
 
 - **Auth:** Login only (Fortify) + 2FA + passkeys. `super_admin`/`admin`/`user`
-  roles; member management at `/users`.
+  roles; member management at `/users` (below Analytics in the sidebar) with
+  auto-generated passwords and a forced password change on first login.
 - **Chat:** streaming Claude assistant — model picker, extended thinking,
   web search/fetch with sources, file/image uploads, PDF/Word/CSV/XLSX export,
   auto-titles, manual + auto compaction, retry/edit/feedback, per-user
@@ -47,6 +48,13 @@ starter kit, then extended and rebranded for CW Global People.
   is an Anthropic-compatible proxy at `/llm` that developers point **Claude
   Code** at — enforcing a per-user model pin + token budget on one central key.
   See [llm-gateway.md](llm-gateway.md).
+- **Usage governance:** three rolling token windows per user — session
+  (hours), weekly, and period (~monthly) — each independently capped and
+  per-user overridable.
+- **Analytics (`/analytics`, super admin only):** org-wide usage, cost/cache
+  efficiency, Anthropic's own rate-limit gauges (gateway traffic), and a
+  filterable per-request log — the per-developer visibility Anthropic's own
+  console can't provide on a shared key.
 - **Database:** PostgreSQL (`cwgp_aime`).
 - **Seeded logins:** `alex.gordo@cwglobalpeople.com` (super admin),
   `dennies.salenga@cwglobalpeople.com` (admin), `admin@example.com`
