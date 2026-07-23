@@ -112,6 +112,14 @@ COMPOSIO_GITHUB_AUTH_CONFIG=ac_...
 COMPOSIO_HUBSPOT_AUTH_CONFIG=ac_...
 COMPOSIO_AIRTABLE_AUTH_CONFIG=ac_...
 
+# LLM gateway — let developers use Claude Code with AiMe as the backend.
+# Off by default; set true to expose /llm and the Developer access page.
+# See docs/llm-gateway.md. Do NOT set ANTHROPIC_BASE_URL on the server — that
+# belongs only in the developer's Claude Code config; the server must reach the
+# real api.anthropic.com.
+CHAT_GATEWAY_ENABLED=false
+# CHAT_GATEWAY_TOKEN_PREFIX=aime
+
 # Optional tunables have sensible defaults (see config/*.php): USAGE_*,
 # RATE_LIMIT_*, ANTHROPIC_TOOL_SAFETY, INTEGRATION_WEBHOOK_PROVIDERS, MCP_OAUTH_*,
 # COMPOSIO_MAX_TOOLS, COMPOSIO_MAX_TOOL_ROUNDS.

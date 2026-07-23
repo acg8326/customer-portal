@@ -4,7 +4,7 @@ Internal documentation for the Customer Portal (CWGP-AIMe). This folder
 describes **what the application is right now** — its features, stack, and how
 to run and operate it.
 
-> Status as of 2026-07-13. Keep these docs updated as the app grows — every
+> Status as of 2026-07-23. Keep these docs updated as the app grows — every
 > feature change updates `features.md` + `changelog.md` in the same commit.
 
 ## What this app is
@@ -26,6 +26,7 @@ starter kit, then extended and rebranded for CW Global People.
 | [performance.md](performance.md)         | Cost & performance levers — caching, routing, compaction, budgets    |
 | [netsuite.md](netsuite.md)               | NetSuite setup (TBA + OAuth 2.0), role permissions, troubleshooting  |
 | [composio-integrations.md](composio-integrations.md) | Composio integrations — API quirks, toolkit modes, add/debug playbook |
+| [llm-gateway.md](llm-gateway.md)         | AiMe as the backend for Claude Code — architecture, governance, setup |
 | [DEPLOYMENT.md](DEPLOYMENT.md)           | Production server setup + the one-command deploy                     |
 | [tech-stack.md](tech-stack.md)           | Frameworks, libraries, and project layout                            |
 | [changelog.md](changelog.md)             | What we've changed from the base starter kit                         |
@@ -42,6 +43,10 @@ starter kit, then extended and rebranded for CW Global People.
 - **Tools:** Slack/GitHub/HubSpot/Airtable (Composio), native NetSuite
   (TBA + OAuth 2.0), custom MCP servers, n8n/Zapier/Make webhooks — with a
   **hard approval gate** on destructive tool calls.
+- **Developer access (LLM gateway):** with `CHAT_GATEWAY_ENABLED=true`, AiMe
+  is an Anthropic-compatible proxy at `/llm` that developers point **Claude
+  Code** at — enforcing a per-user model pin + token budget on one central key.
+  See [llm-gateway.md](llm-gateway.md).
 - **Database:** PostgreSQL (`cwgp_aime`).
 - **Seeded logins:** `alex.gordo@cwglobalpeople.com` (super admin),
   `dennies.salenga@cwglobalpeople.com` (admin), `admin@example.com`
