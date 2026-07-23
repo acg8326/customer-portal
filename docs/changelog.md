@@ -3,6 +3,13 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Developer access — revoked tokens disappear from the list (bug fix)
+
+- Revoking a gateway token now removes it from **Settings → Developer access**.
+  Previously the list showed every token (including revoked ones), so revoking
+  looked like it did nothing. The row is still kept in the database for audit;
+  it's just filtered out of the list (`whereNull('revoked_at')`).
+
 ## LLM gateway — forward request/response bodies verbatim (bug fix)
 
 - Fixed `API Error: 400 tools.N.custom.input_schema.properties: Input should

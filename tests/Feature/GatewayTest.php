@@ -194,6 +194,20 @@ test('a user cannot revoke someone else\'s token', function () {
     expect($token->fresh()->revoked_at)->toBeNull();
 });
 
+test('revoked tokens are hidden from the developer-access list', function () {
+    $user = User::factory()->create();
+    [$live] = GatewayToken::issue($user, 'Live laptop');
+    [$dead] = GatewayToken::issue($user, 'Old laptop');
+    $dead->forceFill(['revoked_at' => now()])->save();
+
+    $this->actingAs($user)
+        ->get('/settings/developer-access')
+        ->assertInertia(fn ($page) => $page
+            ->component('settings/DeveloperAccess')
+            ->has('tokens', 1)
+            ->where('tokens.0.id', $live->id));
+});
+
 test('the developer-access page 404s when the gateway is disabled', function () {
     config(['services.anthropic.gateway.enabled' => false]);
 

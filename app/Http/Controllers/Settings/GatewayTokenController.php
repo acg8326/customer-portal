@@ -32,7 +32,10 @@ class GatewayTokenController extends Controller
             'baseUrl' => rtrim((string) config('app.url'), '/').'/llm',
             // Their governance, shown so they know what they'll get.
             'assignedModel' => $user->assigned_model,
+            // Only live tokens — revoked rows are kept for audit but hidden,
+            // so revoking a token makes it disappear from the list.
             'tokens' => $user->gatewayTokens()
+                ->whereNull('revoked_at')
                 ->orderByDesc('id')
                 ->get(['id', 'name', 'last_four', 'last_used_at', 'created_at'])
                 ->map(fn (GatewayToken $t): array => [
