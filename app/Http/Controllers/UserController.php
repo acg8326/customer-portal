@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
 use Inertia\Inertia;
@@ -18,9 +19,13 @@ class UserController extends Controller
 {
     public function index(Request $request): Response
     {
+        // Only the super admin governs per-user model/limit (same policy as the
+        // dashboard). Admins still manage membership but see these read-only.
+        $canGovern = $request->user()->isSuperAdmin();
+
         $users = User::query()
             ->orderBy('name')
-            ->get(['id', 'name', 'email', 'role', 'created_at'])
+            ->get(['id', 'name', 'email', 'role', 'created_at', 'assigned_model', 'token_limit'])
             ->map(fn (User $u): array => [
                 'id' => $u->id,
                 'name' => $u->name,
@@ -28,10 +33,22 @@ class UserController extends Controller
                 'role' => $u->role,
                 'created_at' => $u->created_at?->toDateString(),
                 'is_self' => $u->id === $request->user()->id,
+                'assigned_model' => $u->assigned_model,
+                'token_limit' => $u->token_limit,
             ])
             ->all();
 
-        return Inertia::render('Users', ['users' => $users]);
+        $models = [];
+
+        foreach (Config::array('services.anthropic.models') as $value => $label) {
+            $models[] = ['value' => $value, 'label' => $label];
+        }
+
+        return Inertia::render('Users', [
+            'users' => $users,
+            'canGovern' => $canGovern,
+            'models' => $models,
+        ]);
     }
 
     public function store(Request $request): RedirectResponse

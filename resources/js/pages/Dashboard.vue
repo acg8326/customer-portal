@@ -233,7 +233,8 @@ const editingUserId = ref<number | null>(null);
 // Drafts for the row being edited: model ('default' = inherit) and limit
 // ('' = inherit workspace limit).
 const userModelDraft = ref('default');
-const userLimitDraft = ref('');
+// A type="number" input can write a number here; '' means inherit.
+const userLimitDraft = ref<string | number>('');
 const savingUser = ref(false);
 
 const modelLabel = (value: string | null): string =>
@@ -260,7 +261,9 @@ function saveUserLimits(u: TeamUser) {
 
     savingUser.value = true;
 
-    const trimmed = userLimitDraft.value.trim();
+    // A type="number" input makes Vue hand us a number (or '' when blank), so
+    // normalise to a string before trimming.
+    const trimmed = String(userLimitDraft.value ?? '').trim();
 
     router.patch(
         `/dashboard/users/${u.id}/limits`,

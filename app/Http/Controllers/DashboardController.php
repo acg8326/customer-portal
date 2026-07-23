@@ -242,7 +242,8 @@ class DashboardController extends Controller
 
         Inertia::flash('toast', ['type' => 'success', 'message' => __('Updated :name.', ['name' => $user->name])]);
 
-        return to_route('dashboard');
+        // back() so this works from both the dashboard and the Users page.
+        return back();
     }
 
     /**

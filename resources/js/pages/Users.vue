@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { Head, router, useForm, usePage } from '@inertiajs/vue3';
-import { Crown, Plus, Shield, Trash2, User as UserIcon } from '@lucide/vue';
+import {
+    Crown,
+    Plus,
+    Settings2,
+    Shield,
+    Trash2,
+    User as UserIcon,
+} from '@lucide/vue';
 import { computed, ref } from 'vue';
 import { Button } from '@/components/ui/button';
 import {
@@ -29,9 +36,15 @@ type ManagedUser = {
     role: 'super_admin' | 'admin' | 'user';
     created_at: string | null;
     is_self: boolean;
+    assigned_model: string | null;
+    token_limit: number | null;
 };
 
-defineProps<{ users: ManagedUser[] }>();
+const props = defineProps<{
+    users: ManagedUser[];
+    canGovern: boolean;
+    models: { value: string; label: string }[];
+}>();
 
 const page = usePage();
 const flash = computed(
@@ -89,6 +102,61 @@ function confirmRemove() {
         },
     });
 }
+
+// --- Per-user model + token limit (super admin) -----------------------------------
+
+const modelLabel = (value: string | null) =>
+    props.models.find((m) => m.value === value)?.label ?? value;
+
+// How a user's pinned model reads in the table.
+const modelSummary = (u: ManagedUser) =>
+    u.assigned_model ? modelLabel(u.assigned_model) : 'Free choice';
+
+// How a user's token cap reads in the table.
+const limitSummary = (u: ManagedUser) => {
+    if (u.token_limit === null) {
+        return 'Workspace limit';
+    }
+
+    return u.token_limit === 0
+        ? 'Unlimited'
+        : `${u.token_limit.toLocaleString()} tokens`;
+};
+
+const editing = ref<ManagedUser | null>(null);
+const modelDraft = ref('default');
+const limitDraft = ref<string | number>('');
+const savingLimits = ref(false);
+
+function openEdit(u: ManagedUser) {
+    editing.value = u;
+    modelDraft.value = u.assigned_model ?? 'default';
+    limitDraft.value = u.token_limit === null ? '' : String(u.token_limit);
+}
+
+function saveLimits() {
+    if (editing.value === null || savingLimits.value) {
+        return;
+    }
+
+    savingLimits.value = true;
+
+    // A type="number" input can hand us a number; normalise before trimming.
+    const trimmed = String(limitDraft.value ?? '').trim();
+
+    router.patch(
+        `/dashboard/users/${editing.value.id}/limits`,
+        {
+            assigned_model: modelDraft.value,
+            token_limit: trimmed === '' ? null : Number(trimmed),
+        },
+        {
+            preserveScroll: true,
+            onSuccess: () => (editing.value = null),
+            onFinish: () => (savingLimits.value = false),
+        },
+    );
+}
 </script>
 
 <template>
@@ -131,6 +199,9 @@ function confirmRemove() {
                         <th class="px-4 py-2.5 font-medium">Name</th>
                         <th class="px-4 py-2.5 font-medium">Email</th>
                         <th class="px-4 py-2.5 font-medium">Role</th>
+                        <th v-if="canGovern" class="px-4 py-2.5 font-medium">
+                            Model / limit
+                        </th>
                         <th class="px-4 py-2.5 font-medium">Added</th>
                         <th class="px-4 py-2.5"></th>
                     </tr>
@@ -180,19 +251,41 @@ function confirmRemove() {
                                 }}
                             </span>
                         </td>
+                        <td
+                            v-if="canGovern"
+                            class="px-4 py-3 text-muted-foreground"
+                        >
+                            <span class="text-foreground">{{
+                                modelSummary(u)
+                            }}</span>
+                            <span class="mx-1 text-muted-foreground/50">·</span>
+                            {{ limitSummary(u) }}
+                        </td>
                         <td class="px-4 py-3 text-muted-foreground">
                             {{ u.created_at ?? '—' }}
                         </td>
                         <td class="px-4 py-3 text-right">
-                            <Button
-                                v-if="canRemove(u)"
-                                variant="ghost"
-                                size="sm"
-                                class="text-muted-foreground"
-                                @click="askRemove(u)"
-                            >
-                                <Trash2 class="size-4" />
-                            </Button>
+                            <div class="flex items-center justify-end gap-1">
+                                <Button
+                                    v-if="canGovern"
+                                    variant="ghost"
+                                    size="sm"
+                                    class="text-muted-foreground"
+                                    title="Set model & token limit"
+                                    @click="openEdit(u)"
+                                >
+                                    <Settings2 class="size-4" />
+                                </Button>
+                                <Button
+                                    v-if="canRemove(u)"
+                                    variant="ghost"
+                                    size="sm"
+                                    class="text-muted-foreground"
+                                    @click="askRemove(u)"
+                                >
+                                    <Trash2 class="size-4" />
+                                </Button>
+                            </div>
                         </td>
                     </tr>
                 </tbody>
@@ -320,6 +413,75 @@ function confirmRemove() {
                     Remove user
                 </Button>
             </DialogFooter>
+        </DialogContent>
+    </Dialog>
+
+    <!-- Model & token limit (super admin) -->
+    <Dialog
+        :open="editing !== null"
+        @update:open="
+            (v) => {
+                if (!v) editing = null;
+            }
+        "
+    >
+        <DialogContent>
+            <DialogHeader>
+                <DialogTitle>{{ editing?.name }} — access</DialogTitle>
+                <DialogDescription>
+                    Pin the model this member runs on (in the portal and via
+                    Claude Code) and cap their token usage. Applies everywhere
+                    their account is used.
+                </DialogDescription>
+            </DialogHeader>
+
+            <form class="space-y-4" @submit.prevent="saveLimits">
+                <div class="space-y-2">
+                    <Label for="u-model">Model</Label>
+                    <select
+                        id="u-model"
+                        v-model="modelDraft"
+                        class="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                    >
+                        <option value="default">Free choice (they pick)</option>
+                        <option
+                            v-for="m in models"
+                            :key="m.value"
+                            :value="m.value"
+                        >
+                            Locked to {{ m.label }}
+                        </option>
+                    </select>
+                </div>
+
+                <div class="space-y-2">
+                    <Label for="u-limit">Token limit</Label>
+                    <input
+                        id="u-limit"
+                        v-model="limitDraft"
+                        type="number"
+                        min="0"
+                        step="50000"
+                        placeholder="Inherit workspace limit"
+                        class="h-9 w-full rounded-md border border-input bg-background px-3 text-sm tabular-nums outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                    />
+                    <p class="text-xs text-muted-foreground">
+                        Blank = inherit the workspace limit · 0 = unlimited for
+                        this member · per 30-day window.
+                    </p>
+                </div>
+
+                <DialogFooter class="gap-2">
+                    <DialogClose as-child>
+                        <Button type="button" variant="secondary">
+                            Cancel
+                        </Button>
+                    </DialogClose>
+                    <Button type="submit" :disabled="savingLimits">
+                        {{ savingLimits ? 'Saving…' : 'Save' }}
+                    </Button>
+                </DialogFooter>
+            </form>
         </DialogContent>
     </Dialog>
 </template>

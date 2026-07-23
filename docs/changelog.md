@@ -3,6 +3,17 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Per-user model + limit — editable on the Users page too (+ save bug fix)
+
+- The super admin can now set a member's **pinned model** and **token limit**
+  directly from **Users** (a gear opens a modal), not just the dashboard's Team
+  usage card. Both screens reuse the same super-admin-gated endpoint, which now
+  redirects `back()` so it works from either page. Admins still manage
+  membership but don't see the governance column.
+- Fixed a `TypeError: …trim is not a function` when saving a token limit: the
+  `type="number"` input hands Vue a number, and the save handler called
+  `.trim()` on it. Both editors now normalise to a string first.
+
 ## Developer access — revoked tokens disappear from the list (bug fix)
 
 - Revoking a gateway token now removes it from **Settings → Developer access**.

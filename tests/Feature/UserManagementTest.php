@@ -16,6 +16,29 @@ test('an admin can view the users page', function () {
         ->assertInertia(fn ($page) => $page->component('Users')->has('users'));
 });
 
+test('the super admin gets governance data and a model list on the users page', function () {
+    $super = User::factory()->superAdmin()->create();
+    User::factory()->create(['assigned_model' => 'claude-haiku-4-5', 'token_limit' => 500000]);
+
+    $this->actingAs($super)
+        ->get('/users')
+        ->assertInertia(fn ($page) => $page
+            ->component('Users')
+            ->where('canGovern', true)
+            ->has('models')
+            ->where('users', fn ($users) => collect($users)->contains(
+                fn ($u) => $u['assigned_model'] === 'claude-haiku-4-5' && $u['token_limit'] === 500000,
+            )));
+});
+
+test('a plain admin cannot govern models/limits on the users page', function () {
+    $admin = User::factory()->admin()->create();
+
+    $this->actingAs($admin)
+        ->get('/users')
+        ->assertInertia(fn ($page) => $page->component('Users')->where('canGovern', false));
+});
+
 test('a non-admin cannot access user management', function () {
     $user = User::factory()->create();
 
