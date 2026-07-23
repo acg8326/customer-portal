@@ -16,29 +16,6 @@ test('an admin can view the users page', function () {
         ->assertInertia(fn ($page) => $page->component('Users')->has('users'));
 });
 
-test('the super admin gets governance data and a model list on the users page', function () {
-    $super = User::factory()->superAdmin()->create();
-    User::factory()->create(['assigned_model' => 'claude-haiku-4-5', 'token_limit' => 500000]);
-
-    $this->actingAs($super)
-        ->get('/users')
-        ->assertInertia(fn ($page) => $page
-            ->component('Users')
-            ->where('canGovern', true)
-            ->has('models')
-            ->where('users', fn ($users) => collect($users)->contains(
-                fn ($u) => $u['assigned_model'] === 'claude-haiku-4-5' && $u['token_limit'] === 500000,
-            )));
-});
-
-test('a plain admin cannot govern models/limits on the users page', function () {
-    $admin = User::factory()->admin()->create();
-
-    $this->actingAs($admin)
-        ->get('/users')
-        ->assertInertia(fn ($page) => $page->component('Users')->where('canGovern', false));
-});
-
 test('a non-admin cannot access user management', function () {
     $user = User::factory()->create();
 
@@ -81,6 +58,85 @@ test('adding a user validates email uniqueness and role', function () {
     $this->actingAs($admin)->post('/users', [
         'name' => 'Bad role', 'email' => 'bad@example.com', 'password' => 'password123', 'role' => 'superuser',
     ])->assertSessionHasErrors('role');
+});
+
+test('an admin can edit a user name, email, and role', function () {
+    $admin = User::factory()->admin()->create();
+    $target = User::factory()->create(['name' => 'Old', 'role' => 'user']);
+
+    $this->actingAs($admin)
+        ->patch("/users/{$target->id}", [
+            'name' => 'New Name',
+            'email' => 'new.email@cwglobalpeople.com',
+            'role' => 'admin',
+        ])
+        ->assertSessionHasNoErrors()
+        ->assertRedirect();
+
+    $target->refresh();
+    expect($target->name)->toBe('New Name')
+        ->and($target->email)->toBe('new.email@cwglobalpeople.com')
+        ->and($target->role)->toBe('admin');
+});
+
+test('editing keeps the same email valid and enforces uniqueness against others', function () {
+    $admin = User::factory()->admin()->create();
+    $target = User::factory()->create(['email' => 'keep@cwglobalpeople.com']);
+    $other = User::factory()->create(['email' => 'taken@cwglobalpeople.com']);
+
+    // Same email as before → allowed (ignore self).
+    $this->actingAs($admin)
+        ->patch("/users/{$target->id}", ['name' => 'Same', 'email' => $target->email, 'role' => 'user'])
+        ->assertSessionHasNoErrors();
+
+    // Another user's email → rejected.
+    $this->actingAs($admin)
+        ->patch("/users/{$target->id}", ['name' => 'Clash', 'email' => $other->email, 'role' => 'user'])
+        ->assertSessionHasErrors('email');
+});
+
+test('a plain admin cannot edit a super admin', function () {
+    $admin = User::factory()->admin()->create();
+    $super = User::factory()->superAdmin()->create(['name' => 'Boss']);
+
+    $this->actingAs($admin)
+        ->patch("/users/{$super->id}", ['name' => 'Hacked', 'email' => $super->email])
+        ->assertRedirect()
+        ->assertSessionHas('error');
+
+    expect($super->fresh()->name)->toBe('Boss');
+});
+
+test('a super admin role is preserved even if a role is posted', function () {
+    $super = User::factory()->superAdmin()->create();
+    $target = User::factory()->superAdmin()->create(['name' => 'Other super']);
+
+    // Editing another super admin: name/email change, role stays super_admin.
+    $this->actingAs($super)
+        ->patch("/users/{$target->id}", [
+            'name' => 'Renamed',
+            'email' => $target->email,
+            'role' => 'user',
+        ])
+        ->assertSessionHasNoErrors();
+
+    $target->refresh();
+    expect($target->name)->toBe('Renamed')
+        ->and($target->role)->toBe('super_admin');
+});
+
+test('you cannot change your own role', function () {
+    $admin = User::factory()->admin()->create();
+
+    $this->actingAs($admin)
+        ->patch("/users/{$admin->id}", [
+            'name' => $admin->name,
+            'email' => $admin->email,
+            'role' => 'user',
+        ])
+        ->assertSessionHasNoErrors();
+
+    expect($admin->fresh()->role)->toBe('admin');
 });
 
 test('an admin can remove another user but not themselves', function () {

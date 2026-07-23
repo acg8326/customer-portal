@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Config;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
 use Inertia\Inertia;
@@ -19,13 +18,9 @@ class UserController extends Controller
 {
     public function index(Request $request): Response
     {
-        // Only the super admin governs per-user model/limit (same policy as the
-        // dashboard). Admins still manage membership but see these read-only.
-        $canGovern = $request->user()->isSuperAdmin();
-
         $users = User::query()
             ->orderBy('name')
-            ->get(['id', 'name', 'email', 'role', 'created_at', 'assigned_model', 'token_limit'])
+            ->get(['id', 'name', 'email', 'role', 'created_at'])
             ->map(fn (User $u): array => [
                 'id' => $u->id,
                 'name' => $u->name,
@@ -33,22 +28,10 @@ class UserController extends Controller
                 'role' => $u->role,
                 'created_at' => $u->created_at?->toDateString(),
                 'is_self' => $u->id === $request->user()->id,
-                'assigned_model' => $u->assigned_model,
-                'token_limit' => $u->token_limit,
             ])
             ->all();
 
-        $models = [];
-
-        foreach (Config::array('services.anthropic.models') as $value => $label) {
-            $models[] = ['value' => $value, 'label' => $label];
-        }
-
-        return Inertia::render('Users', [
-            'users' => $users,
-            'canGovern' => $canGovern,
-            'models' => $models,
-        ]);
+        return Inertia::render('Users', ['users' => $users]);
     }
 
     public function store(Request $request): RedirectResponse
@@ -72,6 +55,40 @@ class UserController extends Controller
         ])->save();
 
         return back()->with('success', "Added {$validated['name']}.");
+    }
+
+    public function update(Request $request, User $user): RedirectResponse
+    {
+        // Only the super admin can edit a super admin account.
+        if ($user->isSuperAdmin() && ! $request->user()->isSuperAdmin()) {
+            return back()->with('error', 'Only the super admin can edit this account.');
+        }
+
+        // A super admin's role isn't changed here, and you can't change your
+        // own role (avoids locking yourself out). Name/email stay editable.
+        $lockRole = $user->isSuperAdmin() || $user->id === $request->user()->id;
+
+        $rules = [
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'string', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
+        ];
+
+        if (! $lockRole) {
+            $rules['role'] = ['required', Rule::in([User::ROLE_ADMIN, User::ROLE_USER])];
+        }
+
+        $validated = $request->validate($rules);
+
+        $user->name = $validated['name'];
+        $user->email = $validated['email'];
+
+        if (! $lockRole) {
+            $user->role = $validated['role'];
+        }
+
+        $user->save();
+
+        return back()->with('success', "Updated {$validated['name']}.");
     }
 
     public function destroy(Request $request, User $user): RedirectResponse

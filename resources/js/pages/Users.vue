@@ -2,8 +2,9 @@
 import { Head, router, useForm, usePage } from '@inertiajs/vue3';
 import {
     Crown,
+    Pencil,
     Plus,
-    Settings2,
+    Search,
     Shield,
     Trash2,
     User as UserIcon,
@@ -29,22 +30,18 @@ defineOptions({
     },
 });
 
+type Role = 'super_admin' | 'admin' | 'user';
+
 type ManagedUser = {
     id: number;
     name: string;
     email: string;
-    role: 'super_admin' | 'admin' | 'user';
+    role: Role;
     created_at: string | null;
     is_self: boolean;
-    assigned_model: string | null;
-    token_limit: number | null;
 };
 
-const props = defineProps<{
-    users: ManagedUser[];
-    canGovern: boolean;
-    models: { value: string; label: string }[];
-}>();
+const props = defineProps<{ users: ManagedUser[] }>();
 
 const page = usePage();
 const flash = computed(
@@ -52,11 +49,48 @@ const flash = computed(
         page.props.flash as { success?: string | null; error?: string | null },
 );
 
-// Only the super admin may remove a super admin account (enforced
-// server-side too — this just hides the dead-end button).
-const canRemove = (u: ManagedUser) =>
-    !u.is_self &&
-    (u.role !== 'super_admin' || page.props.auth?.user?.role === 'super_admin');
+const currentUserRole = computed(() => page.props.auth?.user?.role);
+
+const roleLabel = (role: Role) =>
+    role === 'super_admin'
+        ? 'Super admin'
+        : role === 'admin'
+          ? 'Admin'
+          : 'User';
+
+const roleIcon = (role: Role) =>
+    role === 'super_admin' ? Crown : role === 'admin' ? Shield : UserIcon;
+
+// Only the super admin may act on a super admin account (enforced server-side
+// too — this just hides dead-end buttons).
+const canManage = (u: ManagedUser) =>
+    u.role !== 'super_admin' || currentUserRole.value === 'super_admin';
+
+const canRemove = (u: ManagedUser) => !u.is_self && canManage(u);
+
+// A super admin's role isn't changed here, nor can you change your own role.
+const roleEditable = (u: ManagedUser) => !u.is_self && u.role !== 'super_admin';
+
+// --- Search -----------------------------------------------------------------------
+
+const search = ref('');
+
+const filteredUsers = computed(() => {
+    const q = search.value.trim().toLowerCase();
+
+    if (!q) {
+        return props.users;
+    }
+
+    return props.users.filter(
+        (u) =>
+            u.name.toLowerCase().includes(q) ||
+            u.email.toLowerCase().includes(q) ||
+            roleLabel(u.role).toLowerCase().includes(q),
+    );
+});
+
+// --- Add user ---------------------------------------------------------------------
 
 const open = ref(false);
 const form = useForm<{
@@ -82,6 +116,36 @@ function save() {
     });
 }
 
+// --- Edit user (name / email / role) ----------------------------------------------
+
+const editing = ref<ManagedUser | null>(null);
+const editForm = useForm<{
+    name: string;
+    email: string;
+    role: 'admin' | 'user';
+}>({ name: '', email: '', role: 'user' });
+
+function openEdit(u: ManagedUser) {
+    editing.value = u;
+    editForm.clearErrors();
+    editForm.name = u.name;
+    editForm.email = u.email;
+    editForm.role = u.role === 'admin' ? 'admin' : 'user';
+}
+
+function saveEdit() {
+    if (editing.value === null) {
+        return;
+    }
+
+    editForm.patch(`/users/${editing.value.id}`, {
+        preserveScroll: true,
+        onSuccess: () => (editing.value = null),
+    });
+}
+
+// --- Delete user ------------------------------------------------------------------
+
 const deleting = ref<ManagedUser | null>(null);
 
 function askRemove(u: ManagedUser) {
@@ -102,61 +166,6 @@ function confirmRemove() {
         },
     });
 }
-
-// --- Per-user model + token limit (super admin) -----------------------------------
-
-const modelLabel = (value: string | null) =>
-    props.models.find((m) => m.value === value)?.label ?? value;
-
-// How a user's pinned model reads in the table.
-const modelSummary = (u: ManagedUser) =>
-    u.assigned_model ? modelLabel(u.assigned_model) : 'Free choice';
-
-// How a user's token cap reads in the table.
-const limitSummary = (u: ManagedUser) => {
-    if (u.token_limit === null) {
-        return 'Workspace limit';
-    }
-
-    return u.token_limit === 0
-        ? 'Unlimited'
-        : `${u.token_limit.toLocaleString()} tokens`;
-};
-
-const editing = ref<ManagedUser | null>(null);
-const modelDraft = ref('default');
-const limitDraft = ref<string | number>('');
-const savingLimits = ref(false);
-
-function openEdit(u: ManagedUser) {
-    editing.value = u;
-    modelDraft.value = u.assigned_model ?? 'default';
-    limitDraft.value = u.token_limit === null ? '' : String(u.token_limit);
-}
-
-function saveLimits() {
-    if (editing.value === null || savingLimits.value) {
-        return;
-    }
-
-    savingLimits.value = true;
-
-    // A type="number" input can hand us a number; normalise before trimming.
-    const trimmed = String(limitDraft.value ?? '').trim();
-
-    router.patch(
-        `/dashboard/users/${editing.value.id}/limits`,
-        {
-            assigned_model: modelDraft.value,
-            token_limit: trimmed === '' ? null : Number(trimmed),
-        },
-        {
-            preserveScroll: true,
-            onSuccess: () => (editing.value = null),
-            onFinish: () => (savingLimits.value = false),
-        },
-    );
-}
 </script>
 
 <template>
@@ -167,8 +176,8 @@ function saveLimits() {
             <div>
                 <h1 class="text-2xl font-semibold tracking-tight">Users</h1>
                 <p class="text-sm text-muted-foreground">
-                    Add or remove people who can sign in. There is no public
-                    registration — only admins manage access here.
+                    Add, edit, or remove people who can sign in. There is no
+                    public registration — only admins manage access here.
                 </p>
             </div>
             <Button class="shrink-0" @click="openAdd">
@@ -190,6 +199,19 @@ function saveLimits() {
             {{ flash.error }}
         </div>
 
+        <!-- Search -->
+        <div class="relative mb-3 max-w-sm">
+            <Search
+                class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+            />
+            <input
+                v-model="search"
+                type="search"
+                placeholder="Search by name, email, or role"
+                class="h-9 w-full rounded-md border border-input bg-background pr-3 pl-9 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+            />
+        </div>
+
         <div class="overflow-hidden rounded-xl border bg-card">
             <table class="w-full text-sm">
                 <thead
@@ -199,16 +221,13 @@ function saveLimits() {
                         <th class="px-4 py-2.5 font-medium">Name</th>
                         <th class="px-4 py-2.5 font-medium">Email</th>
                         <th class="px-4 py-2.5 font-medium">Role</th>
-                        <th v-if="canGovern" class="px-4 py-2.5 font-medium">
-                            Model / limit
-                        </th>
                         <th class="px-4 py-2.5 font-medium">Added</th>
                         <th class="px-4 py-2.5"></th>
                     </tr>
                 </thead>
                 <tbody>
                     <tr
-                        v-for="u in users"
+                        v-for="u in filteredUsers"
                         :key="u.id"
                         class="border-b last:border-0"
                     >
@@ -233,33 +252,11 @@ function saveLimits() {
                                 "
                             >
                                 <component
-                                    :is="
-                                        u.role === 'super_admin'
-                                            ? Crown
-                                            : u.role === 'admin'
-                                              ? Shield
-                                              : UserIcon
-                                    "
+                                    :is="roleIcon(u.role)"
                                     class="size-3"
                                 />
-                                {{
-                                    u.role === 'super_admin'
-                                        ? 'Super admin'
-                                        : u.role === 'admin'
-                                          ? 'Admin'
-                                          : 'User'
-                                }}
+                                {{ roleLabel(u.role) }}
                             </span>
-                        </td>
-                        <td
-                            v-if="canGovern"
-                            class="px-4 py-3 text-muted-foreground"
-                        >
-                            <span class="text-foreground">{{
-                                modelSummary(u)
-                            }}</span>
-                            <span class="mx-1 text-muted-foreground/50">·</span>
-                            {{ limitSummary(u) }}
                         </td>
                         <td class="px-4 py-3 text-muted-foreground">
                             {{ u.created_at ?? '—' }}
@@ -267,25 +264,34 @@ function saveLimits() {
                         <td class="px-4 py-3 text-right">
                             <div class="flex items-center justify-end gap-1">
                                 <Button
-                                    v-if="canGovern"
+                                    v-if="canManage(u)"
                                     variant="ghost"
                                     size="sm"
                                     class="text-muted-foreground"
-                                    title="Set model & token limit"
+                                    title="Edit user"
                                     @click="openEdit(u)"
                                 >
-                                    <Settings2 class="size-4" />
+                                    <Pencil class="size-4" />
                                 </Button>
                                 <Button
                                     v-if="canRemove(u)"
                                     variant="ghost"
                                     size="sm"
                                     class="text-muted-foreground"
+                                    title="Remove user"
                                     @click="askRemove(u)"
                                 >
                                     <Trash2 class="size-4" />
                                 </Button>
                             </div>
+                        </td>
+                    </tr>
+                    <tr v-if="filteredUsers.length === 0">
+                        <td
+                            colspan="5"
+                            class="px-4 py-8 text-center text-sm text-muted-foreground"
+                        >
+                            No users match “{{ search.trim() }}”.
                         </td>
                     </tr>
                 </tbody>
@@ -385,6 +391,116 @@ function saveLimits() {
         </DialogContent>
     </Dialog>
 
+    <!-- Edit user modal -->
+    <Dialog
+        :open="editing !== null"
+        @update:open="
+            (v) => {
+                if (!v) editing = null;
+            }
+        "
+    >
+        <DialogContent>
+            <DialogHeader>
+                <DialogTitle>Edit user</DialogTitle>
+                <DialogDescription>
+                    Update this member's name, email, and role. They keep their
+                    existing password.
+                </DialogDescription>
+            </DialogHeader>
+
+            <form class="space-y-4" @submit.prevent="saveEdit">
+                <div class="space-y-2">
+                    <Label for="e-name">Name</Label>
+                    <Input id="e-name" v-model="editForm.name" autofocus />
+                    <p
+                        v-if="editForm.errors.name"
+                        class="text-sm text-destructive"
+                    >
+                        {{ editForm.errors.name }}
+                    </p>
+                </div>
+                <div class="space-y-2">
+                    <Label for="e-email">Email</Label>
+                    <Input id="e-email" v-model="editForm.email" type="email" />
+                    <p
+                        v-if="editForm.errors.email"
+                        class="text-sm text-destructive"
+                    >
+                        {{ editForm.errors.email }}
+                    </p>
+                </div>
+                <div class="space-y-2">
+                    <Label>Role</Label>
+                    <div
+                        v-if="editing && roleEditable(editing)"
+                        class="flex gap-2"
+                    >
+                        <Button
+                            type="button"
+                            size="sm"
+                            :variant="
+                                editForm.role === 'user' ? 'default' : 'outline'
+                            "
+                            @click="editForm.role = 'user'"
+                        >
+                            <UserIcon class="size-4" />
+                            User
+                        </Button>
+                        <Button
+                            type="button"
+                            size="sm"
+                            :variant="
+                                editForm.role === 'admin'
+                                    ? 'default'
+                                    : 'outline'
+                            "
+                            @click="editForm.role = 'admin'"
+                        >
+                            <Shield class="size-4" />
+                            Admin
+                        </Button>
+                    </div>
+                    <p v-else class="text-sm text-muted-foreground">
+                        <span class="font-medium text-foreground">{{
+                            editing ? roleLabel(editing.role) : ''
+                        }}</span>
+                        —
+                        {{
+                            editing?.is_self
+                                ? "you can't change your own role"
+                                : 'managed separately'
+                        }}.
+                    </p>
+                    <p
+                        v-if="editForm.errors.role"
+                        class="text-sm text-destructive"
+                    >
+                        {{ editForm.errors.role }}
+                    </p>
+                </div>
+
+                <DialogFooter class="gap-2">
+                    <DialogClose as-child>
+                        <Button type="button" variant="secondary">
+                            Cancel
+                        </Button>
+                    </DialogClose>
+                    <Button
+                        type="submit"
+                        :disabled="
+                            editForm.processing ||
+                            editForm.name.trim() === '' ||
+                            editForm.email.trim() === ''
+                        "
+                    >
+                        {{ editForm.processing ? 'Saving…' : 'Save changes' }}
+                    </Button>
+                </DialogFooter>
+            </form>
+        </DialogContent>
+    </Dialog>
+
     <!-- Delete confirmation -->
     <Dialog
         :open="deleting !== null"
@@ -413,75 +529,6 @@ function saveLimits() {
                     Remove user
                 </Button>
             </DialogFooter>
-        </DialogContent>
-    </Dialog>
-
-    <!-- Model & token limit (super admin) -->
-    <Dialog
-        :open="editing !== null"
-        @update:open="
-            (v) => {
-                if (!v) editing = null;
-            }
-        "
-    >
-        <DialogContent>
-            <DialogHeader>
-                <DialogTitle>{{ editing?.name }} — access</DialogTitle>
-                <DialogDescription>
-                    Pin the model this member runs on (in the portal and via
-                    Claude Code) and cap their token usage. Applies everywhere
-                    their account is used.
-                </DialogDescription>
-            </DialogHeader>
-
-            <form class="space-y-4" @submit.prevent="saveLimits">
-                <div class="space-y-2">
-                    <Label for="u-model">Model</Label>
-                    <select
-                        id="u-model"
-                        v-model="modelDraft"
-                        class="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
-                    >
-                        <option value="default">Free choice (they pick)</option>
-                        <option
-                            v-for="m in models"
-                            :key="m.value"
-                            :value="m.value"
-                        >
-                            Locked to {{ m.label }}
-                        </option>
-                    </select>
-                </div>
-
-                <div class="space-y-2">
-                    <Label for="u-limit">Token limit</Label>
-                    <input
-                        id="u-limit"
-                        v-model="limitDraft"
-                        type="number"
-                        min="0"
-                        step="50000"
-                        placeholder="Inherit workspace limit"
-                        class="h-9 w-full rounded-md border border-input bg-background px-3 text-sm tabular-nums outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
-                    />
-                    <p class="text-xs text-muted-foreground">
-                        Blank = inherit the workspace limit · 0 = unlimited for
-                        this member · per 30-day window.
-                    </p>
-                </div>
-
-                <DialogFooter class="gap-2">
-                    <DialogClose as-child>
-                        <Button type="button" variant="secondary">
-                            Cancel
-                        </Button>
-                    </DialogClose>
-                    <Button type="submit" :disabled="savingLimits">
-                        {{ savingLimits ? 'Saving…' : 'Save' }}
-                    </Button>
-                </DialogFooter>
-            </form>
         </DialogContent>
     </Dialog>
 </template>

@@ -6,6 +6,7 @@ import {
     Lightbulb,
     MessageSquareHeart,
     MessageSquarePlus,
+    Search,
     Settings2,
     ThumbsDown,
     ThumbsUp,
@@ -227,6 +228,24 @@ function saveUsageSettings() {
 // --- Per-user model + limit (super admin) ---------------------------------------
 
 type TeamUser = NonNullable<typeof props.teamUsage>['users'][number];
+
+// Filter the team-usage list by name or role.
+const teamSearch = ref('');
+
+const filteredTeamUsers = computed<TeamUser[]>(() => {
+    const all = props.teamUsage?.users ?? [];
+    const q = teamSearch.value.trim().toLowerCase();
+
+    if (!q) {
+        return all;
+    }
+
+    return all.filter(
+        (u) =>
+            u.name.toLowerCase().includes(q) ||
+            u.role.toLowerCase().includes(q),
+    );
+});
 
 // Which user row is expanded for editing (null = none).
 const editingUserId = ref<number | null>(null);
@@ -638,8 +657,23 @@ function sendFeedback() {
                     </p>
                 </form>
 
+                <div
+                    v-if="teamUsage.users.length > 1"
+                    class="relative mb-3 max-w-xs"
+                >
+                    <Search
+                        class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+                    />
+                    <input
+                        v-model="teamSearch"
+                        type="search"
+                        placeholder="Filter members"
+                        class="h-9 w-full rounded-md border border-input bg-background pr-3 pl-9 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
+                    />
+                </div>
+
                 <ul class="divide-y">
-                    <li v-for="u in teamUsage.users" :key="u.id" class="py-2">
+                    <li v-for="u in filteredTeamUsers" :key="u.id" class="py-2">
                         <div class="flex items-center gap-3">
                             <span class="w-44 truncate text-sm font-medium">
                                 {{ u.name }}
@@ -779,6 +813,12 @@ function sendFeedback() {
                                 model overrides their picker.
                             </p>
                         </form>
+                    </li>
+                    <li
+                        v-if="filteredTeamUsers.length === 0"
+                        class="py-6 text-center text-sm text-muted-foreground"
+                    >
+                        No members match “{{ teamSearch.trim() }}”.
                     </li>
                 </ul>
             </div>

@@ -32,6 +32,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::post('users', [UserController::class, 'store'])
             ->middleware('throttle:integrations')
             ->name('users.store');
+        Route::patch('users/{user}', [UserController::class, 'update'])
+            ->middleware('throttle:integrations')
+            ->name('users.update');
         Route::delete('users/{user}', [UserController::class, 'destroy'])
             ->middleware('throttle:integrations')
             ->name('users.destroy');

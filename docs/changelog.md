@@ -16,16 +16,20 @@ customized so far, newest first.
   plain env-var form is kept in a collapsible for CLI / JetBrains users. New
   reusable `Kbd` component for keyboard-key pills.
 
-## Per-user model + limit — editable on the Users page too (+ save bug fix)
+## Users page — edit members + search; Team usage filter (+ save bug fix)
 
-- The super admin can now set a member's **pinned model** and **token limit**
-  directly from **Users** (a gear opens a modal), not just the dashboard's Team
-  usage card. Both screens reuse the same super-admin-gated endpoint, which now
-  redirects `back()` so it works from either page. Admins still manage
-  membership but don't see the governance column.
-- Fixed a `TypeError: …trim is not a function` when saving a token limit: the
-  `type="number"` input hands Vue a number, and the save handler called
-  `.trim()` on it. Both editors now normalise to a string first.
+- The **Users** page now lets admins **edit a member's name, email, and role**
+  (row pencil → modal), not just add/remove. Guardrails mirror the server: only
+  the super admin can touch a super-admin account, nobody can change their own
+  role, and a super admin's role isn't changed via this form. New
+  `PATCH /users/{user}` endpoint (`UserController@update`).
+- Added a **search box** to the Users page (name / email / role) and a
+  **filter box** to the dashboard **Team usage** list (name / role).
+- Fixed a `TypeError: …trim is not a function` when saving a per-user token
+  limit on the dashboard: the `type="number"` input hands Vue a number, and the
+  save handler called `.trim()` on it. Now normalised to a string first.
+- Per-user model/limit governance stays on the dashboard only (no duplication
+  on the Users page); its endpoint now redirects `back()`.
 
 ## Developer access — revoked tokens disappear from the list (bug fix)
 

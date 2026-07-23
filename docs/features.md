@@ -291,20 +291,26 @@ the **Claude API**.
   nav item 404/hide when the gateway is off.
   ([`GatewayToken`](../app/Models/GatewayToken.php),
   [`GatewayTokenController`](../app/Http/Controllers/Settings/GatewayTokenController.php).)
-- **Per-user model + token limit (super admin):** the super admin can **pin a
-  member to a specific model** and/or give them **their own token cap** from
-  two places — the **Dashboard → Team usage** row gear (inline editor) or the
-  **Users** page row gear (a modal). Both post to the same super-admin-only
-  endpoint. A pinned model is enforced **server-side**
+- **Per-user model + token limit (super admin):** on the **Dashboard → Team
+  usage** card, each member row has a gear that opens an inline editor to
+  **pin that user to a specific model** and/or give them **their own token
+  cap**. A pinned model is enforced **server-side**
   (`ChatController::effectiveModel()` forces it whatever the client sends) — in
   the portal the chat's model picker **locks** with a 🔒, and via the LLM
   gateway the developer's Claude Code model choice is overridden the same way.
   "Free choice" clears the pin. The per-user cap overrides the workspace limit
   in [`TokenBudget`](app/Services/TokenBudget.php) — blank = inherit the
   workspace limit, `0` = unlimited for that user. Stored on the `users` table
-  (`assigned_model`, `token_limit`). The Users-page governance column and gear
-  show for the super admin only; other admins manage membership as before.
-  (`PATCH /dashboard/users/{user}/limits`, super admin only.)
+  (`assigned_model`, `token_limit`). The Team usage list has a **filter box**
+  to find a member by name or role. (`PATCH /dashboard/users/{user}/limits`,
+  super admin only.)
+- **Member management (Users page):** admins **add, edit, and remove** members
+  at `/users`. The row **pencil** opens a modal to change **name, email, and
+  role**; a **search box** filters by name/email/role. Guardrails (mirrored
+  server-side): only the super admin can act on a super-admin account, you
+  can't change **your own** role, and a super admin's role isn't changed via
+  this form. Membership only — the per-user *model/limit* governance lives on
+  the dashboard (above), not here. (`POST/PATCH/DELETE /users`, admin only.)
 - **Team usage screen + in-app limit settings (super admin):** the Dashboard's
   **Team usage** card lists every member's tokens in their current window
   (heaviest first, with per-user progress bars against the limit) plus the
