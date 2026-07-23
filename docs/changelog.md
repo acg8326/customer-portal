@@ -3,6 +3,19 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Developer access — beginner-proof VS Code setup guide
+
+- Rewrote the **Settings → Developer access** setup section into six numbered
+  steps written for someone who has never configured VS Code: install the
+  extension, generate a token, open **Preferences: Open User Settings (JSON)**
+  (with the <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> shortcut spelled out,
+  plus the macOS ⌘ note), paste a copy-ready `settings.json` block, reload the
+  window, then chat. The block now uses VS Code's
+  `claudeCode.environmentVariables` array form (auto-filled with the real token
+  right after generation) and sets `claudeCode.preferredLocation: "panel"`. The
+  plain env-var form is kept in a collapsible for CLI / JetBrains users. New
+  reusable `Kbd` component for keyboard-key pills.
+
 ## Per-user model + limit — editable on the Users page too (+ save bug fix)
 
 - The super admin can now set a member's **pinned model** and **token limit**

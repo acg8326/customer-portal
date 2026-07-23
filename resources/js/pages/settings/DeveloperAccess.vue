@@ -4,6 +4,7 @@ import { Check, Copy, KeyRound, Trash2 } from '@lucide/vue';
 import { computed, ref } from 'vue';
 import Heading from '@/components/Heading.vue';
 import InputError from '@/components/InputError.vue';
+import Kbd from '@/components/Kbd.vue';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -31,6 +32,10 @@ defineOptions({
 });
 
 const page = usePage();
+
+// Numbered circle badge for each setup step.
+const stepClass =
+    'flex size-6 shrink-0 items-center justify-center rounded-full bg-brand-gold/15 text-xs font-semibold text-brand-gold';
 
 // The plaintext token is flashed once, right after creation.
 const freshToken = computed(
@@ -69,6 +74,20 @@ function copy(text: string, key: string) {
     });
 }
 
+// The exact block to paste into VS Code's user settings.json. Uses the real
+// token right after it's generated, otherwise a clearly-fake placeholder.
+const settingsSnippet = computed(
+    () => `{
+  "claudeCode.environmentVariables": [
+    { "name": "ANTHROPIC_BASE_URL", "value": "${props.baseUrl}" },
+    { "name": "ANTHROPIC_AUTH_TOKEN", "value": "${freshToken.value ?? '<your-token>'}" },
+    { "name": "ANTHROPIC_LOG", "value": "debug" }
+  ],
+  "claudeCode.preferredLocation": "panel"
+}`,
+);
+
+// Plain env-var form for the CLI / JetBrains (no VS Code settings file).
 const envSnippet = computed(
     () =>
         `ANTHROPIC_BASE_URL=${props.baseUrl}\nANTHROPIC_AUTH_TOKEN=${freshToken.value ?? '<your-token>'}`,
@@ -87,42 +106,154 @@ const envSnippet = computed(
         />
 
         <!-- Setup steps -->
-        <section class="space-y-4">
-            <h2 class="text-sm font-semibold">Set up Claude Code</h2>
-            <ol
-                class="space-y-3 text-sm text-muted-foreground [counter-reset:step]"
-            >
-                <li>
-                    <span class="font-medium text-foreground">1.</span> Install
-                    the <span class="font-medium">Claude Code</span> extension
-                    in VS Code (or the CLI / JetBrains).
+        <section class="space-y-5">
+            <div>
+                <h2 class="text-sm font-semibold">
+                    Set up Claude Code in VS Code
+                </h2>
+                <p class="mt-1 text-xs text-muted-foreground">
+                    A one-time setup. No prior experience needed — follow each
+                    step in order.
+                    <span class="text-muted-foreground/80"
+                        >(On macOS use <Kbd>⌘</Kbd> in place of
+                        <Kbd>Ctrl</Kbd>.)</span
+                    >
+                </p>
+            </div>
+
+            <ol class="space-y-5 text-sm">
+                <!-- 1 -->
+                <li class="flex gap-3">
+                    <span :class="stepClass">1</span>
+                    <div class="min-w-0 space-y-1">
+                        <p class="font-medium text-foreground">
+                            Install the Claude Code extension
+                        </p>
+                        <p class="text-muted-foreground">
+                            In VS Code open the Extensions panel
+                            (<Kbd>Ctrl</Kbd>+<Kbd>Shift</Kbd>+<Kbd>X</Kbd>),
+                            search for
+                            <span class="font-medium">Claude Code</span>, and
+                            click <span class="font-medium">Install</span>.
+                        </p>
+                    </div>
                 </li>
-                <li>
-                    <span class="font-medium text-foreground">2.</span> Generate
-                    a token below and copy it — you'll only see it once.
+
+                <!-- 2 -->
+                <li class="flex gap-3">
+                    <span :class="stepClass">2</span>
+                    <div class="min-w-0 space-y-1">
+                        <p class="font-medium text-foreground">
+                            Generate your token
+                        </p>
+                        <p class="text-muted-foreground">
+                            Scroll to
+                            <span class="font-medium">Your tokens</span>
+                            below, name it (e.g. “VS Code”), and click
+                            <span class="font-medium">Generate token</span>.
+                            Copy it now — it's shown only once.
+                        </p>
+                    </div>
                 </li>
-                <li>
-                    <span class="font-medium text-foreground">3.</span> Point
-                    Claude Code at AiMe with these environment variables:
+
+                <!-- 3 -->
+                <li class="flex gap-3">
+                    <span :class="stepClass">3</span>
+                    <div class="min-w-0 space-y-1">
+                        <p class="font-medium text-foreground">
+                            Open your VS Code settings file
+                        </p>
+                        <p class="text-muted-foreground">
+                            Press
+                            <Kbd>Ctrl</Kbd>+<Kbd>Shift</Kbd>+<Kbd>P</Kbd> to
+                            open the command palette, type
+                            <span class="font-medium"
+                                >Preferences: Open User Settings (JSON)</span
+                            >, and press <Kbd>Enter</Kbd>.
+                        </p>
+                    </div>
+                </li>
+
+                <!-- 4 -->
+                <li class="flex gap-3">
+                    <span :class="stepClass">4</span>
+                    <div class="min-w-0 space-y-2">
+                        <p class="font-medium text-foreground">
+                            Paste this configuration
+                        </p>
+                        <p class="text-muted-foreground">
+                            Replace everything in that file with the block
+                            below, then swap
+                            <code class="rounded bg-muted px-1 py-0.5 text-xs"
+                                >&lt;your-token&gt;</code
+                            >
+                            for the token you just copied. Save with
+                            <Kbd>Ctrl</Kbd>+<Kbd>S</Kbd>.
+                        </p>
+                        <div class="relative">
+                            <pre
+                                class="overflow-x-auto rounded-lg border bg-muted/40 p-3 text-xs"
+                            ><code>{{ settingsSnippet }}</code></pre>
+                            <button
+                                type="button"
+                                class="absolute top-2 right-2 inline-flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                                @click="copy(settingsSnippet, 'settings')"
+                            >
+                                <component
+                                    :is="copied === 'settings' ? Check : Copy"
+                                    class="size-3"
+                                />
+                                {{ copied === 'settings' ? 'Copied' : 'Copy' }}
+                            </button>
+                        </div>
+                        <p class="text-xs text-muted-foreground">
+                            Already have settings you want to keep? Instead of
+                            replacing, just add the two
+                            <code class="rounded bg-muted px-1 py-0.5"
+                                >claudeCode.*</code
+                            >
+                            keys inside your existing outer
+                            <code class="rounded bg-muted px-1 py-0.5">{ }</code
+                            >.
+                        </p>
+                    </div>
+                </li>
+
+                <!-- 5 -->
+                <li class="flex gap-3">
+                    <span :class="stepClass">5</span>
+                    <div class="min-w-0 space-y-1">
+                        <p class="font-medium text-foreground">
+                            Reload VS Code
+                        </p>
+                        <p class="text-muted-foreground">
+                            Press
+                            <Kbd>Ctrl</Kbd>+<Kbd>Shift</Kbd>+<Kbd>P</Kbd> again,
+                            type
+                            <span class="font-medium"
+                                >Developer: Reload Window</span
+                            >, and press <Kbd>Enter</Kbd>. This loads your new
+                            settings.
+                        </p>
+                    </div>
+                </li>
+
+                <!-- 6 -->
+                <li class="flex gap-3">
+                    <span :class="stepClass">6</span>
+                    <div class="min-w-0 space-y-1">
+                        <p class="font-medium text-foreground">
+                            Open Claude Code and chat
+                        </p>
+                        <p class="text-muted-foreground">
+                            Claude Code opens in the bottom panel. Send a
+                            message — if it replies, you're connected to AiMe.
+                            You can confirm below: your token's “last used”
+                            updates right after your first message.
+                        </p>
+                    </div>
                 </li>
             </ol>
-
-            <div class="relative">
-                <pre
-                    class="overflow-x-auto rounded-lg border bg-muted/40 p-3 text-xs"
-                ><code>{{ envSnippet }}</code></pre>
-                <button
-                    type="button"
-                    class="absolute top-2 right-2 inline-flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-                    @click="copy(envSnippet, 'env')"
-                >
-                    <component
-                        :is="copied === 'env' ? Check : Copy"
-                        class="size-3"
-                    />
-                    {{ copied === 'env' ? 'Copied' : 'Copy' }}
-                </button>
-            </div>
 
             <p class="text-xs text-muted-foreground">
                 <template v-if="assignedModel">
@@ -130,13 +261,42 @@ const envSnippet = computed(
                     <span class="font-medium text-foreground">{{
                         assignedModel
                     }}</span>
-                    — requests run on that model whatever Claude Code is set to.
+                    — requests run on that model whatever Claude Code's own
+                    model picker says.
                 </template>
                 <template v-else>
-                    Tip: set <code>ANTHROPIC_MODEL</code> in Claude Code so its
-                    built-in "sonnet/opus/haiku" names map to a full model id.
+                    Your administrator hasn't pinned a model, so Claude Code's
+                    model picker applies.
                 </template>
             </p>
+
+            <details class="text-xs text-muted-foreground">
+                <summary class="cursor-pointer font-medium text-foreground">
+                    Using the Claude Code CLI or JetBrains instead?
+                </summary>
+                <div class="mt-2 space-y-2">
+                    <p>
+                        Set these two environment variables in your shell (not
+                        the VS Code file above):
+                    </p>
+                    <div class="relative">
+                        <pre
+                            class="overflow-x-auto rounded-lg border bg-muted/40 p-3"
+                        ><code>{{ envSnippet }}</code></pre>
+                        <button
+                            type="button"
+                            class="absolute top-2 right-2 inline-flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-muted-foreground hover:text-foreground"
+                            @click="copy(envSnippet, 'env')"
+                        >
+                            <component
+                                :is="copied === 'env' ? Check : Copy"
+                                class="size-3"
+                            />
+                            {{ copied === 'env' ? 'Copied' : 'Copy' }}
+                        </button>
+                    </div>
+                </div>
+            </details>
         </section>
 
         <!-- Freshly-created token (shown once) -->
