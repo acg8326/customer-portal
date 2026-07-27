@@ -6,6 +6,7 @@ use App\Services\AnthropicGateway;
 use App\Services\TokenBudget;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -29,9 +30,13 @@ class GatewayController extends Controller
         $user = $request->user();
 
         if ($this->budget->exceeded($user)) {
+            $info = $this->budget->exceededTierInfo($user);
+
             return $this->error(
                 'rate_limit_error',
-                'Your AiMe token budget for this period is used up. It resets automatically — contact your administrator to raise the limit.',
+                "Your AiMe token budget for this {$info['label']} is used up. It resets on "
+                    .Carbon::parse($info['resets_at'])->toDayDateTimeString()
+                    .' — contact your administrator to raise the limit.',
                 429,
             );
         }

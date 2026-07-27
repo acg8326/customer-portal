@@ -159,7 +159,12 @@ class MediaController extends Controller
         }
 
         if (app(TokenBudget::class)->exceeded($request->user())) {
-            return response()->json(['message' => 'You have used your token allowance for this period.'], 429);
+            $info = app(TokenBudget::class)->exceededTierInfo($request->user());
+
+            return response()->json([
+                'message' => "You have used your token allowance for this {$info['label']}. It resets on "
+                    .Carbon::parse($info['resets_at'])->toDayDateTimeString().'.',
+            ], 429);
         }
 
         $file = $request->file('audio');
@@ -199,7 +204,12 @@ class MediaController extends Controller
         abort_unless($message->role === 'assistant' && filled($message->content), 422);
 
         if (app(TokenBudget::class)->exceeded($request->user())) {
-            return response()->json(['message' => 'You have used your token allowance for this period.'], 429);
+            $info = app(TokenBudget::class)->exceededTierInfo($request->user());
+
+            return response()->json([
+                'message' => "You have used your token allowance for this {$info['label']}. It resets on "
+                    .Carbon::parse($info['resets_at'])->toDayDateTimeString().'.',
+            ], 429);
         }
 
         try {

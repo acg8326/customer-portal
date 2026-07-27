@@ -2,6 +2,7 @@
 
 use App\Models\Conversation;
 use App\Models\User;
+use App\Services\TokenBudget;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
@@ -78,6 +79,24 @@ test('dictation transcribes audio and returns the text', function () {
         ->assertJson(['text' => 'Magandang umaga sa lahat']);
 
     expect($user->fresh()->token_budget_used)->toBe(500);
+});
+
+test('dictation is blocked with a tier-aware message when over budget', function () {
+    config([
+        'services.media.speech.key' => 'sk-test',
+        'usage.enabled' => true,
+        'usage.token_limit' => 100,
+    ]);
+
+    $user = User::factory()->create();
+    app(TokenBudget::class)->record($user, 100);
+
+    $this->actingAs($user)
+        ->post('/chat/transcribe', [
+            'audio' => UploadedFile::fake()->create('recording.webm', 50, 'audio/webm'),
+        ], ['Accept' => 'application/json'])
+        ->assertStatus(429)
+        ->assertJsonPath('message', fn ($m) => str_contains($m, 'period') && str_contains($m, 'resets on'));
 });
 
 test('read-aloud returns audio for own assistant messages only', function () {

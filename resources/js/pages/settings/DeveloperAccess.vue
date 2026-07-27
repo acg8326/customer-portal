@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Head, router, useForm, usePage } from '@inertiajs/vue3';
-import { Check, Copy, KeyRound, Trash2 } from '@lucide/vue';
+import { Check, Copy, Info, KeyRound, Trash2 } from '@lucide/vue';
 import { computed, ref } from 'vue';
 import Heading from '@/components/Heading.vue';
 import InputError from '@/components/InputError.vue';
@@ -104,6 +104,33 @@ const envSnippet = computed(
             title="Developer access"
             description="Use AiMe as the backend for Claude Code (or any Anthropic client). Your requests run on the model your administrator assigned you and count against your token budget."
         />
+
+        <!-- Cost guidance: an AiMe token is metered API billing, not a flat subscription -->
+        <section class="rounded-lg border bg-muted/30 p-4 text-sm">
+            <div class="flex gap-3">
+                <Info class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                <div class="space-y-1">
+                    <p class="font-medium text-foreground">
+                        Coding interactively every day? Your own Claude Pro/Max
+                        login is usually cheaper.
+                    </p>
+                    <p class="text-muted-foreground">
+                        Claude Code also supports logging in directly with a
+                        personal Claude.ai subscription — a flat monthly price,
+                        not metered per token. Agentic coding burns through
+                        tokens fast (every tool step resends your growing
+                        context), so heavy daily use on an AiMe token can cost
+                        far more than a subscription would for the same work.
+                        Reach for an AiMe token when you need
+                        <span class="font-medium"
+                            >headless / CI automation</span
+                        >
+                        (subscriptions are interactive-only) or your work needs
+                        to run under the organization's shared, governed key.
+                    </p>
+                </div>
+            </div>
+        </section>
 
         <!-- Setup steps -->
         <section class="space-y-5">
