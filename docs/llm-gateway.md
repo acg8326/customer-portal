@@ -79,7 +79,7 @@ field**, and **usage accounting**. Everything else is relayed byte-for-byte.
      record the spend.
 6. **Usage** is charged to the user's rolling window via `TokenBudget`, the same
    ledger the portal chat uses — so a developer's Claude Code usage and their
-   in-app chat usage share one budget.
+   in-app chat usage share one budget, and count the same way (§4.1).
 
 `POST /llm/v1/messages/count_tokens` is proxied the same way but **not** billed
 (it's a metadata call Claude Code makes before sending).
@@ -123,6 +123,36 @@ entry in [changelog.md](changelog.md).
 Because governance lives at the gateway, a developer cannot escape it by
 changing anything in Claude Code.
 
+### 4.1 Prompt caching and what the budget charges
+
+Caching is the client's business, and the gateway keeps out of the way: the
+`cache_control` breakpoints Claude Code sets, and its `anthropic-beta` header,
+are forwarded untouched, so caching behaves exactly as it does against
+`api.anthropic.com`. The gateway never injects, moves, or strips a breakpoint —
+rewriting the `model` field is its only edit to the body, and because caches are
+model-scoped, a pinned model means the developer's cache lives under that model
+rather than the one their picker shows.
+
+What the gateway *does* care about is what a cached token costs. Anthropic bills
+a cache **read** at ~0.1× the input price and a cache **write** at ~1.25×, so
+[`SseUsageParser`](../app/Services/SseUsageParser.php) (streaming) and the
+response `usage` (non-streaming) both produce a
+[`TokenUsage`](../app/Services/TokenUsage.php) that keeps the four token classes
+apart, and `TokenBudget::recordUsage()` weights them by
+`USAGE_CACHE_READ_WEIGHT` / `USAGE_CACHE_WRITE_WEIGHT`.
+
+This matters more here than anywhere else in the app: a coding agent re-sends a
+large cached prefix on **every** turn, so charging that prefix at face value
+would bill the best-cached traffic as if none of it were cached. Concretely, a
+turn reporting 100 uncached + 10,000 cache-read + 1,000 cache-write + 40 output
+tokens costs **2,390** against the budget, not the 11,140 tokens that moved.
+
+Both paths log the same four classes to `request_logs`, so `input_tokens` means
+the **uncached remainder** on each — cache reads and writes have their own
+columns, and Analytics → Cost & caching totals them alongside chat traffic
+(gateway rows only, since chat rows are logged there too and would otherwise
+double-count).
+
 ---
 
 ## 5. Developer tokens
@@ -138,6 +168,38 @@ Developers self-serve at **Settings → Developer access**
 - The page includes a step-by-step VS Code setup guide and a copy-ready
   `settings.json` block (`claudeCode.environmentVariables` +
   `claudeCode.preferredLocation: "panel"`), auto-filled with the fresh token.
+
+### 5a. A token isn't always the right choice — subscription vs metered API
+
+Claude Code supports **two** unrelated auth paths, and they're priced
+completely differently:
+
+- **An AiMe token** (this page) rides the API-key path — `ANTHROPIC_BASE_URL`
+  + `ANTHROPIC_AUTH_TOKEN` — which is what lets us proxy it at all. It's
+  **metered, pay-per-token, no bundled allowance**.
+- **A personal Claude.ai Pro/Max login** (`claude login`, OAuth) talks
+  straight to Anthropic — it does **not** honor `ANTHROPIC_BASE_URL`, so
+  there is no seam for us (or anyone) to sit in front of it. It's a **flat
+  monthly subscription** with its own rolling session/weekly allowance,
+  priced for typical interactive use.
+
+Agentic coding is token-hungry — every tool step (read/grep/bash/edit)
+resends the whole accumulated context — so a developer coding interactively
+all day on an AiMe token can rack up a metered bill far beyond a $20-$200/mo
+subscription for the *same underlying work*, because the subscription
+absorbs that cost inside its flat price and the API bills every token from
+the first one. This isn't fixable at the gateway layer — it's a difference
+in Anthropic's own billing, not something caching or governance logic here
+can close.
+
+**Guidance we surface on the Developer access page itself:** if you're at
+the keyboard driving Claude Code daily, use your own Pro/Max login instead
+of an AiMe token. Reserve an AiMe token for **headless/CI automation**
+(subscriptions are interactive-only and won't authenticate a pipeline) or
+work that specifically needs to run under the org's shared, governed key
+(model pin, token budget, and the Analytics visibility this page's traffic
+gets — none of which exists for subscription-authenticated traffic, since
+we never see it).
 
 ---
 
@@ -224,7 +286,8 @@ The super admin can see gateway activity at **Analytics** (`/analytics`, see
 | `app/Http/Middleware/GatewayAuth.php` | Token → user; Anthropic-style 401; enable check |
 | `app/Http/Controllers/GatewayController.php` | Budget gate (429), raw-body forward |
 | `app/Services/AnthropicGateway.php` | Model pin, upstream forward, stream relay, usage record, request log |
-| `app/Services/SseUsageParser.php` | Tallies token usage (input/output split) from the SSE stream |
+| `app/Services/SseUsageParser.php` | Tallies token usage from the SSE stream, split by token class |
+| `app/Services/TokenUsage.php` | The four token classes + cache-weighted billable total (§4.1) |
 | `app/Services/AnthropicRateLimits.php` | Captures rate-limit headers into a short-TTL cache (Analytics) |
 | `app/Models/RequestLog.php` | Per-request log row (Analytics → Logs) |
 | `app/Models/GatewayToken.php` | Hashed tokens: `issue()`, `findActive()`, `hash()` |

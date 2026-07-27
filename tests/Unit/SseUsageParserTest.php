@@ -28,6 +28,18 @@ test('it sums input (incl. cache) and the final cumulative output', function () 
 
     // 100 + 20 + 5 input, 55 output.
     expect($parser->total())->toBe(180);
+
+    // ...and the classes stay apart, so the budget can weight them.
+    $usage = $parser->usage();
+
+    expect($usage->uncachedInput)->toBe(100)
+        ->and($usage->cacheRead)->toBe(20)
+        ->and($usage->cacheWrite)->toBe(5)
+        ->and($usage->output)->toBe(55)
+        // input_tokens() is the uncached remainder — cache is NOT folded in.
+        ->and($parser->inputTokens())->toBe(100)
+        ->and($parser->cacheReadTokens())->toBe(20)
+        ->and($parser->cacheWriteTokens())->toBe(5);
 });
 
 test('it handles chunk boundaries splitting a line mid-JSON', function () {

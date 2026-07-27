@@ -142,8 +142,46 @@ class TokenBudget
     }
 
     /**
+     * Which tier is blocking the user right now, human-readable — for a 429
+     * message that names the actual window instead of always blaming
+     * "period". Callers should only use this after confirming `exceeded()`.
+     *
+     * @return array{tier: string, label: string, resets_at: string|null}
+     */
+    public function exceededTierInfo(User $user): array
+    {
+        $tier = $this->firstExceededTier($user) ?? 'period';
+        $snapshot = $this->snapshot($user);
+
+        $resetsAt = match ($tier) {
+            'session' => $snapshot['session']['resets_at'],
+            'weekly' => $snapshot['weekly']['resets_at'],
+            default => $snapshot['period']['resets_at'],
+        };
+        $label = ['session' => 'session', 'weekly' => 'week', 'period' => 'period'][$tier];
+
+        return ['tier' => $tier, 'label' => $label, 'resets_at' => $resetsAt];
+    }
+
+    /**
+     * Charge one API round against the budget, with cached prompt tokens
+     * weighted to what they actually cost (see TokenUsage::billableTokens()).
+     *
+     * This is the entry point every surface should use — passing a flat token
+     * count via record() charges a cache read like fresh input, which
+     * over-bills any caller that caches well (i.e. coding agents).
+     */
+    public function recordUsage(User $user, TokenUsage $usage): void
+    {
+        $this->record($user, $usage->billableTokens());
+    }
+
+    /**
      * Add spent tokens to ALL THREE current windows (one API call counts
      * against the session, weekly, and period allowances at once).
+     *
+     * Takes an already-weighted total; prefer recordUsage() so the weighting
+     * happens in one place.
      */
     public function record(User $user, int $tokens): void
     {

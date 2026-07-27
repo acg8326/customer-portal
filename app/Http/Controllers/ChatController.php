@@ -61,6 +61,7 @@ use App\Services\OfficeTextExtractor;
 use App\Services\OpenAiCompatibleChat;
 use App\Services\OpenAiMedia;
 use App\Services\TokenBudget;
+use App\Services\TokenUsage;
 use App\Services\UploadScanner;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -470,7 +471,7 @@ class ChatController extends Controller
                 'error' => $e->getMessage(),
             ]);
             report($e);
-            $this->logChatRequest($userId, $selectedModel, null, null, 502);
+            $this->logChatRequest($userId, $selectedModel, null, null, null, null, 502);
 
             return response()->json([
                 'message' => 'Sorry — the assistant could not respond right now. Please try again.',
@@ -798,7 +799,7 @@ class ChatController extends Controller
                 report($e);
                 // The SSE transport already sent HTTP 200 (headers went out
                 // before the failure); log the turn's real outcome instead.
-                $this->logChatRequest($userId, $selectedModel, null, null, 500);
+                $this->logChatRequest($userId, $selectedModel, null, null, null, null, 500);
 
                 $this->emit('error', [
                     'message' => 'Sorry — the assistant could not respond right now. Please try again.',
@@ -886,6 +887,21 @@ class ChatController extends Controller
     }
 
     /**
+     * This turn's usage split by token class, for budget charging: the SDK's
+     * inputTokens is the uncached remainder, and the accumulated cache
+     * counters are the rest of the prompt.
+     */
+    private function turnUsage(int $inputTokens, int $outputTokens): TokenUsage
+    {
+        return new TokenUsage(
+            uncachedInput: $inputTokens,
+            cacheRead: $this->cacheReadTokens,
+            cacheWrite: $this->cacheWriteTokens,
+            output: $outputTokens,
+        );
+    }
+
+    /**
      * The 429 body for an over-budget user, naming whichever window
      * (session/weekly/period) is actually the tightest one right now instead
      * of always blaming the period.
@@ -894,16 +910,12 @@ class ChatController extends Controller
      */
     private function usageLimitResponse(TokenBudget $budget, User $user): array
     {
-        $snapshot = $budget->snapshot($user);
-        $tier = $budget->firstExceededTier($user) ?? 'period';
-        /** @var array{resets_at: string|null} $tierSnapshot */
-        $tierSnapshot = $snapshot[$tier];
-        $label = ['session' => 'session', 'weekly' => 'week', 'period' => 'period'][$tier];
+        $info = $budget->exceededTierInfo($user);
 
         return [
-            'message' => "You have used your token allowance for this {$label}. It resets on "
-                .Carbon::parse($tierSnapshot['resets_at'])->toDayDateTimeString().'.',
-            'usage_limit' => $snapshot,
+            'message' => "You have used your token allowance for this {$info['label']}. It resets on "
+                .Carbon::parse($info['resets_at'])->toDayDateTimeString().'.',
+            'usage_limit' => $budget->snapshot($user),
         ];
     }
 
@@ -1872,9 +1884,20 @@ class ChatController extends Controller
     /**
      * Record one chat request to the Logs table (Analytics → Logs). A no-op
      * when disabled via config('services.anthropic.request_log_enabled').
+     *
+     * `$inputTokens` is the UNCACHED remainder of the prompt; cache reads and
+     * writes are logged in their own columns (same shape as the gateway, so
+     * Analytics can total the two surfaces together).
      */
-    private function logChatRequest(int $userId, ?string $model, ?int $inputTokens, ?int $outputTokens, int $status): void
-    {
+    private function logChatRequest(
+        int $userId,
+        ?string $model,
+        ?int $inputTokens,
+        ?int $cacheReadTokens,
+        ?int $cacheWriteTokens,
+        ?int $outputTokens,
+        int $status,
+    ): void {
         if (! config('services.anthropic.request_log_enabled', true)) {
             return;
         }
@@ -1884,6 +1907,8 @@ class ChatController extends Controller
             'surface' => 'chat',
             'model' => $model,
             'input_tokens' => $inputTokens,
+            'cache_read_tokens' => $cacheReadTokens,
+            'cache_write_tokens' => $cacheWriteTokens,
             'output_tokens' => $outputTokens,
             'status' => $status,
             'latency_ms' => (int) round((microtime(true) - $this->turnStartedAt) * 1000),
@@ -1911,8 +1936,16 @@ class ChatController extends Controller
             $conversation->prompt_tokens += $inputTokens;
             $conversation->completion_tokens += $outputTokens;
 
-            app(TokenBudget::class)->record($request->user(), $inputTokens + $outputTokens);
-            $this->logChatRequest($userId, $selectedModel, $inputTokens, $outputTokens, 200);
+            app(TokenBudget::class)->recordUsage($request->user(), $this->turnUsage($inputTokens, $outputTokens));
+            $this->logChatRequest(
+                $userId,
+                $selectedModel,
+                $inputTokens,
+                $this->cacheReadTokens,
+                $this->cacheWriteTokens,
+                $outputTokens,
+                200,
+            );
 
             $assistantMessage = new Message;
             $assistantMessage->role = 'assistant';
@@ -1938,8 +1971,9 @@ class ChatController extends Controller
         $conversation->cache_write_tokens += $this->cacheWriteTokens;
         $conversation->save();
 
-        // Charge this turn's tokens against the user's rolling budget.
-        app(TokenBudget::class)->record($request->user(), $inputTokens + $outputTokens);
+        // Charge this turn against the user's rolling budget, with cached
+        // prompt tokens weighted to what they actually cost.
+        app(TokenBudget::class)->recordUsage($request->user(), $this->turnUsage($inputTokens, $outputTokens));
 
         // Auto-compact: this turn's input size IS the replayed context — once it
         // crosses the threshold, summarize in the background (like claude.ai)
@@ -1982,7 +2016,15 @@ class ChatController extends Controller
             DispatchN8nEvent::dispatch($userId, 'chat.completed', $payload, (string) $provider);
         }
 
-        $this->logChatRequest($userId, $selectedModel, $inputTokens, $outputTokens, 200);
+        $this->logChatRequest(
+            $userId,
+            $selectedModel,
+            $inputTokens,
+            $this->cacheReadTokens,
+            $this->cacheWriteTokens,
+            $outputTokens,
+            200,
+        );
 
         return $assistantMessage;
     }

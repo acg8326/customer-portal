@@ -40,12 +40,13 @@ class AnthropicGateway
             AnthropicRateLimits::capture($response);
 
             $decoded = $response->json();
+            $usage = is_array($decoded) ? $this->usageFromBody($decoded) : null;
 
-            if (is_array($decoded)) {
-                $this->budget->record($user, $this->usageFromBody($decoded));
+            if ($usage !== null) {
+                $this->budget->recordUsage($user, $usage);
             }
 
-            $this->logRequest($user, 'gateway', $model, $decoded, $response->status(), $startedAt);
+            $this->logRequest($user, 'gateway', $model, $usage, $response->status(), $startedAt);
 
             // Relay the upstream bytes verbatim — re-encoding a decoded array
             // would mangle any empty JSON objects in the response.
@@ -118,10 +119,10 @@ class AnthropicGateway
                 flush();
             }
 
-            $this->budget->record($user, $parser->total());
-            $this->logRequest($user, 'gateway', $model, [
-                'usage' => ['input_tokens' => $parser->inputTokens(), 'output_tokens' => $parser->outputTokens()],
-            ], $status, $startedAt);
+            $usage = $parser->usage();
+
+            $this->budget->recordUsage($user, $usage);
+            $this->logRequest($user, 'gateway', $model, $usage, $status, $startedAt);
         }, $status, [
             'Content-Type' => 'text/event-stream',
             'Cache-Control' => 'no-cache, no-transform',
@@ -166,44 +167,40 @@ class AnthropicGateway
      * Record one gateway request to the Logs table (Analytics → Logs). A
      * no-op when disabled via config('services.anthropic.request_log_enabled').
      *
-     * @param  array<string, mixed>|null  $decodedBody
+     * Streamed and non-streamed requests log the same four token classes, so
+     * `input_tokens` means the uncached remainder on both — it used to include
+     * cache tokens on the streaming path only, which is the path Claude Code
+     * always takes.
      */
-    private function logRequest(User $user, string $surface, ?string $model, ?array $decodedBody, int $status, float $startedAt): void
+    private function logRequest(User $user, string $surface, ?string $model, ?TokenUsage $usage, int $status, float $startedAt): void
     {
         if (! config('services.anthropic.request_log_enabled', true)) {
             return;
         }
 
-        $usage = is_array($decodedBody) ? ($decodedBody['usage'] ?? []) : [];
-
         RequestLog::create([
             'user_id' => $user->id,
             'surface' => $surface,
             'model' => $model,
-            'input_tokens' => is_array($usage) ? ($usage['input_tokens'] ?? null) : null,
-            'output_tokens' => is_array($usage) ? ($usage['output_tokens'] ?? null) : null,
+            'input_tokens' => $usage?->uncachedInput,
+            'cache_read_tokens' => $usage?->cacheRead,
+            'cache_write_tokens' => $usage?->cacheWrite,
+            'output_tokens' => $usage?->output,
             'status' => $status,
             'latency_ms' => (int) round((microtime(true) - $startedAt) * 1000),
         ]);
     }
 
     /**
-     * Total billed tokens from a non-streamed response body.
+     * Usage from a non-streamed response body, split by token class.
      *
      * @param  array<string, mixed>  $body
      */
-    private function usageFromBody(array $body): int
+    private function usageFromBody(array $body): TokenUsage
     {
         $usage = $body['usage'] ?? [];
 
-        if (! is_array($usage)) {
-            return 0;
-        }
-
-        return (int) ($usage['input_tokens'] ?? 0)
-            + (int) ($usage['cache_creation_input_tokens'] ?? 0)
-            + (int) ($usage['cache_read_input_tokens'] ?? 0)
-            + (int) ($usage['output_tokens'] ?? 0);
+        return is_array($usage) ? TokenUsage::fromArray($usage) : new TokenUsage;
     }
 
     private function url(string $path): string

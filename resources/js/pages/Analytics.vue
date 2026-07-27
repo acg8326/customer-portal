@@ -841,12 +841,13 @@ function statusClass(status: number): string {
                     </table>
                 </div>
                 <p v-else class="text-sm text-muted-foreground">
-                    No conversations yet.
+                    No usage yet.
                 </p>
 
                 <p class="mt-3 text-xs text-muted-foreground">
                     Estimates from per-model prices in config (override with
-                    <code>LLM_PRICES</code>). Deleted chats drop out of the
+                    <code>LLM_PRICES</code>). Covers both the in-app chat and
+                    gateway traffic (Claude Code). Deleted chats drop out of the
                     totals; cache tracking counts from the day it was deployed.
                 </p>
             </div>

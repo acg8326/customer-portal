@@ -16,13 +16,15 @@ use Illuminate\Support\Carbon;
  * @property int|null $user_id
  * @property string $surface
  * @property string|null $model
- * @property int|null $input_tokens
+ * @property int|null $input_tokens Uncached prompt tokens only — see cache_* below
+ * @property int|null $cache_read_tokens
+ * @property int|null $cache_write_tokens
  * @property int|null $output_tokens
  * @property int $status
  * @property int|null $latency_ms
  * @property Carbon|null $created_at
  */
-#[Fillable(['user_id', 'surface', 'model', 'input_tokens', 'output_tokens', 'status', 'latency_ms'])]
+#[Fillable(['user_id', 'surface', 'model', 'input_tokens', 'cache_read_tokens', 'cache_write_tokens', 'output_tokens', 'status', 'latency_ms'])]
 class RequestLog extends Model
 {
     public $timestamps = false;

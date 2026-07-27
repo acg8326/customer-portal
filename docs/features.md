@@ -283,6 +283,20 @@ the **Claude API**.
   instead of repeating the same refresh/exceeded/record/snapshot logic three
   times. ([`TokenBudget`](../app/Services/TokenBudget.php),
   [`TokenBudgetTier`](../app/Services/TokenBudgetTier.php).)
+- **Cache-weighted budgets:** a cached prompt token doesn't cost what a fresh
+  one does, so budgets don't charge it as if it did. Every surface charges
+  through `TokenBudget::recordUsage()` with a
+  [`TokenUsage`](../app/Services/TokenUsage.php) — uncached input, cache reads,
+  cache writes, and output kept apart — and the cached classes are weighted by
+  `USAGE_CACHE_READ_WEIGHT` (default 0.1) and `USAGE_CACHE_WRITE_WEIGHT`
+  (default 1.25), mirroring Anthropic's billing. This matters most for **coding
+  agents through the gateway**, which replay a large cached prefix every turn:
+  a turn with 100 uncached + 10,000 cached-read + 1,000 cached-write + 40
+  output tokens costs 2,390 against the budget, not the 11,140 tokens moved.
+  Set `USAGE_CACHE_READ_WEIGHT=0` to make reads free, or `1` to charge them
+  like fresh input. (Keep these in step with the `LLM_CACHE_*_MULTIPLIER`
+  values that price the same tokens in dollars on Analytics.) Media actions
+  keep their flat synthetic costs (`services.media.*.token_cost`).
 - **Dashboard layout:** the page opens with a time-of-day greeting
   ("Good morning, Alex" + date), then a **Token usage** card shown to
   **everyone** (super admins included) with a compact row per window —
@@ -302,7 +316,11 @@ the **Claude API**.
   Anthropic on the server's central key, and records usage — streaming SSE is
   passed through verbatim while a lightweight parser
   ([`SseUsageParser`](../app/Services/SseUsageParser.php)) tallies tokens as
-  they flow. The developer never holds the Anthropic key, so access is
+  they flow, split into uncached / cache-read / cache-write / output so the
+  budget can weight them (see **Cache-weighted budgets** above). The client's
+  own `cache_control` breakpoints and `anthropic-beta` header are forwarded
+  untouched — Claude Code's caching works exactly as it does against
+  `api.anthropic.com`. The developer never holds the Anthropic key, so access is
   revocable and governed centrally. Routes are token-authenticated (no web
   session/CSRF), wired in `bootstrap/app.php`; the proxy lives in
   [`AnthropicGateway`](../app/Services/AnthropicGateway.php) behind
@@ -314,7 +332,14 @@ the **Claude API**.
   **Settings → Developer access** page to generate/revoke their own gateway
   tokens (shown once, stored as a SHA-256 hash — only a `last_four` hint is
   kept), with copy-paste setup steps and the exact env vars. The page and its
-  nav item 404/hide when the gateway is off.
+  nav item 404/hide when the gateway is off. The page also surfaces a
+  cost-guidance callout: an AiMe token is metered API billing (no bundled
+  allowance), while Claude Code's own Claude.ai Pro/Max login is a flat
+  subscription — the two aren't interchangeable at the billing level, since
+  the subscription's OAuth login doesn't honor `ANTHROPIC_BASE_URL` at all.
+  Guidance: use your own subscription for daily interactive coding; reserve
+  an AiMe token for headless/CI automation or work that needs the org's
+  governed key. See [llm-gateway.md §5a](llm-gateway.md#5a-a-token-isnt-always-the-right-choice--subscription-vs-metered-api).
   ([`GatewayToken`](../app/Models/GatewayToken.php),
   [`GatewayTokenController`](../app/Http/Controllers/Settings/GatewayTokenController.php).)
 - **Analytics (super admin only, `/analytics`):** a standalone page — separate
@@ -344,17 +369,23 @@ the **Claude API**.
     and overriding `.env` immediately, no redeploy; clearing falls back to
     `.env`. (`PATCH /analytics/users/{user}/limits`,
     `PATCH /analytics/usage-settings`.)
-  - **Cost & caching** — estimated API spend in dollars, aggregated over all
-    stored conversations. Three tiles — **prompt-cache hit rate** (Claude
-    input tokens served from cache), **$ saved by caching** (reads bill at
-    ~10% of input price), and uncached input — plus a per-model table (model,
-    provider, input/output tokens, est. cost, sorted by cost). Prices are
+  - **Cost & caching** — estimated API spend in dollars across **both
+    surfaces**: stored conversations (in-app chat) and logged gateway requests
+    (Claude Code and any other Anthropic client). Three tiles — **prompt-cache
+    hit rate** (Claude input tokens served from cache), **$ saved by caching**
+    (reads bill at ~10% of input price), and uncached input — plus a per-model
+    table (model, provider, input/output tokens, est. cost, sorted by cost);
+    chat and gateway use of the same model share one row. Prices are
     config, not code: per-model `[input, output]` USD/MTok in
     `services.llm_pricing` with a single-line override
     `LLM_PRICES="model:input:output,…"`, a `LLM_PRICE_DEFAULT_INPUT/_OUTPUT`
     fallback for unlisted models, and cache multipliers
     (`LLM_CACHE_READ_MULTIPLIER` 0.1 / `LLM_CACHE_WRITE_MULTIPLIER` 1.25).
-    Estimates only — deleted chats drop out, and cache columns count from
+    Gateway figures come from `request_logs` (the gateway is stateless and
+    keeps no transcript), reading `surface = gateway` rows only so the chat
+    rows logged there don't double-count against their conversations —
+    meaning gateway cost is only counted while `CHAT_REQUEST_LOG_ENABLED` is
+    on. Estimates only — deleted chats drop out, and cache columns count from
     the day caching was deployed, not from account creation.
   - **Rate limits** — Anthropic's own org-wide rate-limit response headers
     (`anthropic-ratelimit-{dimension}-{limit|remaining|reset}`), captured
@@ -395,13 +426,16 @@ the **Claude API**.
   tools → system → messages, it also caches the **tool schemas** (the biggest
   static cost with up to `COMPOSIO_MAX_TOOLS` tools). The second is a
   top-level auto-cache marker on the **conversation history** — crucial for
-  two reasons: (a) Claude Opus models only cache prefixes ≥ 4,096 tokens, and
-  the system prompt alone (~1,800 tokens) is silently below that, so without
-  the history in the prefix most chats never cached at all; (b) each turn (and
+  two reasons: (a) Claude enforces a minimum cacheable prefix that varies by
+  model (512 tokens on Opus 5 / Fable 5, 1,024 on Opus 4.8 and Sonnet, up to
+  4,096 on Opus 4.6 / 4.5 / Haiku 4.5), and on the stricter models the system
+  prompt alone (~1,800 tokens) is silently below it, so without the history in
+  the prefix those chats never cached at all; (b) each turn (and
   each round inside the tool loop) now re-reads the whole prior prompt —
   history *and* tool results — at ~0.1× input price instead of full price.
   Per-turn cache usage is persisted on the conversation
-  (`cache_read_tokens` / `cache_write_tokens`) for hit-rate monitoring. Only
+  (`cache_read_tokens` / `cache_write_tokens`) and on the request log, for
+  hit-rate monitoring and budget weighting (below). Only
   the most recent `ANTHROPIC_HISTORY_LIMIT` messages (default 40) are replayed
   each turn, keeping long conversations' context and cost bounded.
 - **Per-toolkit routing (cost):** when several tool sources are connected

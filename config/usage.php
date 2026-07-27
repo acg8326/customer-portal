@@ -30,6 +30,19 @@ return [
     |                        THREE windows; disable to turn the whole
     |                        feature off.
     |
+    | Prompt-cache weighting
+    | ----------------------
+    | Cached prompt tokens don't cost what fresh ones do: Anthropic bills a
+    | cache READ at ~0.1x the input price and a cache WRITE at ~1.25x. Budgets
+    | charge each class at these weights so a coding agent replaying a large
+    | cached prefix every turn isn't billed as if the prefix were new. Keep
+    | these in step with services.llm_pricing.cache_*_multiplier (which prices
+    | the same tokens in dollars on Analytics).
+    |
+    | cache_read_weight    — 0 makes cache reads free; 1 charges them like
+    |                        fresh input.
+    | cache_write_weight   — writes are a real premium; 1.25 mirrors billing.
+    |
     */
 
     'token_limit' => (int) env('USAGE_TOKEN_LIMIT', 0),
@@ -45,5 +58,9 @@ return [
     'weekly_days' => (int) env('USAGE_WEEKLY_DAYS', 7),
 
     'enabled' => (bool) env('USAGE_LIMIT_ENABLED', true),
+
+    'cache_read_weight' => (float) env('USAGE_CACHE_READ_WEIGHT', 0.1),
+
+    'cache_write_weight' => (float) env('USAGE_CACHE_WRITE_WEIGHT', 1.25),
 
 ];

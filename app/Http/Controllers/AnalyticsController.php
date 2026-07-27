@@ -36,22 +36,21 @@ class AnalyticsController extends Controller
     }
 
     /**
-     * Estimated API spend by model plus prompt-cache efficiency, aggregated
-     * over every stored conversation. Prices come from
-     * config('services.llm_pricing') — estimates, not invoices.
+     * Estimated API spend by model plus prompt-cache efficiency, across BOTH
+     * surfaces: stored conversations (in-app chat) and logged gateway requests
+     * (Claude Code and any other Anthropic client pointed at us). Prices come
+     * from config('services.llm_pricing') — estimates, not invoices.
+     *
+     * Gateway figures come from request_logs rather than conversations, since
+     * the gateway is stateless and keeps no transcript. Only `surface =
+     * gateway` rows are read: chat rows are logged there too, and would
+     * otherwise double-count against the conversations they belong to.
      *
      * @return array{models: array<int, array{model: string, label: string, provider: string, input_tokens: int, output_tokens: int, cost: float}>, total_usd: float, cache: array{hit_rate: float|null, read_tokens: int, write_tokens: int, uncached_tokens: int, saved_usd: float}}
      */
     private function costEfficiency(): array
     {
-        $rows = Conversation::query()
-            ->selectRaw('model')
-            ->selectRaw('SUM(prompt_tokens) AS input_sum')
-            ->selectRaw('SUM(completion_tokens) AS output_sum')
-            ->selectRaw('SUM(cache_read_tokens) AS cache_read_sum')
-            ->selectRaw('SUM(cache_write_tokens) AS cache_write_sum')
-            ->groupBy('model')
-            ->get();
+        $rows = $this->tokensByModel();
 
         $prices = Config::array('services.llm_pricing.models');
         [$defIn, $defOut] = array_pad(Config::array('services.llm_pricing.default'), 2, 3.0);
@@ -74,12 +73,14 @@ class AnalyticsController extends Controller
         $cacheableInput = 0;
         $saved = 0.0;
 
-        foreach ($rows as $row) {
-            $model = (string) $row->getAttribute('model');
-            $input = (int) $row->getAttribute('input_sum');
-            $output = (int) $row->getAttribute('output_sum');
-            $read = (int) $row->getAttribute('cache_read_sum');
-            $write = (int) $row->getAttribute('cache_write_sum');
+        foreach ($rows as $key => $row) {
+            // PHP casts numeric-looking array keys to int; model ids are not
+            // numeric today, but don't make the rest of this depend on that.
+            $model = (string) $key;
+            $input = $row['input'];
+            $output = $row['output'];
+            $read = $row['cache_read'];
+            $write = $row['cache_write'];
 
             [$inPrice, $outPrice] = array_pad((array) ($prices[$model] ?? [$defIn, $defOut]), 2, (float) $defOut);
 
@@ -101,7 +102,7 @@ class AnalyticsController extends Controller
             }
 
             $models[] = [
-                'model' => $model,
+                'model' => (string) $model,
                 'label' => (string) ($catalog[$model]['label'] ?? $model),
                 'provider' => (string) ($catalog[$model]['provider'] ?? 'Other'),
                 'input_tokens' => $input + $read + $write,
@@ -125,6 +126,70 @@ class AnalyticsController extends Controller
                 'saved_usd' => round($saved, 2),
             ],
         ];
+    }
+
+    /**
+     * Tokens by model, summed over both surfaces and split by token class.
+     * Keyed by model id so chat and gateway usage of the same model land on one
+     * row.
+     *
+     * @return array<string, array{input: int, output: int, cache_read: int, cache_write: int}>
+     */
+    private function tokensByModel(): array
+    {
+        $totals = [];
+
+        $add = function (string $model, int $input, int $output, int $read, int $write) use (&$totals): void {
+            $totals[$model] ??= ['input' => 0, 'output' => 0, 'cache_read' => 0, 'cache_write' => 0];
+            $totals[$model]['input'] += $input;
+            $totals[$model]['output'] += $output;
+            $totals[$model]['cache_read'] += $read;
+            $totals[$model]['cache_write'] += $write;
+        };
+
+        $conversations = Conversation::query()
+            ->selectRaw('model')
+            ->selectRaw('SUM(prompt_tokens) AS input_sum')
+            ->selectRaw('SUM(completion_tokens) AS output_sum')
+            ->selectRaw('SUM(cache_read_tokens) AS cache_read_sum')
+            ->selectRaw('SUM(cache_write_tokens) AS cache_write_sum')
+            ->groupBy('model')
+            ->get();
+
+        foreach ($conversations as $row) {
+            $add(
+                (string) $row->getAttribute('model'),
+                (int) $row->getAttribute('input_sum'),
+                (int) $row->getAttribute('output_sum'),
+                (int) $row->getAttribute('cache_read_sum'),
+                (int) $row->getAttribute('cache_write_sum'),
+            );
+        }
+
+        // Gateway traffic keeps no transcript, so its tokens live only in the
+        // request log. Rows predating the cache columns report null → 0, which
+        // understates their cache share rather than inventing one.
+        $gateway = RequestLog::query()
+            ->where('surface', 'gateway')
+            ->selectRaw('model')
+            ->selectRaw('COALESCE(SUM(input_tokens), 0) AS input_sum')
+            ->selectRaw('COALESCE(SUM(output_tokens), 0) AS output_sum')
+            ->selectRaw('COALESCE(SUM(cache_read_tokens), 0) AS cache_read_sum')
+            ->selectRaw('COALESCE(SUM(cache_write_tokens), 0) AS cache_write_sum')
+            ->groupBy('model')
+            ->get();
+
+        foreach ($gateway as $row) {
+            $add(
+                (string) $row->getAttribute('model'),
+                (int) $row->getAttribute('input_sum'),
+                (int) $row->getAttribute('output_sum'),
+                (int) $row->getAttribute('cache_read_sum'),
+                (int) $row->getAttribute('cache_write_sum'),
+            );
+        }
+
+        return $totals;
     }
 
     /**

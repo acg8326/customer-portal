@@ -24,6 +24,7 @@ starter kit, then extended and rebranded for CW Global People.
 | [prompts.md](prompts.md)                 | Every prompt AiMe is given, verbatim, and when each block is sent    |
 | [security.md](security.md)               | Every security control, layer by layer, and how to tune it           |
 | [performance.md](performance.md)         | Cost & performance levers — caching, routing, compaction, budgets    |
+| [env-reference.md](env-reference.md)     | Every `.env` key with its default, tier, and what it does            |
 | [netsuite.md](netsuite.md)               | NetSuite setup (TBA + OAuth 2.0), role permissions, troubleshooting  |
 | [composio-integrations.md](composio-integrations.md) | Composio integrations — API quirks, toolkit modes, add/debug playbook |
 | [llm-gateway.md](llm-gateway.md)         | AiMe as the backend for Claude Code — architecture, governance, setup |

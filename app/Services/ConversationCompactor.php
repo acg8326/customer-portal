@@ -77,10 +77,12 @@ class ConversationCompactor
 
         // The summarization call costs tokens too — charge the owner's budget.
         if ($conversation->user !== null) {
-            app(TokenBudget::class)->record(
-                $conversation->user,
-                $message->usage->inputTokens + $message->usage->outputTokens,
-            );
+            app(TokenBudget::class)->recordUsage($conversation->user, new TokenUsage(
+                uncachedInput: (int) $message->usage->inputTokens,
+                cacheRead: (int) $message->usage->cacheReadInputTokens,
+                cacheWrite: (int) $message->usage->cacheCreationInputTokens,
+                output: (int) $message->usage->outputTokens,
+            ));
         }
 
         return $summary;

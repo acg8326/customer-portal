@@ -3,6 +3,74 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Prompt caching, integrated end-to-end (budgets, logs, Analytics)
+
+Caching itself already worked on both surfaces — the chat sets two
+`cache_control` breakpoints, and the gateway forwards Claude Code's own
+breakpoints untouched. What was missing was everything *downstream* of the
+response, and the gap fell hardest on agentic coding, the surface that caches
+best.
+
+- **Budgets now weight cached tokens instead of counting them flat.** New
+  [`TokenUsage`](../app/Services/TokenUsage.php) value object keeps the four
+  token classes apart (uncached input / cache read / cache write / output), and
+  `TokenBudget::recordUsage()` charges cached classes at
+  `USAGE_CACHE_READ_WEIGHT` (0.1) and `USAGE_CACHE_WRITE_WEIGHT` (1.25),
+  mirroring Anthropic's billing. Before this, the gateway summed all four
+  classes into one number and charged it 1:1 — so a Claude Code turn replaying a
+  100k-token cached prefix burned 100k budget tokens (real cost ≈ 10k-equivalent)
+  — while the chat charged the uncached remainder only and cache reads were free.
+  Same prefix, wildly different bill, depending on which surface you used. Both
+  now go through one weighted path, as do conversation compaction and memory
+  extraction. Set `USAGE_CACHE_READ_WEIGHT=0` to restore the chat's old
+  free-reads behaviour org-wide.
+- **Gateway cache tokens are persisted, so Analytics finally covers agentic
+  coding.** `request_logs` gains `cache_read_tokens` / `cache_write_tokens`
+  (matching the columns `conversations` already had), and **Analytics → Cost &
+  caching** now aggregates both surfaces: conversations for chat, `surface =
+  gateway` request-log rows for the gateway (filtered so the chat rows logged
+  there don't double-count against their conversations). The hit-rate and
+  "$ saved by caching" tiles previously described chat only — the parser
+  computed the gateway's cache numbers on every request and then discarded them.
+- **`request_logs.input_tokens` means one thing again.** The streaming path
+  logged input *including* cache tokens while the non-streaming path excluded
+  them — and Claude Code always streams, so gateway rows were systematically
+  inflated relative to chat rows. Both paths now log the uncached remainder,
+  with cache reads/writes in their own columns.
+- Tests: `TokenUsageTest` (weighting, config overrides, per-class summing),
+  gateway cache accounting on both the buffered and streamed paths, and cost
+  efficiency across the two surfaces including the double-count guard.
+- Docs: [`llm-gateway.md`](llm-gateway.md) §4.1 covers what the gateway does and
+  doesn't touch about caching, and what a cached turn actually costs. Also
+  corrected a stale claim in `features.md` that Opus caches only prefixes
+  ≥4,096 tokens — the minimum is model-dependent (512 on Opus 5 / Fable 5,
+  1,024 on Opus 4.8 and Sonnet, 4,096 on Opus 4.6 / 4.5 / Haiku 4.5).
+
+## Developer access: subscription-vs-API cost guidance
+
+- Added a callout to the top of **Settings → Developer access** (before the
+  setup steps) explaining that an AiMe token is metered API billing with no
+  bundled allowance, while Claude Code's own Claude.ai Pro/Max login is a
+  flat subscription — and that agentic coding's token-hungry tool loop makes
+  daily interactive use on a token cost far more than the same work would
+  under a subscription. Guidance: use your own subscription for daily
+  coding; reserve a token for headless/CI automation or work that needs the
+  org's governed key. Same explanation added to `llm-gateway.md` §5a — this
+  is a billing-architecture fact (the subscription's OAuth login doesn't
+  honor `ANTHROPIC_BASE_URL`, so there's no seam to proxy it), not something
+  fixable in the gateway.
+
+## Tier-aware 429 messages on the gateway and media endpoints
+
+- `GatewayController` and `MediaController`'s over-budget responses always
+  said "for this period," even when it was actually the session or weekly
+  tier that tripped — misleading for a developer trying to self-diagnose a
+  429 from Claude Code, and for the admin trying to help them. Both now use
+  a new `TokenBudget::exceededTierInfo()` (shared with `ChatController`,
+  which already had this) to name the real tier and its reset time, e.g.
+  *"Your AiMe token budget for this session is used up. It resets on
+  Thursday, Jul 24, 2026 5:00 PM."*
+
 ## Forced first-time password change for admin-created accounts
 
 - New `must_change_password` column on `users` (default `false`), set `true`

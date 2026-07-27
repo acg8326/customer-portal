@@ -95,10 +95,12 @@ class MemoryCurator
         });
 
         // The extraction call costs tokens — charge the owner's budget.
-        app(TokenBudget::class)->record(
-            $user,
-            $response->usage->inputTokens + $response->usage->outputTokens,
-        );
+        app(TokenBudget::class)->recordUsage($user, new TokenUsage(
+            uncachedInput: (int) $response->usage->inputTokens,
+            cacheRead: (int) $response->usage->cacheReadInputTokens,
+            cacheWrite: (int) $response->usage->cacheCreationInputTokens,
+            output: (int) $response->usage->outputTokens,
+        ));
     }
 
     /**

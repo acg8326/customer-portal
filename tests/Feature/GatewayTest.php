@@ -199,6 +199,127 @@ test('a successful non-streaming gateway call is recorded in the request log', f
         ->and($log->latency_ms)->not->toBeNull();
 });
 
+// --- Prompt-cache accounting ----------------------------------------------------
+
+$cachedBody = [
+    'id' => 'msg_2',
+    'type' => 'message',
+    'role' => 'assistant',
+    'content' => [['type' => 'text', 'text' => 'hi']],
+    'model' => 'claude-opus-4-8',
+    'usage' => [
+        'input_tokens' => 100,
+        'cache_read_input_tokens' => 10_000,
+        'cache_creation_input_tokens' => 1_000,
+        'output_tokens' => 40,
+    ],
+];
+
+/** One SSE stream carrying the same usage as $cachedBody. */
+function cachedSseBody(): string
+{
+    $start = json_encode([
+        'type' => 'message_start',
+        'message' => ['usage' => [
+            'input_tokens' => 100,
+            'cache_read_input_tokens' => 10_000,
+            'cache_creation_input_tokens' => 1_000,
+            'output_tokens' => 1,
+        ]],
+    ]);
+    $delta = json_encode(['type' => 'message_delta', 'usage' => ['output_tokens' => 40]]);
+
+    return "event: message_start\ndata: {$start}\n\n"
+        ."event: message_delta\ndata: {$delta}\n\n"
+        ."event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+}
+
+test('cached prompt tokens are charged at their real weight, not face value', function () use ($cachedBody) {
+    Http::fake(['*/v1/messages' => Http::response($cachedBody, 200)]);
+
+    $user = User::factory()->create();
+    $plaintext = issueToken($user);
+
+    $this->withToken($plaintext)
+        ->postJson('/llm/v1/messages', [
+            'model' => 'claude-opus-4-8',
+            'messages' => [['role' => 'user', 'content' => 'hi']],
+        ])
+        ->assertOk();
+
+    // 100 uncached + 10,000 reads at 0.1x (1,000) + 1,000 writes at 1.25x
+    // (1,250) + 40 output = 2,390 — not the 11,140 raw tokens moved.
+    expect($user->fresh()->token_budget_used)->toBe(2_390);
+});
+
+test('the cache weights are configurable', function () use ($cachedBody) {
+    config(['usage.cache_read_weight' => 0, 'usage.cache_write_weight' => 1]);
+
+    Http::fake(['*/v1/messages' => Http::response($cachedBody, 200)]);
+
+    $user = User::factory()->create();
+    $plaintext = issueToken($user);
+
+    $this->withToken($plaintext)
+        ->postJson('/llm/v1/messages', [
+            'model' => 'claude-opus-4-8',
+            'messages' => [['role' => 'user', 'content' => 'hi']],
+        ])
+        ->assertOk();
+
+    // Reads free, writes at face value: 100 + 0 + 1,000 + 40.
+    expect($user->fresh()->token_budget_used)->toBe(1_140);
+});
+
+test('cache tokens are logged in their own columns, not folded into input', function () use ($cachedBody) {
+    Http::fake(['*/v1/messages' => Http::response($cachedBody, 200)]);
+
+    $user = User::factory()->create();
+    $plaintext = issueToken($user);
+
+    $this->withToken($plaintext)
+        ->postJson('/llm/v1/messages', [
+            'model' => 'claude-opus-4-8',
+            'messages' => [['role' => 'user', 'content' => 'hi']],
+        ])
+        ->assertOk();
+
+    $log = RequestLog::query()->where('surface', 'gateway')->sole();
+
+    expect($log->input_tokens)->toBe(100)          // uncached remainder only
+        ->and($log->cache_read_tokens)->toBe(10_000)
+        ->and($log->cache_write_tokens)->toBe(1_000)
+        ->and($log->output_tokens)->toBe(40);
+});
+
+test('a streamed call accounts for cache the same way as a buffered one', function () {
+    Http::fake([
+        '*/v1/messages' => Http::response(cachedSseBody(), 200, ['Content-Type' => 'text/event-stream']),
+    ]);
+
+    $user = User::factory()->create();
+    $plaintext = issueToken($user);
+
+    $response = $this->withToken($plaintext)
+        ->postJson('/llm/v1/messages', [
+            'model' => 'claude-opus-4-8',
+            'stream' => true,
+            'messages' => [['role' => 'user', 'content' => 'hi']],
+        ]);
+
+    $response->assertOk();
+    // Usage is tallied as the bytes pass, so the stream must be drained first.
+    expect($response->streamedContent())->toContain('message_start');
+
+    $log = RequestLog::query()->where('surface', 'gateway')->sole();
+
+    expect($user->fresh()->token_budget_used)->toBe(2_390)
+        ->and($log->input_tokens)->toBe(100)
+        ->and($log->cache_read_tokens)->toBe(10_000)
+        ->and($log->cache_write_tokens)->toBe(1_000)
+        ->and($log->output_tokens)->toBe(40);
+});
+
 test('request logging is skipped when disabled', function () use ($messageBody) {
     config(['services.anthropic.request_log_enabled' => false]);
 

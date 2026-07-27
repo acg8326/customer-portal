@@ -18,11 +18,15 @@ over-generate.
 
 ## (b) Cache what must be re-sent
 
-- **Prompt caching on every path** (plain, MCP/web, connected-tools loop): one
-  `cache_control` breakpoint on the system block. The API builds its prefix
-  tools → system → messages, so that single breakpoint also caches all tool
-  schemas — and re-hits on **every round** of a tool loop. Cache reads bill at
-  ~10% of input price.
+- **Prompt caching on every path** (plain, MCP/web, connected-tools loop): **two**
+  `cache_control` breakpoints. The first is on the system block; the API builds
+  its prefix tools → system → messages, so that one breakpoint also caches all
+  tool schemas — and re-hits on **every round** of a tool loop. The second is a
+  top-level auto-cache marker on the **conversation history**, which matters
+  because the minimum cacheable prefix is model-dependent (512 tokens on Opus 5 /
+  Fable 5, 1,024 on Opus 4.8 and Sonnet, 4,096 on Opus 4.6 / 4.5 / Haiku 4.5) —
+  on the stricter models the ~1,800-token system prompt alone is below the floor
+  and silently wouldn't cache at all. Cache reads bill at ~10% of input price.
 - The cache is **prefix-exact with a ~5-minute TTL** (refreshed per hit):
   - the injected date is **day-granularity** so the prefix stays byte-identical
     across turns (an H:i:s timestamp would guarantee 0% hits);
@@ -56,6 +60,38 @@ over-generate.
   style choice that is quietly a cost control.
 - Auto-titles use a small model (`ANTHROPIC_TITLE_MODEL`, Haiku) at 32 tokens.
 
+## (e) Agentic coding through the gateway
+
+Claude Code's agent loop runs on the developer's machine, so the levers above
+(schema routing, history trimming, compaction, result caps) are **its** decisions,
+not ours — the gateway is a transparent proxy and does not rewrite prompts. What
+we control is the client's caching working unimpeded, plus what a cached turn
+costs:
+
+- **Caching passes through untouched.** The client's `cache_control` breakpoints
+  and `anthropic-beta` header are forwarded verbatim; only the top-level `model`
+  field is rewritten. Since caches are model-scoped, a **pinned model** keeps a
+  developer's cache under one model instead of splitting it across whatever their
+  picker shows — consistent pinning helps hit rate rather than hurting it.
+- **Cache-weighted budgets.** A coding agent replays a large cached prefix on
+  *every* turn, so charging it at face value would bill the best-cached traffic
+  as if nothing were cached. [`TokenUsage`](../app/Services/TokenUsage.php) keeps
+  the four token classes apart and `TokenBudget::recordUsage()` weights reads at
+  `USAGE_CACHE_READ_WEIGHT` (0.1) and writes at `USAGE_CACHE_WRITE_WEIGHT`
+  (1.25). A turn of 100 uncached + 10,000 read + 1,000 written + 40 output costs
+  2,390 against the budget, not 11,140.
+- **Spend is stopped before it happens.** The budget check returns `429`
+  *before* any upstream call, and `count_tokens` is proxied but never billed
+  (it's metadata Claude Code sends ahead of a real request). The gateway routes
+  carry no rate-limit throttle — the budget is the guard.
+- **Visibility per model.** Gateway rows in `request_logs` carry all four token
+  classes, so **Analytics → Cost & caching** prices gateway traffic beside chat
+  and shows the real hit rate for the surface that caches hardest.
+- **Cheapest lever is the honest one:** Settings → Developer access tells
+  developers a token is metered API billing with no bundled allowance, and that
+  daily interactive coding is cheaper on their own Claude.ai subscription —
+  tokens are for headless/CI work and jobs needing the org's governed key.
+
 ## App-level performance
 
 - **Streaming (SSE)** everywhere the UI talks to Claude — first tokens render
@@ -80,3 +116,4 @@ over-generate.
 | Tool turns expensive with many apps connected | Keep `COMPOSIO_TOOLKIT_ROUTING=true`, tighten `*_KEYWORDS` |
 | Huge tool payloads | Lower `ANTHROPIC_TOOL_RESULT_MAX_CHARS` / `NETSUITE_SUITEQL_MAX_ROWS` |
 | One user burning spend | Set `USAGE_TOKEN_LIMIT` > 0 |
+| Coding-agent budgets draining fast | Check the hit rate on Analytics first; the weights (`USAGE_CACHE_READ_WEIGHT`) only matter if reads are actually happening |
