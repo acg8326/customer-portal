@@ -3,6 +3,34 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Cross-tool workflows: verified, plus a compaction gap closed
+
+Checked whether "pull this from NetSuite and save it to Google Sheets" actually
+works across sources. The mechanism does: `toolSchemas()` merges schemas for
+**every** connected toolkit, NetSuite's merge in beside them, and results feed
+back between rounds, so one turn can read from one system and write to another.
+Nothing extra to wire — connect both and ask.
+
+The risk was never the loop, it was **keyword routing dropping one side**.
+Verified against realistic phrasings, all of which keep both sources:
+NetSuite→Sheets ("pull my open invoices and put them in a spreadsheet"),
+HubSpot→Sheets, Airtable↔HubSpot, and NetSuite→Slack. A follow-up that names
+only one side ("now export those to a spreadsheet") also survives, because
+routing reads the whole replayed window rather than the latest message.
+
+**The gap:** once a long conversation is **compacted**, the turn that named the
+source is no longer replayed — so a cross-tool follow-up routed to Sheets alone
+and lost NetSuite, mid-workflow, having already fetched the data. The
+compaction summary now counts as part of the routing haystack, which is exactly
+what it is: a description of what the conversation is about.
+
+Known ceilings on a cross-tool job, all `.env`-tunable and none silent: tool
+results are truncated at `ANTHROPIC_TOOL_RESULT_MAX_CHARS` (20k) with a note
+telling the model to narrow rather than assume it saw everything, SuiteQL caps
+at `NETSUITE_SUITEQL_MAX_ROWS` (100) while reporting the true total, and a turn
+stops after `COMPOSIO_MAX_TOOL_ROUNDS` (8). A bulk copy of thousands of rows is
+therefore a paged conversation, not one instruction.
+
 ## Stronger anti-fabrication rules in the system prompt
 
 The persona already said *"Never invent account details, policy specifics,

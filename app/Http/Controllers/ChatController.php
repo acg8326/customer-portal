@@ -1489,10 +1489,18 @@ class ChatController extends Controller
             return [$toolkitKeys, $netsuite];
         }
 
-        $haystack = mb_strtolower($this->recentMessages($conversation)
-            ->where('role', 'user')
-            ->map(fn (Message $m): string => (string) $m->content)
-            ->implode("\n"));
+        // The compaction summary counts as part of the conversation here. Once
+        // a long chat is compacted, the turn that named the source ("pull my
+        // invoices from NetSuite") is no longer replayed, so a cross-tool
+        // follow-up ("now export those to a sheet") would route to Sheets alone
+        // and lose NetSuite — mid-workflow, which is the worst moment for it.
+        $haystack = mb_strtolower(
+            (string) $conversation->summary."\n"
+            .$this->recentMessages($conversation)
+                ->where('role', 'user')
+                ->map(fn (Message $m): string => (string) $m->content)
+                ->implode("\n")
+        );
 
         $matched = [];
 

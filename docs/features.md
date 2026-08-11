@@ -716,10 +716,28 @@ boxes to enable, a paste-exactly code block, and info/warning callouts
   - *(The older `mcp_catalog` one-click OAuth catalog was removed from the UI —
     most vendors can't self-register an OAuth app, so those buttons failed. The
     catalog config + `catalogConnect` route remain but are no longer surfaced.)*
-- **Cross-app interop.** Because every enabled MCP server's tools are offered to
-  the model **together** in one turn, the assistant can move/compare data across
-  connected apps — e.g. "compare HubSpot deals to the Airtable `Deals` table and
-  add the missing ones." No extra wiring; connect both and ask.
+- **Cross-app interop.** Every connected source's tools are offered to the model
+  **together** in one turn — `ComposioService::toolSchemas()` merges schemas
+  across all connected toolkits and NetSuite's merge in beside them — and tool
+  results feed back between rounds. So one turn can read from one system and
+  write to another: *"pull my open invoices from NetSuite and save them to a
+  Google Sheet"*, *"copy my HubSpot deals into a sheet"*, *"sync the Airtable
+  base with HubSpot contacts"*. No extra wiring; connect both and ask.
+  - **Keyword routing is the thing to watch**, since dropping one side breaks
+    the workflow. It keeps every source a request names, including a follow-up
+    that names only one ("now export those to a spreadsheet" keeps NetSuite,
+    because routing reads the whole replayed window). The **compaction summary
+    counts too** — otherwise a compacted chat would strand a half-finished
+    cross-tool job mid-way. Covered by
+    [`ChatToolRoutingTest`](../tests/Feature/ChatToolRoutingTest.php).
+  - **Ceilings** (all `.env`-tunable, none silent): tool results truncate at
+    `ANTHROPIC_TOOL_RESULT_MAX_CHARS` (20k) with a note telling the model to
+    narrow rather than assume it saw everything; SuiteQL caps at
+    `NETSUITE_SUITEQL_MAX_ROWS` while reporting the true total; a turn stops
+    after `COMPOSIO_MAX_TOOL_ROUNDS` (8). Copying thousands of rows is a paged
+    conversation, not one instruction.
+  - Writes still hit the **approval gate** — a NetSuite→Sheets copy pauses on
+    the Sheets write with the exact call shown before anything is written.
 - **Hard approval gate (destructive tool calls).** In the connected-tools loop
   (Composio + NetSuite), a tool call whose name contains a destructive verb
   (`ANTHROPIC_TOOL_GATE_VERBS`: create/update/delete/send/…) **pauses the turn

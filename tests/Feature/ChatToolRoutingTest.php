@@ -99,6 +99,61 @@ test('a spreadsheet question no longer drops NetSuite by accident', function () 
         ->toBe([[], true]);
 });
 
+// --- cross-tool work ----------------------------------------------------------
+
+test('a cross-tool request keeps every source it names', function () {
+    $user = User::factory()->create();
+    $keys = ['googlesheets', 'hubspot', 'airtable'];
+
+    $cases = [
+        // [prompt, expected toolkits, expected netsuite]
+        ['pull my open invoices from netsuite and save them to a google sheet', ['googlesheets'], true],
+        ['get the open invoices and put them in a spreadsheet', ['googlesheets'], true],
+        ['copy my hubspot deals into a google sheet', ['googlesheets', 'hubspot'], false],
+        ['sync the airtable base with hubspot contacts', ['hubspot', 'airtable'], false],
+        ['take the customers from netsuite and add rows to my sheet', ['googlesheets'], true],
+    ];
+
+    foreach ($cases as [$prompt, $toolkits, $netsuite]) {
+        expect(invokeRouting('routeToolkits', $keys, true, routingConversation($user, $prompt)))
+            ->toBe([$toolkits, $netsuite], "routing for: {$prompt}");
+    }
+});
+
+test('a cross-tool follow-up keeps the source named in an earlier turn', function () {
+    $user = User::factory()->create();
+
+    // "export those to a spreadsheet" names only Sheets — NetSuite survives
+    // because routing reads the whole replayed window, not just this message.
+    $conversation = routingConversation(
+        $user,
+        'pull my open invoices from netsuite',
+        'now export those to a spreadsheet',
+    );
+
+    expect(invokeRouting('routeToolkits', ['googlesheets'], true, $conversation))
+        ->toBe([['googlesheets'], true]);
+});
+
+test('compaction does not strand a half-finished cross-tool workflow', function () {
+    $user = User::factory()->create();
+    $conversation = routingConversation(
+        $user,
+        'pull my open invoices from netsuite',
+        'now export those to a spreadsheet',
+    );
+
+    // Compact away the turn that named NetSuite. Without the summary in the
+    // haystack this routes to Sheets alone and the workflow dies mid-way —
+    // at the worst possible moment, having already fetched the data.
+    $conversation->summary = 'The user pulled open invoices from NetSuite and wants them exported.';
+    $conversation->summary_through_id = (int) $conversation->messages()->orderBy('id')->value('id');
+    $conversation->save();
+
+    expect(invokeRouting('routeToolkits', ['googlesheets'], true, $conversation->fresh()))
+        ->toBe([['googlesheets'], true]);
+});
+
 // --- the connected-sources prompt block ---------------------------------------
 
 test('the prompt names only the sources that actually shipped', function () {
