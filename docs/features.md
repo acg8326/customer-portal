@@ -659,9 +659,16 @@ boxes to enable, a paste-exactly code block, and info/warning callouts
   are **per user**: each person clicks **Connect**, authorizes their *own*
   account, and AiMe uses that grant when running the tool — so the assistant
   acts as that user. The **Connect callback verifies the grant is ACTIVE** with
-  Composio before showing "Connected". **Slack, GitHub, HubSpot, and Airtable** are wired;
-  adding another (Notion, Linear, Google Drive, …) is just another
-  `services.composio.toolkits` entry + a card `composio:` key.
+  Composio before showing "Connected". **Slack, GitHub, HubSpot, Airtable, and
+  Google Sheets** are wired; adding another (Notion, Linear, Google Drive, …) is
+  just another `services.composio.toolkits` entry + a card `composio:` key.
+  - **Google Sheets** (`googlesheets`, 36 tools) reads rows, searches
+    spreadsheets, runs `QUERY_TABLE`/`AGGREGATE_COLUMN_DATA`, and writes results
+    back. It's the largest toolkit here, so keyword routing matters most for it:
+    `COMPOSIO_GOOGLESHEETS_KEYWORDS` (sheet, spreadsheet, worksheet, cell, row,
+    range, formula, …) keeps its schemas off unrelated turns. Nine of its tools
+    write or clear cells and **all nine pause for approval** — see the gate-verb
+    note below, since Sheets is what exposed the gap.
   - **How tools run:** Composio's MCP endpoint requires an `x-api-key` header
     that Anthropic's server-side MCP connector can't send, so AiMe runs the tool
     loop itself — it fetches Composio's tool schemas, gives them to Claude as
@@ -692,6 +699,18 @@ boxes to enable, a paste-exactly code block, and info/warning callouts
   it. Reads (get/list/search/suiteql) never gate. Toggle with
   `ANTHROPIC_TOOL_HARD_GATE` (default on).
   (`POST /chat/conversations/{id}/tools/decision`.)
+  - **The verb list must keep up with each toolkit's naming.** Google Sheets
+    exposed the gap: `CLEAR_VALUES`, `SPREADSHEETS_VALUES_BATCH_CLEAR`,
+    `SPREADSHEETS_VALUES_APPEND`, `APPEND_DIMENSION`, `INSERT_DIMENSION`,
+    `SHEET_FROM_JSON`, `SPREADSHEETS_SHEETS_COPY_TO` and `FORMAT_CELL` all write
+    or destroy data, and **none** contains create/update/delete/write — so they
+    ran unprompted. `ANTHROPIC_TOOL_GATE_VERBS` now also carries
+    `append,clear,insert,copy,format,duplicate,replace,sort,rename,drop,truncate`.
+    Checked against every tool of every configured toolkit (Slack 133, GitHub
+    500, HubSpot 304, Airtable 17, Sheets 36): the additions gate 16 more calls
+    and **not one of them is a read** — they're Slack channel renames, GitHub
+    cache clears, HubSpot pipeline replaces, and the nine Sheets writers. When
+    wiring a new toolkit, run the same check before trusting the gate.
 - **Destructive-action guardrail (ask-in-text).** For **MCP servers** — which
   Anthropic executes server-side and therefore can't be gated client-side — a
   policy is appended to the system prompt requiring the assistant to **confirm
@@ -795,7 +814,7 @@ boxes to enable, a paste-exactly code block, and info/warning callouts
   `NETSUITE_APP_DOMAIN` / `NETSUITE_OAUTH_SCOPES` / `NETSUITE_OAUTH_REDIRECT` /
   `NETSUITE_OAUTH_REFRESH_LEEWAY`). Backend:
   [`NetsuiteController`](../app/Http/Controllers/NetsuiteController.php).
-- **Cards not yet wired** (GHL, Salesforce, Google Drive/Sheets, Calendar,
+- **Cards not yet wired** (GHL, Salesforce, Google Drive, Calendar,
   Database, Email) show **"Coming soon"** with a disabled button. Each card
   declares how it connects: a `composio` toolkit key (one-click), `webhook`
   (automation), or nothing → "coming soon". Lighting one up is a config +

@@ -129,7 +129,7 @@ handlers, session internals) are stock Laravel and intentionally absent from
 | --- | --- | --- | --- |
 | `ANTHROPIC_TOOL_SAFETY` | `true` | Recommended | Model must confirm before destructive tool actions. |
 | `ANTHROPIC_TOOL_HARD_GATE` | `true` | Recommended | Hard Approve/Cancel card — nothing runs until the user approves. |
-| `ANTHROPIC_TOOL_GATE_VERBS` | `create,update,delete,remove,send,post,write,add,…` | Optional | |
+| `ANTHROPIC_TOOL_GATE_VERBS` | `create,update,delete,remove,send,post,write,add,…,append,clear,insert,copy,format,…` | Recommended | Names a tool destructive by verb token. Extend it when wiring a toolkit that names writes differently — Sheets' `CLEAR_VALUES` matched nothing until `clear` was added. |
 | `ANTHROPIC_TOOL_RESULT_MAX_CHARS` | `20000` | Recommended | Truncates every tool result fed back to the model. Cost control. |
 | `ANTHROPIC_TOOL_SAFETY_PROMPT` / `ANTHROPIC_TOOL_USE_PROMPT` | *(multi-line)* | Optional | |
 
@@ -232,6 +232,8 @@ request charges the user's budget a **flat token-equivalent**, not measured usag
 | `COMPOSIO_HUBSPOT_KEYWORDS` | `hubspot,crm,deal,pipeline,contact,ticket,lead` | Optional | Not in `.env.example`. |
 | `COMPOSIO_AIRTABLE_AUTH_CONFIG` | — | Optional | |
 | `COMPOSIO_AIRTABLE_KEYWORDS` | `airtable,base,table,grid,view` | Optional | Not in `.env.example`. |
+| `COMPOSIO_GOOGLESHEETS_AUTH_CONFIG` | — | Optional | Composio-managed OAuth2 — no client id/secret needed. |
+| `COMPOSIO_GOOGLESHEETS_KEYWORDS` | `sheet,sheets,spreadsheet,google sheet,worksheet,tab,cell,column,row,range,formula,csv,workbook` | Recommended | 36 tools — the largest toolkit, so routing matters most here. |
 
 ## 9. NetSuite
 

@@ -353,21 +353,23 @@ const categories: Category[] = [
             {
                 name: 'Google Sheets',
                 key: 'google_sheets',
+                composio: 'googlesheets',
                 description: 'Read and write spreadsheet data during a chat.',
                 icon: Table,
-                intro: 'Let AiMe BOT read rows and append data to a spreadsheet.',
+                intro: 'Connect your Google account so AiMe BOT can read rows, answer questions about a spreadsheet, and write results back.',
                 steps: [
                     {
-                        title: 'Sign in with Google',
-                        body: 'Click Connect on this card and sign in with your Google account.',
+                        title: 'Connect & approve',
+                        body: 'Click Connect on this card — you’ll be sent to Google to sign in and allow access to your spreadsheets.',
                     },
                     {
-                        title: 'Grant Sheets access',
-                        body: 'Allow access to Google Sheets.',
+                        title: 'Ask about a sheet',
+                        body: 'Paste a spreadsheet link or name it in chat: “what’s the total in the Q3 budget sheet?” AiMe BOT finds it and reads the rows.',
                     },
                     {
-                        title: 'Choose a spreadsheet',
-                        body: 'Pick the spreadsheet to read from and write to.',
+                        title: 'Changes ask first',
+                        body: 'Anything that writes, clears or reorders cells pauses for an Approve card showing exactly what will run — nothing changes your sheet until you click it.',
+                        note: 'Sheets is the biggest toolkit here (36 tools), so its schemas only ship on turns that actually mention spreadsheets — an unrelated chat pays nothing for it.',
                     },
                 ],
             },

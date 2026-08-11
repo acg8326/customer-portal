@@ -83,6 +83,14 @@ return [
                 'auth_config_id' => env('COMPOSIO_AIRTABLE_AUTH_CONFIG'),
                 'keywords' => explode(',', (string) env('COMPOSIO_AIRTABLE_KEYWORDS', 'airtable,base,table,grid,view')),
             ],
+            // Google Sheets ships 36 tools — the richest toolkit here, so its
+            // schemas are the most worth routing away from unrelated turns.
+            // Several of them write or clear cells; see tool_gate_verbs below.
+            'googlesheets' => [
+                'name' => 'Google Sheets',
+                'auth_config_id' => env('COMPOSIO_GOOGLESHEETS_AUTH_CONFIG'),
+                'keywords' => explode(',', (string) env('COMPOSIO_GOOGLESHEETS_KEYWORDS', 'sheet,sheets,spreadsheet,google sheet,worksheet,tab,cell,column,row,range,formula,csv,workbook')),
+            ],
         ],
     ],
 
@@ -404,7 +412,16 @@ return [
 
         // A tool call is "destructive" when its name contains one of these verb
         // tokens (split on _/-). Reads (get/list/search/suiteql) never match.
-        'tool_gate_verbs' => env('ANTHROPIC_TOOL_GATE_VERBS', 'create,update,delete,remove,send,post,write,add,move,archive,set,edit,upload,invite,kick,ban,schedule,cancel,publish,merge,close,assign'),
+        //
+        // The second line covers spreadsheet-style writes, which name themselves
+        // differently: Google Sheets alone has APPEND_DIMENSION,
+        // SPREADSHEETS_VALUES_APPEND, INSERT_DIMENSION, SHEET_FROM_JSON,
+        // SPREADSHEETS_SHEETS_COPY_TO and — the ones that actually destroy data —
+        // CLEAR_VALUES and SPREADSHEETS_VALUES_BATCH_CLEAR. None of them contain
+        // a verb from the first line, so without these they would have run
+        // unprompted.
+        'tool_gate_verbs' => env('ANTHROPIC_TOOL_GATE_VERBS', 'create,update,delete,remove,send,post,write,add,move,archive,set,edit,upload,invite,kick,ban,schedule,cancel,publish,merge,close,assign'
+            .',append,clear,insert,copy,format,duplicate,replace,sort,rename,drop,truncate'),
 
         'tool_safety_prompt' => env('ANTHROPIC_TOOL_SAFETY_PROMPT', <<<'PROMPT'
             ## Using connected tools safely

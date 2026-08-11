@@ -3,6 +3,51 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Google Sheets integration — and the gate-verb gap it exposed
+
+The **Google Sheets** card on Integrations was a "Coming soon" placeholder;
+it's now a live Composio toolkit, connected per-user in one click like Slack or
+HubSpot. Ask about a spreadsheet in chat and AiMe reads the rows, searches your
+sheets, runs `QUERY_TABLE` / `AGGREGATE_COLUMN_DATA`, and writes results back.
+
+- `services.composio.toolkits.googlesheets` (slug `googlesheets`, 36 tools),
+  Composio-managed OAuth2 — no per-app client id/secret, just
+  `COMPOSIO_GOOGLESHEETS_AUTH_CONFIG`. Keywords in
+  `COMPOSIO_GOOGLESHEETS_KEYWORDS` (sheet, spreadsheet, worksheet, cell, row,
+  range, formula, …). It's the largest toolkit wired here, so routing carries
+  more weight than usual: without a keyword match those 36 schemas would ride
+  along on every unrelated turn.
+- The card sets `composio: 'googlesheets'` and its guide steps now describe the
+  real flow (one-click connect, ask in chat, changes ask first).
+
+**The part worth reading.** Cross-checking the 36 tool names against the
+approval gate turned up a hole that predates this work. The gate calls a tool
+destructive when its name contains a verb from `ANTHROPIC_TOOL_GATE_VERBS`
+(create, update, delete, send, write, …). Spreadsheets don't name themselves
+that way — `GOOGLESHEETS_SPREADSHEETS_VALUES_BATCH_CLEAR` and `CLEAR_VALUES`
+**wipe cell ranges** and matched nothing, as did `SPREADSHEETS_VALUES_APPEND`,
+`APPEND_DIMENSION`, `INSERT_DIMENSION`, `SHEET_FROM_JSON`,
+`SPREADSHEETS_SHEETS_COPY_TO` and `FORMAT_CELL`. All would have run with no
+Approve card.
+
+The verb list now also carries
+`append,clear,insert,copy,format,duplicate,replace,sort,rename,drop,truncate`.
+Verified against every tool of every configured toolkit — Slack (133), GitHub
+(500), HubSpot (304), Airtable (17), Sheets (36) — the additions gate **16 more
+calls and zero reads**: Slack channel/emoji renames, GitHub cache clears,
+HubSpot pipeline replaces, and the nine Sheets writers. That check is now
+documented in `features.md` as the thing to run when wiring any new toolkit,
+because the gap wasn't Sheets-specific — it was an assumption that every
+provider names writes the same way.
+
+Setup performed: a Composio-managed auth config was created for the toolkit and
+its id written to `.env` (not committed — `.env.example` carries the key name).
+The OAuth link flow was preflighted end-to-end (consent URL issued) and the
+throwaway connection deleted.
+
+Tests: `ChatToolGateTest` gains three — the nine Sheets writers gate, seven
+Sheets reads don't, and the toolkit is only offered once its auth config is set.
+
 ## Fix: uploaded images never reached the model; image previews in the composer
 
 **The bug.** Attaching or pasting an image, then asking about it, got "I can't

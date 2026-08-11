@@ -3,6 +3,7 @@
 use App\Http\Controllers\ChatController;
 use App\Models\Conversation;
 use App\Models\User;
+use App\Services\ComposioService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -44,6 +45,49 @@ test('write-verb tools are classified destructive; reads are not', function () {
 test('verb matching is token-based, not substring', function () {
     // "ADDRESS" contains "add" as a substring but not as a token.
     expect(invokeGate('isDestructiveTool', 'SLACK_GET_ADDRESS'))->toBeFalse();
+});
+
+test('spreadsheet writes are gated — they name themselves without the usual verbs', function () {
+    // None of these contain create/update/delete/write/etc., so before the
+    // Google Sheets integration they would have run without an Approve card —
+    // including the two that wipe cell ranges.
+    expect(invokeGate('isDestructiveTool', 'GOOGLESHEETS_CLEAR_VALUES'))->toBeTrue()
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_SPREADSHEETS_VALUES_BATCH_CLEAR'))->toBeTrue()
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_SPREADSHEETS_VALUES_APPEND'))->toBeTrue()
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_APPEND_DIMENSION'))->toBeTrue()
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_INSERT_DIMENSION'))->toBeTrue()
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_SPREADSHEETS_SHEETS_COPY_TO'))->toBeTrue()
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_FORMAT_CELL'))->toBeTrue()
+        // ...and the ones that already matched keep matching.
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_DELETE_SHEET'))->toBeTrue()
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_BATCH_UPDATE'))->toBeTrue();
+});
+
+test('Sheets reads stay ungated', function () {
+    // Checked against all 36 tools in the toolkit: every read is verb-free.
+    expect(invokeGate('isDestructiveTool', 'GOOGLESHEETS_BATCH_GET'))->toBeFalse()
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_GET_SPREADSHEET_INFO'))->toBeFalse()
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_SEARCH_SPREADSHEETS'))->toBeFalse()
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_LOOKUP_SPREADSHEET_ROW'))->toBeFalse()
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_QUERY_TABLE'))->toBeFalse()
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_GET_TABLE_SCHEMA'))->toBeFalse()
+        ->and(invokeGate('isDestructiveTool', 'GOOGLESHEETS_AGGREGATE_COLUMN_DATA'))->toBeFalse();
+});
+
+test('the Google Sheets toolkit is offered once its auth config is set', function () {
+    config(['services.composio.toolkits.googlesheets.auth_config_id' => null]);
+    expect(app(ComposioService::class)->toolkits())->not->toHaveKey('googlesheets');
+
+    config(['services.composio.toolkits.googlesheets.auth_config_id' => 'ac_test']);
+
+    $toolkit = app(ComposioService::class)->toolkits()['googlesheets'] ?? null;
+
+    expect($toolkit)->not->toBeNull()
+        ->and($toolkit['name'])->toBe('Google Sheets')
+        // Composio-managed OAuth: the user brings no client id/secret.
+        ->and($toolkit['mode'])->toBe('managed')
+        ->and($toolkit['auth_scheme'])->toBe('OAUTH2')
+        ->and($toolkit['credentials'])->toBe([]);
 });
 
 // --- gate activation ----------------------------------------------------------
