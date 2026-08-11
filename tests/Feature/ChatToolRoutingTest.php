@@ -132,7 +132,8 @@ test('suppressed MCP servers are disclosed, not hidden', function () {
     $block = (string) (new ReflectionMethod(ChatController::class, 'connectedToolsBlock'))
         ->invoke($controller);
 
-    expect($block)->toContain('Not available this turn: Notion');
+    expect($block)->toContain('MCP servers paused this turn')
+        ->and($block)->toContain('Not available right now: Notion');
 });
 
 test('the connected-sources block can be switched off', function () {

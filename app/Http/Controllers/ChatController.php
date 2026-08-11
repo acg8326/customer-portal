@@ -56,6 +56,7 @@ use App\Models\RequestLog;
 use App\Models\Skill;
 use App\Models\User;
 use App\Services\AppSettings;
+use App\Services\CapabilityInventory;
 use App\Services\ComposioService;
 use App\Services\ConversationCompactor;
 use App\Services\Mcp\McpOAuthService;
@@ -130,6 +131,12 @@ class ChatController extends Controller
      * @var list<string>
      */
     private array $suppressedMcp = [];
+
+    /**
+     * Turn facts the capability block needs but can't infer: a non-Claude model
+     * loses tools/attachments/thinking, and the web toggle is per-message.
+     */
+    private bool $claudeTurn = true;
 
     /**
      * Prompt-cache usage accumulated across every API round of this turn
@@ -386,6 +393,7 @@ class ChatController extends Controller
         try {
             $client = new Client(apiKey: $apiKey);
             $user = $request->user();
+            $this->claudeTurn = true;
             [$composioKeys, $netsuiteConn] = $this->resolveToolSources($user, $conversation, false);
             // Composio + NetSuite tools run through a client-side loop; custom MCP
             // servers run server-side. Prefer the client-side tools when connected.
@@ -575,6 +583,7 @@ class ChatController extends Controller
         // approval gate pauses state on the conversation row, which a private
         // chat deliberately doesn't have. Web tools + MCP stay available.
         $plainOnly = $this->privateMode || $openAiProvider !== null;
+        $this->claudeTurn = $openAiProvider === null;
         [$composioKeys, $netsuiteConn] = $this->resolveToolSources($request->user(), $conversation, $plainOnly);
 
         $useClientTools = $composioKeys !== [] || $netsuiteConn !== null;
@@ -1344,7 +1353,7 @@ class ChatController extends Controller
      * Lists only what SHIPPED — a source dropped by keyword routing must not be
      * advertised, or the model will claim it checked something it couldn't.
      */
-    private function connectedToolsBlock(): string
+    private function connectedToolsBlock(?User $user = null): string
     {
         $names = [];
 
@@ -1356,30 +1365,110 @@ class ChatController extends Controller
             $names[] = 'NetSuite';
         }
 
-        if ($names === [] && $this->suppressedMcp === []) {
-            return '';
-        }
-
-        $block = "\n\n## The user's connected data";
+        $block = '';
 
         if ($names !== []) {
-            $block .= "\nYou have live tools for: ".implode(', ', $names).'. These read'
+            $block .= "\n\n## The user's connected data"
+                ."\nYou have live tools for: ".implode(', ', $names).'. These read'
                 .' THIS user\'s own account data. When the question is about their data,'
                 .' call the tools and answer from what comes back — never from general'
                 .' knowledge or a guess, and never claim a number you did not fetch. If a'
                 .' tool returns nothing or errors, say so plainly.';
-        } else {
-            $block .= "\nYou have no data tools available this turn.";
         }
 
         if ($this->suppressedMcp !== []) {
-            $block .= "\nNot available this turn: ".implode(', ', $this->suppressedMcp)
+            $block .= "\n\n## MCP servers paused this turn"
+                ."\nNot available right now: ".implode(', ', $this->suppressedMcp)
                 .' (MCP servers cannot run alongside connected-app tools). If the user'
                 .' needs those, tell them to ask again in a message that does not involve'
                 .' the tools above.';
         }
 
+        return $block.($user !== null ? $this->capabilityBlock($user) : '');
+    }
+
+    /**
+     * The other half of the picture: what this portal COULD do for the user but
+     * currently isn't. Without it the model treats an unconnected source as an
+     * absence of knowledge — "I don't know", or worse, a plausible guess — when
+     * the honest answer is "that lives in NetSuite, which isn't connected yet".
+     *
+     * Deliberately paired with strict instructions about *when* to raise it: a
+     * capability list in the prompt is an invitation to nag, and an assistant
+     * that pitches integrations on unrelated questions is worse than one that
+     * stays quiet.
+     */
+    private function capabilityBlock(User $user): string
+    {
+        $inventory = app(CapabilityInventory::class);
+
+        $connectable = $inventory->connectable($user);
+        $off = $inventory->offThisTurn($this->claudeTurn, $this->privateMode, $this->webToolDefs() !== []);
+        $outOfBand = $inventory->outOfBand();
+
+        if ($connectable === [] && $off === [] && $outOfBand === []) {
+            return '';
+        }
+
+        $block = "\n\n## What this portal can do that you cannot do directly"
+            ."\nWhen a request needs something below, do NOT answer \"I don't know\","
+            .' do not guess, and do not describe it as a limitation of yours. Name the'
+            .' specific thing, say plainly why it is not available right now, and offer'
+            .' the next step — then let the user decide. Raise these ONLY when the'
+            .' request actually needs them: never volunteer the list, never pitch an'
+            .' integration on an unrelated question, and mention each at most once per'
+            .' conversation unless asked again.';
+
+        if ($connectable !== []) {
+            $lines = [];
+
+            foreach ($connectable as $item) {
+                $lines[] = '- '.$item['name'].($item['pending']
+                    ? ' (connection started but not finished — they should reconnect it'
+                        .' on the Integrations page)'
+                    : '');
+            }
+
+            $block .= "\n\n### Available to connect, but not connected yet\n"
+                .implode("\n", $lines)
+                ."\nIf answering would need one of these, say which one it is and that it"
+                .' is not connected yet, then ask whether they would like to connect it —'
+                .' they do it themselves on the **Integrations** page, one click per'
+                .' service. You cannot connect it for them. If they say yes, walk them'
+                .' through it; if the data might also live somewhere they HAVE connected,'
+                .' offer that instead.';
+        }
+
+        if ($off !== []) {
+            $lines = [];
+
+            foreach ($off as $item) {
+                $lines[] = '- '.$item['name'].' — '.$item['why'];
+            }
+
+            $block .= "\n\n### Switched off for this message\n".implode("\n", $lines);
+        }
+
+        if ($outOfBand !== []) {
+            $block .= "\n\n### Things the user can do in the interface\n- "
+                .implode("\n- ", $outOfBand);
+        }
+
         return $block;
+    }
+
+    /**
+     * Crude plural fold for keyword matching: drop one trailing "s" from words
+     * long enough for it to be a suffix rather than the word. Deliberately not
+     * a real inflector — this only has to make "invoices"/"invoice" and
+     * "rows"/"row" the same token, and over-stripping ("gross" → "gros") is
+     * harmless because both sides get the same treatment.
+     */
+    private function singularize(string $word): string
+    {
+        return mb_strlen($word) > 3 && str_ends_with($word, 's') && ! str_ends_with($word, 'ss')
+            ? mb_substr($word, 0, -1)
+            : $word;
     }
 
     /**
@@ -1466,9 +1555,15 @@ class ChatController extends Controller
             }
 
             // Tokenized once, lazily — most turns match on the first keyword.
-            $tokens ??= array_flip(preg_split('/[^\p{L}\p{N}]+/u', $haystack) ?: []);
+            // Singularized on both sides so "show me the invoices" still hits
+            // the "invoice" keyword: people write plurals constantly, and
+            // strict equality would drop the source exactly when it's wanted.
+            $tokens ??= array_flip(array_map(
+                $this->singularize(...),
+                preg_split('/[^\p{L}\p{N}]+/u', $haystack) ?: [],
+            ));
 
-            if (isset($tokens[$keyword])) {
+            if (isset($tokens[$this->singularize($keyword)])) {
                 return true;
             }
         }
@@ -2984,10 +3079,11 @@ class ChatController extends Controller
             $system .= "\n\n".(string) config('services.anthropic.web_tools_prompt');
         }
 
-        // ...and the same for the user's own connected data sources, which the
-        // model otherwise has to infer from bare tool schemas.
+        // ...and the same for the user's own data sources — both the ones it can
+        // reach and the ones it can't, so an unconnected integration reads as a
+        // named, fixable gap rather than "I don't know".
         if (config('services.anthropic.connected_tools_prompt', true)) {
-            $system .= $this->connectedToolsBlock();
+            $system .= $this->connectedToolsBlock($user);
         }
 
         // Make the model aware that any reply can be downloaded as a file from

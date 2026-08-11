@@ -219,13 +219,21 @@ the **Claude API**.
   written **in the style of Claude's own chat (claude.ai)**: response length
   calibrated to the question, **prose by default** (bullets/headers only for
   genuinely multifaceted content), warm-but-direct tone with no filler and
-  **honest pushback** when a premise is wrong, calibrated uncertainty with a
-  **grounding rule** (prefer connected tools over general knowledge for
+  **honest pushback** when a premise is wrong, calibrated uncertainty with
+  **grounding rules** (prefer connected tools over general knowledge for
   account/policy specifics, and say when an answer is general rather than
   CW-specific), at most one clarifying question per reply, graceful
   conversational refusals, no engagement-bait endings, and no emojis unless the
-  user leads — while still identifying as AiMe BOT. The model
-  **allowlist** is
+  user leads — while still identifying as AiMe BOT.
+- **Anti-fabrication.** The grounding rules go past "don't invent numbers": the
+  assistant must never claim to have **checked a system it didn't actually
+  call** (a source can be absent from a turn — see keyword routing below), never
+  fill gaps in a **partial or truncated** tool result with plausible values,
+  never invent record ids, links, file names or citations, and when it doesn't
+  know, say so plainly and stop. Pinned by
+  [`GroundingPromptTest`](../tests/Feature/GroundingPromptTest.php) against the
+  fully-built prompt, so an `.env` override that drops the clauses fails CI.
+  The model **allowlist** is
   also in `config/services.php` (`anthropic.models`). Without a key the chat
   shows a friendly "not configured yet" message instead of erroring.
 - **Layout:** the standalone `/chat` page is **full-bleed** — the **conversation
@@ -677,6 +685,22 @@ boxes to enable, a paste-exactly code block, and info/warning callouts
     claim to have checked a source that was dropped. Enabled MCP servers
     suppressed by the connected-tools loop are named too, rather than silently
     skipped. `ANTHROPIC_CONNECTED_TOOLS_PROMPT` (default on).
+  - **It knows what you have NOT connected, too.** A capability block lists the
+    integrations this portal offers that you haven't linked yet (plus any
+    half-finished connection, flagged as such). When a question needs one, the
+    assistant names it, says it isn't connected, and offers to walk you through
+    connecting it on the Integrations page — instead of "I don't know" or a
+    guess. It's told to raise this only when the request needs it, never to
+    volunteer the list or pitch an integration on an unrelated question. It also
+    knows about abilities that live outside the chat request (image generation,
+    dictation, uploads) so it points at the right button rather than refusing,
+    and about anything switched off for the message — a non-Claude model,
+    Private mode, the web toggle, admin-disabled uploads — with the reason and
+    the fix. Built from live config in
+    [`CapabilityInventory`](../app/Services/CapabilityInventory.php), so it can
+    never advertise something the Integrations page doesn't actually offer.
+    `ANTHROPIC_CONNECTED_TOOLS_PROMPT` (default on) covers this and the
+    connected-sources block; ~320 tokens, inside the cached prefix.
   - **How tools run:** Composio's MCP endpoint requires an `x-api-key` header
     that Anthropic's server-side MCP connector can't send, so AiMe runs the tool
     loop itself — it fetches Composio's tool schemas, gives them to Claude as

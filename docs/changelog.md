@@ -3,6 +3,86 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Stronger anti-fabrication rules in the system prompt
+
+The persona already said *"Never invent account details, policy specifics,
+dates, or numbers — a confident wrong answer is worse than an honest 'I don't
+know.'"* What it never covered was the failure mode the routing work exposed:
+a source can be **silently absent from a turn**, and "I checked NetSuite and
+found…" is then a fabrication about the *process*, not about a number. Four
+clauses added to `## Uncertainty and grounding`:
+
+- Never claim to have checked a system you did not actually call; if a source is
+  unconnected, unavailable this turn, or returned nothing, say exactly that
+  rather than answering as though the data were in hand.
+- Don't fill gaps in a partial or truncated result with plausible-looking
+  values — report what came back and what's missing. (Tool results are truncated
+  at `ANTHROPIC_TOOL_RESULT_MAX_CHARS`, so this is routine, not an edge case.)
+- Never invent record ids, links, file names, or citations.
+- When you don't know, say so plainly and stop — a next step is welcome, a guess
+  dressed as an answer is not.
+
+Prompt text is easy to trim by accident in an unrelated edit, and its absence is
+invisible until the assistant confidently invents a number. New
+[`GroundingPromptTest`](../tests/Feature/GroundingPromptTest.php) pins the
+load-bearing clauses in the **fully built** prompt (so an `.env` override that
+drops them fails too), plus the connected-sources rule about answering only from
+what a tool actually returned.
+
+## Capability awareness — "that needs NetSuite, which isn't connected. Connect it?"
+
+The assistant knew what it *had*. Everything else was invisible to it, so a
+question needing an unconnected source came back as "I don't know" or a
+confident guess, and the user was never told the capability exists and is one
+click away. Asking for an image got "I can't create images" even though the
+composer has an image button.
+
+New [`CapabilityInventory`](../app/Services/CapabilityInventory.php) is the
+missing half of the picture, derived entirely from real config and real
+connection rows so it can't drift from what the Integrations page offers:
+
+- **Available to connect, but not connected** — every configured Composio
+  toolkit the user hasn't linked, plus NetSuite when the feature is on. A
+  toolkit with no auth config never appears (offering it would send them to a
+  dead button), and nothing Composio appears when there's no `COMPOSIO_API_KEY`.
+  A connection that was started but never finished is flagged **pending**, since
+  "go connect it" is the wrong advice there — your own NetSuite row is in
+  exactly that state (`status=pending`), and the assistant now says so.
+- **Switched off for this message** — with the reason *and* the fix, because the
+  reason is the useful part: "attachments are off in Private chats, turn Private
+  off and resend" beats "I can't see images". Covers the non-Claude model case
+  (which collapses to one combined line rather than four), Private mode, the web
+  toggle, and admin-disabled uploads.
+- **Things the user can do in the interface** — image generation, dictation and
+  text-to-speech, uploads. These live outside the chat request, so the model
+  would otherwise never learn they exist and would wrongly refuse. Only listed
+  when actually configured.
+
+The prompt tells it to name the specific thing, say plainly why it isn't
+available, offer the next step, and let the user decide — and, just as
+importantly, **when to stay quiet**: only when the request needs it, never
+volunteering the list, never pitching an integration on an unrelated question,
+at most once per conversation. A capability list in a prompt is an invitation to
+nag, and an assistant that pitches integrations is worse than one that says
+nothing.
+
+Cost: ~320 tokens on a ~2,000-token system prompt, inside the cached prefix, so
+roughly ~32 token-equivalents per cached turn. `ANTHROPIC_CONNECTED_TOOLS_PROMPT`
+(default on) now governs this whole block.
+
+**Fixed a regression from the previous entry while testing this.** Word-boundary
+keyword matching broke plurals: "show me the open **invoices**" stopped matching
+the `invoice` keyword, so NetSuite was dropped exactly when it was wanted. Both
+sides are now folded through a crude `singularize()` (drop one trailing "s" on
+words longer than three characters, never on "ss"), which fixes
+invoices/customers/vendors/rows/cells without reopening the substring hole —
+"admin" still doesn't match `dm`, "tomorrow" still doesn't match `row`.
+
+Tests: new [`CapabilityInventoryTest`](../tests/Feature/CapabilityInventoryTest.php),
+14 covering what's offered and what deliberately isn't, the pending flag, each
+off-this-turn reason, the image-button wording, the rendered block including the
+anti-nag rule, the off switch, and the plural regression.
+
 ## Fix: the assistant silently skipped connected data sources
 
 Reported as "whenever I ask something, especially on integrations, it's not
