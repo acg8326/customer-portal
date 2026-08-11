@@ -244,7 +244,10 @@ the **Claude API**.
 - **File uploads (images, PDFs + Office files):** attach files with the
   composer paperclip **or paste an image straight into the composer with
   Ctrl/Cmd+V** (a screenshot or copied image becomes an attachment; plain-text
-  pastes are unaffected). Images/PDFs go to Claude natively; **DOCX / XLSX /
+  pastes are unaffected). **Attached and pasted images preview as thumbnails**
+  in the composer (removable with an × on the corner) and appear in the sent
+  bubble immediately — no filename-only placeholder waiting on a reload.
+  Images/PDFs go to Claude natively; **DOCX / XLSX /
   CSV / TXT / MD** are text-extracted server-side at upload
   ([`OfficeTextExtractor`](../app/Services/OfficeTextExtractor.php) — plain
   `ZipArchive` + XML parsing, no heavy libraries, sheets labeled by name,
@@ -631,8 +634,8 @@ boxes to enable, a paste-exactly code block, and info/warning callouts
   the tool calls **server-side** via the MCP connector. Per-user, secrets
   **encrypted at rest**, URL **SSRF-guarded**. Enable/disable/delete each server.
   **Tool turns stream** like normal chat, and the composer shows
-  **"Using &lt;server&gt;…"** while a tool runs. (MCP turns send text-only
-  history — per-message image/PDF passthrough is still chat-only.)
+  **"Using &lt;server&gt;…"** while a tool runs. Attachments work here too —
+  images, PDFs and extracted Office text are re-sent on every path.
   Two ways to authenticate:
     - **One-click OAuth** — pick "One-click OAuth", **Connect**, and you're sent to
       the server's own approve screen (you're already logged in there); approve and

@@ -36,7 +36,7 @@ import {
 } from '@lucide/vue';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import ChatSidebar from '@/components/ChatSidebar.vue';
 import { Button } from '@/components/ui/button';
 import {
@@ -61,8 +61,17 @@ import { getInitials } from '@/composables/useInitials';
 type Attachment = {
     name: string;
     mime: string;
-    // Set for stored images (uploaded or AI-generated) — rendered inline.
+    // Set for stored images (uploaded or AI-generated) — rendered inline. Also
+    // set to a local blob URL on a just-sent message, so the picture shows
+    // immediately instead of waiting for a reload to get the server URL.
     url?: string | null;
+};
+
+// A file waiting in the composer. Images carry a blob URL so the chip shows a
+// thumbnail rather than a filename.
+type PendingFile = {
+    file: File;
+    preview: string | null;
 };
 
 type ChatMessage = {
@@ -235,7 +244,7 @@ const sidebarOpen = ref(false);
 const promptTokens = ref(0);
 const completionTokens = ref(0);
 const tokenTotal = computed(() => promptTokens.value + completionTokens.value);
-const pendingFiles = ref<File[]>([]);
+const pendingFiles = ref<PendingFile[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
 const compacted = ref(false);
 const compacting = ref(false);
@@ -495,8 +504,40 @@ function openFilePicker() {
     fileInput.value?.click();
 }
 
+// Blob URLs handed out for local image previews. The composer chip and the
+// just-sent user bubble share one URL per file — the bubble outlives the chip,
+// so these are released on reset/unmount rather than at send time.
+const previewUrls = new Set<string>();
+
+function toPendingFile(file: File): PendingFile {
+    if (!isImageMime(file.type)) {
+        return { file, preview: null };
+    }
+
+    const preview = URL.createObjectURL(file);
+    previewUrls.add(preview);
+
+    return { file, preview };
+}
+
+// Drop the preview for a file removed before sending — nothing references it.
+function releasePreview(pending: PendingFile | undefined) {
+    if (pending?.preview) {
+        URL.revokeObjectURL(pending.preview);
+        previewUrls.delete(pending.preview);
+    }
+}
+
+function releaseAllPreviews() {
+    previewUrls.forEach((url) => URL.revokeObjectURL(url));
+    previewUrls.clear();
+}
+
+onUnmounted(releaseAllPreviews);
+
 // Validate a batch of files against the upload limits and append them to the
-// pending list. Shared by the file picker and clipboard paste.
+// pending list. Shared by the file picker and clipboard paste. Previews are
+// only created once the batch is accepted, so a rejected batch leaks nothing.
 function addFiles(picked: File[]) {
     if (picked.length === 0) {
         return;
@@ -511,16 +552,14 @@ function addFiles(picked: File[]) {
         return;
     }
 
-    const combined = [...pendingFiles.value, ...picked];
-
-    if (combined.length > props.uploads.maxFiles) {
+    if (pendingFiles.value.length + picked.length > props.uploads.maxFiles) {
         error.value = `You can attach up to ${props.uploads.maxFiles} files.`;
 
         return;
     }
 
     error.value = null;
-    pendingFiles.value = combined;
+    pendingFiles.value = [...pendingFiles.value, ...picked.map(toPendingFile)];
 }
 
 function onFilesSelected(event: Event) {
@@ -575,6 +614,7 @@ function onPaste(event: ClipboardEvent) {
 }
 
 function removeFile(index: number) {
+    releasePreview(pendingFiles.value[index]);
     pendingFiles.value = pendingFiles.value.filter((_, i) => i !== index);
 }
 
@@ -921,6 +961,7 @@ function newChat() {
     sidebarOpen.value = false;
     promptTokens.value = 0;
     completionTokens.value = 0;
+    releaseAllPreviews();
     pendingFiles.value = [];
     compacted.value = false;
     lastStopReason.value = null;
@@ -953,6 +994,9 @@ async function selectConversation(id: number) {
         }
 
         activeId.value = data.id;
+        // The loaded transcript carries server-side image URLs, so any blob
+        // previews from this session's sends are now unreferenced.
+        releaseAllPreviews();
         messages.value = data.messages;
         promptTokens.value = data.prompt_tokens ?? 0;
         completionTokens.value = data.completion_tokens ?? 0;
@@ -1100,7 +1144,13 @@ async function send(opts: SendOptions = {}) {
             role: 'user',
             content: text,
             attachments: files.length
-                ? files.map((f) => ({ name: f.name, mime: f.type }))
+                ? files.map((f) => ({
+                      name: f.file.name,
+                      mime: f.file.type,
+                      // Local blob URL: the picture shows in the bubble right
+                      // away; a later reload swaps in the server URL.
+                      url: f.preview,
+                  }))
                 : undefined,
         });
     }
@@ -1151,7 +1201,7 @@ async function send(opts: SendOptions = {}) {
                 form.append('skill_id', String(skillId.value));
             }
 
-            files.forEach((f) => form.append('files[]', f));
+            files.forEach((f) => form.append('files[]', f.file));
 
             res = await fetch('/chat/stream', {
                 method: 'POST',
@@ -2470,36 +2520,57 @@ onMounted(() => {
                             </Select>
                         </div>
 
-                        <!-- Pending attachments -->
+                        <!-- Pending attachments: images preview as thumbnails,
+                         everything else as a named chip -->
                         <div
                             v-if="pendingFiles.length"
-                            class="flex flex-wrap gap-2 px-1 pt-1"
+                            class="flex flex-wrap items-end gap-2 px-1 pt-1"
                         >
-                            <div
-                                v-for="(f, i) in pendingFiles"
-                                :key="i"
-                                class="flex items-center gap-1.5 rounded-lg border border-border bg-muted/60 px-2 py-1 text-xs"
-                            >
-                                <component
-                                    :is="
-                                        isImageMime(f.type)
-                                            ? ImageIcon
-                                            : FileText
-                                    "
-                                    class="size-3.5 shrink-0 text-muted-foreground"
-                                />
-                                <span class="max-w-[10rem] truncate">{{
-                                    f.name
-                                }}</span>
-                                <button
-                                    type="button"
-                                    class="text-muted-foreground hover:text-foreground"
-                                    aria-label="Remove file"
-                                    @click="removeFile(i)"
+                            <template v-for="(f, i) in pendingFiles" :key="i">
+                                <div
+                                    v-if="f.preview"
+                                    class="group relative"
+                                    :title="f.file.name"
                                 >
-                                    <X class="size-3" />
-                                </button>
-                            </div>
+                                    <img
+                                        :src="f.preview"
+                                        :alt="f.file.name"
+                                        class="size-16 rounded-lg border border-border object-cover"
+                                    />
+                                    <button
+                                        type="button"
+                                        class="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm hover:text-foreground"
+                                        aria-label="Remove file"
+                                        @click="removeFile(i)"
+                                    >
+                                        <X class="size-3" />
+                                    </button>
+                                </div>
+                                <div
+                                    v-else
+                                    class="flex items-center gap-1.5 rounded-lg border border-border bg-muted/60 px-2 py-1 text-xs"
+                                >
+                                    <component
+                                        :is="
+                                            isImageMime(f.file.type)
+                                                ? ImageIcon
+                                                : FileText
+                                        "
+                                        class="size-3.5 shrink-0 text-muted-foreground"
+                                    />
+                                    <span class="max-w-[10rem] truncate">{{
+                                        f.file.name
+                                    }}</span>
+                                    <button
+                                        type="button"
+                                        class="text-muted-foreground hover:text-foreground"
+                                        aria-label="Remove file"
+                                        @click="removeFile(i)"
+                                    >
+                                        <X class="size-3" />
+                                    </button>
+                                </div>
+                            </template>
                         </div>
 
                         <div class="flex items-end gap-2">

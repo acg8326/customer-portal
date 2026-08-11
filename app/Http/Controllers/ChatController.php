@@ -2,15 +2,19 @@
 
 namespace App\Http\Controllers;
 
+use Anthropic\Beta\Messages\BetaBase64ImageSource;
+use Anthropic\Beta\Messages\BetaBase64PDFSource;
 use Anthropic\Beta\Messages\BetaCacheControlEphemeral;
 use Anthropic\Beta\Messages\BetaCitationsDelta;
 use Anthropic\Beta\Messages\BetaCitationsWebSearchResultLocation;
+use Anthropic\Beta\Messages\BetaImageBlockParam;
 use Anthropic\Beta\Messages\BetaMCPToolUseBlock;
 use Anthropic\Beta\Messages\BetaMessageParam;
 use Anthropic\Beta\Messages\BetaRawContentBlockDeltaEvent;
 use Anthropic\Beta\Messages\BetaRawContentBlockStartEvent;
 use Anthropic\Beta\Messages\BetaRawMessageDeltaEvent;
 use Anthropic\Beta\Messages\BetaRawMessageStartEvent;
+use Anthropic\Beta\Messages\BetaRequestDocumentBlock;
 use Anthropic\Beta\Messages\BetaRequestMCPServerURLDefinition;
 use Anthropic\Beta\Messages\BetaServerToolUseBlock;
 use Anthropic\Beta\Messages\BetaTextBlock;
@@ -660,12 +664,12 @@ class ChatController extends Controller
                     if ($mcp !== [] || $webTools !== []) {
                         // Beta endpoint: MCP servers and/or Claude's native web
                         // search + fetch (all server-side). Anthropic runs them
-                        // and streams the final text. Text-only history. On
-                        // failure, fall back to a plain reply.
+                        // and streams the final text. On failure, fall back to
+                        // a plain reply.
                         try {
                             $stream = $client->beta->messages->createStream(
                                 maxTokens: $maxTokens,
-                                messages: $this->textHistory($conversation),
+                                messages: $this->betaHistory($conversation),
                                 model: $selectedModel,
                                 system: $this->betaSystemBlocks($conversation),
                                 mcpServers: $mcp !== [] ? $mcp : null,
@@ -1135,9 +1139,68 @@ class ChatController extends Controller
     }
 
     /**
-     * Text-only trimmed history (role + string content) for the beta/MCP path,
-     * which uses beta block types incompatible with the rich attachment
-     * history builder.
+     * The trimmed history for the beta endpoint (MCP, web search, and the
+     * connected-tools loop): the same messages and the same attachments as
+     * {@see buildHistory()}, built from beta block classes.
+     *
+     * @return list<BetaMessageParam|array{role: 'assistant'|'user', content: string}>
+     */
+    private function betaHistory(Conversation $conversation): array
+    {
+        return $this->betaMessagesFromPlain($this->plainHistory($conversation));
+    }
+
+    /**
+     * A JSON-safe mirror of the trimmed history: string content, or a list of
+     * `{type: text|attachment}` blocks when a user turn carried files. This is
+     * what the connected-tools loop persists while paused at the approval gate,
+     * so attachments are referenced by storage path rather than inlined as
+     * base64 — {@see betaMessagesFromPlain()} rehydrates them on resume.
+     *
+     * @return list<array{role: 'assistant'|'user', content: string|list<array<string, mixed>>}>
+     */
+    private function plainHistory(Conversation $conversation): array
+    {
+        if ($this->privateMode) {
+            // Private chats never store attachments (nothing to reference).
+            return $this->privateHistory;
+        }
+
+        $messages = [];
+
+        foreach ($this->recentMessages($conversation) as $m) {
+            $role = $m->role === 'assistant' ? 'assistant' : 'user';
+            $attachments = $role === 'assistant' ? [] : ($m->attachments ?? []);
+
+            if ($attachments === []) {
+                $messages[] = ['role' => $role, 'content' => (string) $m->content];
+
+                continue;
+            }
+
+            $blocks = array_map(
+                fn (array $att): array => ['type' => 'attachment', 'att' => $att],
+                array_values($attachments),
+            );
+
+            if (filled($m->content)) {
+                $blocks[] = ['type' => 'text', 'text' => (string) $m->content];
+            }
+
+            $messages[] = ['role' => $role, 'content' => $blocks];
+        }
+
+        return $messages;
+    }
+
+    /**
+     * Text-only trimmed history (role + string content), for providers that
+     * take no content blocks at all — the OpenAI-compatible chat path.
+     *
+     * Do NOT use this for a Claude path: it drops attachments silently, which
+     * is exactly how uploaded images stopped reaching the model once web search
+     * (on by default) started routing ordinary chats through the beta endpoint.
+     * Claude paths take {@see buildHistory()} or {@see betaHistory()}.
      *
      * @return list<array{role: 'assistant'|'user', content: string}>
      */
@@ -1526,8 +1589,8 @@ class ChatController extends Controller
                 $conversation, $this->normalizedCalls((array) ($resume['pending'] ?? [])), $messages, $plain, $onActivity, $netsuite,
             );
         } else {
-            $plain = $this->textHistory($conversation);
-            $messages = $plain;
+            $plain = $this->plainHistory($conversation);
+            $messages = $this->betaMessagesFromPlain($plain);
             $reply = '';
             $inputTokens = 0;
             $outputTokens = 0;
@@ -1740,8 +1803,8 @@ class ChatController extends Controller
     }
 
     /**
-     * Rebuild live SDK params from the JSON-safe mirror stored while paused at
-     * the approval gate.
+     * Rebuild live SDK params from the JSON-safe mirror — both for a fresh turn
+     * ({@see plainHistory()}) and on resume from the approval gate.
      *
      * @param  list<mixed>  $plain
      * @return list<mixed>
@@ -1768,6 +1831,18 @@ class ChatController extends Controller
 
             foreach ((array) $content as $block) {
                 if (! is_array($block)) {
+                    continue;
+                }
+
+                // Attachments are re-read from storage here, not carried in the
+                // mirror — a deleted or unreadable file just drops out.
+                if (($block['type'] ?? '') === 'attachment') {
+                    $file = $this->betaFileBlock((array) ($block['att'] ?? []));
+
+                    if ($file !== null) {
+                        $blocks[] = $file;
+                    }
+
                     continue;
                 }
 
@@ -1839,9 +1914,6 @@ class ChatController extends Controller
      * server-side (looping internally) and returns the final text in one
      * response.
      *
-     * Note: this path sends text-only history — per-message image/PDF
-     * re-sending is a chat-only feature for now.
-     *
      * @param  list<BetaRequestMCPServerURLDefinition>  $mcp
      * @param  list<BetaWebSearchTool20250305|BetaWebFetchTool20250910>  $webTools
      * @return array{0: string, 1: int, 2: int, 3: string|null} [reply, inputTokens, outputTokens, stopReason]
@@ -1850,7 +1922,7 @@ class ChatController extends Controller
     {
         $message = $client->beta->messages->create(
             maxTokens: config('services.anthropic.max_tokens', 8192),
-            messages: $this->textHistory($conversation),
+            messages: $this->betaHistory($conversation),
             model: $model,
             system: $this->betaSystemBlocks($conversation),
             mcpServers: $mcp !== [] ? $mcp : null,
@@ -2445,13 +2517,18 @@ class ChatController extends Controller
     }
 
     /**
-     * Turn one stored attachment into a Claude image, document, or text
-     * block. Images/PDFs go natively; Office/text files use the text
+     * Read one stored attachment into a provider-neutral descriptor. Images and
+     * PDFs go to Claude natively (base64); Office/text files use the text
      * extracted at upload time (sidecar file), labeled with the filename.
+     * Null = nothing we can send (missing file or unsupported type).
+     *
+     * Both block builders below read this, so the plain and beta paths can
+     * never drift on which formats they support.
      *
      * @param  array{name?: string, mime?: string, size?: int, path?: string}  $att
+     * @return array{kind: 'image', data: string, mime: 'image/gif'|'image/jpeg'|'image/png'|'image/webp'}|array{kind: 'pdf', data: string, name: string}|array{kind: 'text', text: string}|null
      */
-    private function fileBlock(array $att): ImageBlockParam|DocumentBlockParam|TextBlockParam|null
+    private function attachmentPayload(array $att): ?array
     {
         $path = $att['path'] ?? null;
 
@@ -2465,33 +2542,86 @@ class ChatController extends Controller
         if (app(OfficeTextExtractor::class)->supports($mime)) {
             $text = Storage::exists($path.'.extracted.txt')
                 ? (string) Storage::get($path.'.extracted.txt')
-                : app(OfficeTextExtractor::class)->extract(
+                : (string) app(OfficeTextExtractor::class)->extract(
                     Storage::path($path),
                     $mime,
                     (int) config('services.anthropic.uploads.extract_max_chars', 50000),
                 );
 
             return filled($text)
-                ? TextBlockParam::with(text: "## Attached file: {$name}\n\n".$text)
+                ? ['kind' => 'text', 'text' => "## Attached file: {$name}\n\n".$text]
                 : null;
         }
 
-        $data = base64_encode((string) Storage::get($path));
-
         if ($mime === 'application/pdf') {
-            return DocumentBlockParam::with(
-                source: Base64PDFSource::with(data: $data),
-                title: $name,
-            );
+            return [
+                'kind' => 'pdf',
+                'data' => base64_encode((string) Storage::get($path)),
+                'name' => $name,
+            ];
         }
 
         if (in_array($mime, ['image/jpeg', 'image/png', 'image/gif', 'image/webp'], true)) {
-            return ImageBlockParam::with(
-                source: Base64ImageSource::with(data: $data, mediaType: $mime),
-            );
+            return [
+                'kind' => 'image',
+                'data' => base64_encode((string) Storage::get($path)),
+                'mime' => $mime,
+            ];
         }
 
         return null;
+    }
+
+    /**
+     * One stored attachment as a plain-endpoint content block.
+     *
+     * @param  array{name?: string, mime?: string, size?: int, path?: string}  $att
+     */
+    private function fileBlock(array $att): ImageBlockParam|DocumentBlockParam|TextBlockParam|null
+    {
+        $payload = $this->attachmentPayload($att);
+
+        if ($payload === null) {
+            return null;
+        }
+
+        return match ($payload['kind']) {
+            'image' => ImageBlockParam::with(
+                source: Base64ImageSource::with(data: $payload['data'], mediaType: $payload['mime']),
+            ),
+            'pdf' => DocumentBlockParam::with(
+                source: Base64PDFSource::with(data: $payload['data']),
+                title: $payload['name'],
+            ),
+            'text' => TextBlockParam::with(text: $payload['text']),
+        };
+    }
+
+    /**
+     * The same attachment as a beta-endpoint content block. The beta namespace
+     * has its own block classes and won't accept the plain ones — that
+     * incompatibility is the whole reason this twin exists.
+     *
+     * @param  array{name?: string, mime?: string, size?: int, path?: string}  $att
+     */
+    private function betaFileBlock(array $att): BetaImageBlockParam|BetaRequestDocumentBlock|BetaTextBlockParam|null
+    {
+        $payload = $this->attachmentPayload($att);
+
+        if ($payload === null) {
+            return null;
+        }
+
+        return match ($payload['kind']) {
+            'image' => BetaImageBlockParam::with(
+                source: BetaBase64ImageSource::with(data: $payload['data'], mediaType: $payload['mime']),
+            ),
+            'pdf' => BetaRequestDocumentBlock::with(
+                source: BetaBase64PDFSource::with(data: $payload['data']),
+                title: $payload['name'],
+            ),
+            'text' => BetaTextBlockParam::with(text: $payload['text']),
+        };
     }
 
     /**

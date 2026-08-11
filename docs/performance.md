@@ -27,6 +27,13 @@ over-generate.
   Fable 5, 1,024 on Opus 4.8 and Sonnet, 4,096 on Opus 4.6 / 4.5 / Haiku 4.5) —
   on the stricter models the ~1,800-token system prompt alone is below the floor
   and silently wouldn't cache at all. Cache reads bill at ~10% of input price.
+- **Attachments ride the history breakpoint.** Images, PDFs and extracted Office
+  text are re-sent every turn so the file stays in view for follow-ups — and a
+  base64 image is easily thousands of tokens. The history auto-cache marker
+  covers them, so the second and later questions about the same file read the
+  attachment from cache at ~10% rather than re-paying for it. This applies on
+  every Claude path now (plain, MCP/web, connected tools); before, the beta paths
+  dropped attachments entirely, which was cheap only because it was broken.
 - The cache is **prefix-exact with a ~5-minute TTL** (refreshed per hit):
   - the injected date is **day-granularity** so the prefix stays byte-identical
     across turns (an H:i:s timestamp would guarantee 0% hits);

@@ -3,6 +3,62 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Fix: uploaded images never reached the model; image previews in the composer
+
+**The bug.** Attaching or pasting an image, then asking about it, got "I can't
+see an image" back. The upload, the storage, the virus scan and the block
+building were all fine — the image was dropped one step before the request went
+out.
+
+Chat had two history builders. `buildHistory()` produced real image/document
+content blocks; `textHistory()` flattened every message to
+`'content' => (string) $m->content`, discarding attachments. The beta endpoint
+(needed for MCP and Claude's native web search) can't take the plain SDK's block
+classes, so it used the text-only builder — a documented, narrow limitation back
+when only MCP went that way. Then native web search landed on the same endpoint
+**and defaults on**, so `webToolDefs()` returned non-empty for everyone and
+*every* streaming chat took the text-only path. The narrow caveat had quietly
+become the default. PDFs, extracted Office text, and Composio/NetSuite turns
+were hit the same way. The only workaround was turning Web search off.
+
+**The fix.** One shared descriptor, two thin block builders, no drift:
+
+- `attachmentPayload()` reads a stored attachment once into a provider-neutral
+  `['kind' => 'image'|'pdf'|'text', …]`; `fileBlock()` and the new
+  `betaFileBlock()` map it to plain or beta block classes. Neither path can
+  support a format the other doesn't — which is how the two drifted apart.
+- New `betaHistory()` gives the beta endpoint the same messages *and the same
+  attachments* as the plain path. It's built on `plainHistory()`, a JSON-safe
+  mirror that references attachments by **storage path, not inlined base64** —
+  so the connected-tools approval gate can persist mid-turn state without
+  bloating it, and `betaMessagesFromPlain()` rehydrates the files on resume (a
+  since-deleted upload just drops out instead of breaking the turn).
+- All three call sites moved over: the beta stream, `completeWithMcp()`, and the
+  connected-tools loop. `textHistory()` survives for the OpenAI-compatible
+  provider only — the one path that genuinely takes no content blocks — with a
+  docblock saying why it must never be used for a Claude path again.
+- Messages with no attachments still send **string** content, keeping the
+  request byte-identical to before so the cached prefix keeps hitting.
+
+**Also, you can now see what you attached.** The composer showed a filename chip
+for everything, including screenshots — so pasting two images gave you
+`pasted-image-….png` twice with no way to tell them apart:
+
+- Attached and pasted images render as **64px thumbnails** in the composer, with
+  the remove × on the corner. Non-images keep the named chip.
+- The just-sent bubble shows the picture straight away, from a local blob URL,
+  instead of a filename until the next reload. Blob URLs are tracked and revoked
+  on remove / new chat / opening another conversation / unmount, so previews
+  don't leak for the life of the tab.
+- Previews are only created once a batch passes the size and count checks, so a
+  rejected batch allocates nothing.
+
+Regression cover:
+[`ChatAttachmentHistoryTest`](../tests/Feature/ChatAttachmentHistoryTest.php) —
+7 tests over the built params: images and PDFs survive the beta path, both paths
+send the same block count, the mirror stays base64-free, attachment-less
+messages stay plain strings, and a purged file drops out cleanly.
+
 ## Prompt caching, integrated end-to-end (budgets, logs, Analytics)
 
 Caching itself already worked on both surfaces — the chat sets two
@@ -1256,7 +1312,8 @@ best.
   **"Using &lt;server&gt;…"** (a new `tool` SSE frame). Verified live end-to-end
   against a public MCP server (streamed deltas + tool call + final answer).
 - Still Phase 3: OAuth for marquee tools (Slack/GitHub one-click) and image/PDF
-  passthrough on MCP turns (they remain text-only).
+  passthrough on MCP turns (they remain text-only). _(Both since delivered —
+  attachment passthrough landed with the image fix at the top of this file.)_
 
 ## MCP servers — native tool use (Phase 1)
 
