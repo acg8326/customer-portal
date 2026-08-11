@@ -110,6 +110,28 @@ class ChatController extends Controller
     private array $privateHistory = [];
 
     /**
+     * The tool sources whose schemas ACTUALLY ship this turn — after keyword
+     * routing, not merely "connected". The system prompt names them so the
+     * model knows what it can check instead of guessing, and so it never claims
+     * to have consulted a source that routing dropped.
+     *
+     * @var list<string>
+     */
+    private array $activeToolkits = [];
+
+    private bool $netsuiteActive = false;
+
+    /**
+     * Enabled MCP servers suppressed this turn because connected-app tools
+     * (Composio/NetSuite) take the client-side loop, which can't carry
+     * server-side MCP in the same call. Named in the prompt so the assistant
+     * can say so rather than silently not checking them.
+     *
+     * @var list<string>
+     */
+    private array $suppressedMcp = [];
+
+    /**
      * Prompt-cache usage accumulated across every API round of this turn
      * (a tool loop makes several). Persisted per conversation in
      * finalizeTurn so the dashboard can show the real cache hit rate.
@@ -364,15 +386,12 @@ class ChatController extends Controller
         try {
             $client = new Client(apiKey: $apiKey);
             $user = $request->user();
-            $composioKeys = app(ComposioService::class)->activeToolkitKeys($user);
-            $netsuiteConn = $this->netsuiteConnectionFor($user, $conversation);
-            // Cost routing: only ship the schemas the conversation is about.
-            [$composioKeys, $netsuiteOn] = $this->routeToolkits($composioKeys, $netsuiteConn !== null, $conversation);
-            $netsuiteConn = $netsuiteOn ? $netsuiteConn : null;
+            [$composioKeys, $netsuiteConn] = $this->resolveToolSources($user, $conversation, false);
             // Composio + NetSuite tools run through a client-side loop; custom MCP
             // servers run server-side. Prefer the client-side tools when connected.
             $useClientTools = $composioKeys !== [] || $netsuiteConn !== null;
             $mcp = $useClientTools ? [] : $this->mcpServerDefs($user);
+            $this->noteSuppressedMcp($user, $useClientTools);
 
             $reply = null;
             $inputTokens = 0;
@@ -556,17 +575,11 @@ class ChatController extends Controller
         // approval gate pauses state on the conversation row, which a private
         // chat deliberately doesn't have. Web tools + MCP stay available.
         $plainOnly = $this->privateMode || $openAiProvider !== null;
-        $composioKeys = $plainOnly ? [] : app(ComposioService::class)->activeToolkitKeys($request->user());
-        $netsuiteConn = $plainOnly ? null : $this->netsuiteConnectionFor($request->user(), $conversation);
-
-        if (! $plainOnly) {
-            // Cost routing: only ship the schemas the conversation is about.
-            [$composioKeys, $netsuiteOn] = $this->routeToolkits($composioKeys, $netsuiteConn !== null, $conversation);
-            $netsuiteConn = $netsuiteOn ? $netsuiteConn : null;
-        }
+        [$composioKeys, $netsuiteConn] = $this->resolveToolSources($request->user(), $conversation, $plainOnly);
 
         $useClientTools = $composioKeys !== [] || $netsuiteConn !== null;
         $mcp = ($useClientTools || $openAiProvider !== null) ? [] : $this->mcpServerDefs($request->user());
+        $this->noteSuppressedMcp($request->user(), $useClientTools && ! $plainOnly);
         $maxTokens = (int) config('services.anthropic.max_tokens', 8192);
         $thinkingOn = $this->thinkingEnabled($request, $selectedModel);
 
@@ -1280,6 +1293,96 @@ class ChatController extends Controller
     }
 
     /**
+     * Which tool sources ship this turn: the user's active connections, then
+     * narrowed by keyword routing. Records the outcome on the controller so
+     * buildSystemPrompt() can tell the model what it actually has.
+     *
+     * @return array{0: list<string>, 1: NetsuiteConnection|null}
+     */
+    private function resolveToolSources(User $user, Conversation $conversation, bool $plainOnly): array
+    {
+        $this->activeToolkits = [];
+        $this->netsuiteActive = false;
+
+        if ($plainOnly) {
+            return [[], null];
+        }
+
+        $keys = app(ComposioService::class)->activeToolkitKeys($user);
+        $conn = $this->netsuiteConnectionFor($user, $conversation);
+
+        // Cost routing: only ship the schemas the conversation is about.
+        [$keys, $netsuiteOn] = $this->routeToolkits($keys, $conn !== null, $conversation);
+        $conn = $netsuiteOn ? $conn : null;
+
+        $this->activeToolkits = $keys;
+        $this->netsuiteActive = $conn !== null;
+
+        return [$keys, $conn];
+    }
+
+    /**
+     * Record which enabled MCP servers lost this turn to the client-side tool
+     * loop, so the prompt can disclose it instead of the assistant quietly not
+     * checking them.
+     */
+    private function noteSuppressedMcp(User $user, bool $useClientTools): void
+    {
+        $this->suppressedMcp = $useClientTools
+            ? array_values($user->mcpServers()->where('enabled', true)->orderBy('id')
+                ->pluck('name')->map(fn ($n): string => (string) $n)->all())
+            : [];
+    }
+
+    /**
+     * Tell the model which of the user's data sources it can actually reach
+     * this turn. Without this it has tool schemas but no idea whose data they
+     * are, so "what am I connected to?" gets a guess, and a question it could
+     * have answered from NetSuite gets answered from memory instead. The web
+     * tools already get exactly this treatment (web_tools_prompt).
+     *
+     * Lists only what SHIPPED — a source dropped by keyword routing must not be
+     * advertised, or the model will claim it checked something it couldn't.
+     */
+    private function connectedToolsBlock(): string
+    {
+        $names = [];
+
+        foreach ($this->activeToolkits as $key) {
+            $names[] = (string) config("services.composio.toolkits.{$key}.name", $key);
+        }
+
+        if ($this->netsuiteActive) {
+            $names[] = 'NetSuite';
+        }
+
+        if ($names === [] && $this->suppressedMcp === []) {
+            return '';
+        }
+
+        $block = "\n\n## The user's connected data";
+
+        if ($names !== []) {
+            $block .= "\nYou have live tools for: ".implode(', ', $names).'. These read'
+                .' THIS user\'s own account data. When the question is about their data,'
+                .' call the tools and answer from what comes back — never from general'
+                .' knowledge or a guess, and never claim a number you did not fetch. If a'
+                .' tool returns nothing or errors, say so plainly.';
+        } else {
+            $block .= "\nYou have no data tools available this turn.";
+        }
+
+        if ($this->suppressedMcp !== []) {
+            $block .= "\nNot available this turn: ".implode(', ', $this->suppressedMcp)
+                .' (MCP servers cannot run alongside connected-app tools). If the user'
+                .' needs those, tell them to ask again in a message that does not involve'
+                .' the tools above.';
+        }
+
+        return $block;
+    }
+
+    /**
      * Cost routing: when several toolkits are connected, only send the schemas
      * of the toolkit(s) this conversation actually mentions — keyword match
      * over the replayed user turns; a toolkit's key always counts as a
@@ -1326,14 +1429,46 @@ class ChatController extends Controller
     }
 
     /**
+     * Does the conversation mention any of these keywords?
+     *
+     * Single words match on WORD BOUNDARIES, not substrings — the same rule
+     * isDestructiveTool() uses. Substring matching silently mis-routed turns:
+     * Slack's "dm" fired on "admin", GitHub's "pr" on "approve", and Sheets'
+     * "row"/"tab"/"cell" on "tomorrow"/"database"/"excellent". A mis-route
+     * doesn't just waste schema tokens, it DROPS the source the user actually
+     * meant, so the assistant answers without checking it.
+     *
+     * Multi-word keywords ("sales order", "pull request") stay phrase matches —
+     * there are no token boundaries to compare against.
+     *
      * @param  array<int, mixed>  $keywords
      */
     private function matchesAny(string $haystack, array $keywords): bool
     {
+        // Lowercased here rather than trusting the caller — the keyword side
+        // always was, and the asymmetry is an easy trap for the next caller.
+        $haystack = mb_strtolower($haystack);
+        $tokens = null;
+
         foreach ($keywords as $keyword) {
             $keyword = mb_strtolower(trim((string) $keyword));
 
-            if ($keyword !== '' && str_contains($haystack, $keyword)) {
+            if ($keyword === '') {
+                continue;
+            }
+
+            if (str_contains($keyword, ' ')) {
+                if (str_contains($haystack, $keyword)) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            // Tokenized once, lazily — most turns match on the first keyword.
+            $tokens ??= array_flip(preg_split('/[^\p{L}\p{N}]+/u', $haystack) ?: []);
+
+            if (isset($tokens[$keyword])) {
                 return true;
             }
         }
@@ -2847,6 +2982,12 @@ class ChatController extends Controller
         // (plain, MCP, and the connected-tools loop).
         if ($this->webToolDefs() !== [] && filled(config('services.anthropic.web_tools_prompt'))) {
             $system .= "\n\n".(string) config('services.anthropic.web_tools_prompt');
+        }
+
+        // ...and the same for the user's own connected data sources, which the
+        // model otherwise has to infer from bare tool schemas.
+        if (config('services.anthropic.connected_tools_prompt', true)) {
+            $system .= $this->connectedToolsBlock();
         }
 
         // Make the model aware that any reply can be downloaded as a file from

@@ -13,6 +13,14 @@ over-generate.
   sources connected, only the toolkit(s) the conversation mentions ship their
   schemas (keyword match over the replayed user turns; safe fallback to all).
   `COMPOSIO_TOOLKIT_ROUTING`, per-toolkit `*_KEYWORDS`, `NETSUITE_KEYWORDS`.
+  - **Routing is a correctness lever, not just a cost one.** A keyword that
+    matches too eagerly doesn't merely add schemas — it narrows the turn to the
+    wrong source and *drops* the right one, so the assistant answers without
+    checking. Keywords match **whole words** for this reason (`row` no longer
+    fires on "growth"). Keep new keywords specific, and prefer a multi-word
+    phrase over a short generic word.
+  - Routing only engages at **two or more** connected sources. Going from one to
+    two switches it on for that account — expect behaviour to change there.
 - **Schema cap:** `COMPOSIO_MAX_TOOLS` (default 100) bounds tools-per-toolkit.
 - Web tools only attach when enabled; MCP definitions only when connected.
 

@@ -93,6 +93,7 @@ handlers, session internals) are stock Laravel and intentionally absent from
 | `ANTHROPIC_WEB_FETCH` | `true` | Optional | Separate toggle so fetch can be disabled if its beta flag drifts. |
 | `ANTHROPIC_WEB_FETCH_BETA` | `web-fetch-2025-09-10` | Optional | Bump when the API version changes. |
 | `ANTHROPIC_WEB_TOOLS_PROMPT` | *(multi-line)* | Optional | |
+| `ANTHROPIC_CONNECTED_TOOLS_PROMPT` | `true` | Recommended | Names the user's connected sources in the prompt so the assistant checks them instead of guessing. |
 
 ### Titles, memory, compaction
 

@@ -669,6 +669,14 @@ boxes to enable, a paste-exactly code block, and info/warning callouts
     range, formula, …) keeps its schemas off unrelated turns. Nine of its tools
     write or clear cells and **all nine pause for approval** — see the gate-verb
     note below, since Sheets is what exposed the gap.
+  - **The model is told what you have connected.** A `## The user's connected
+    data` block names the sources whose tools shipped this turn, so the
+    assistant knows whose data it can reach instead of inferring from bare
+    schemas — and is told to answer from what the tools return, never from
+    general knowledge. It lists only what survived keyword routing, so it can't
+    claim to have checked a source that was dropped. Enabled MCP servers
+    suppressed by the connected-tools loop are named too, rather than silently
+    skipped. `ANTHROPIC_CONNECTED_TOOLS_PROMPT` (default on).
   - **How tools run:** Composio's MCP endpoint requires an `x-api-key` header
     that Anthropic's server-side MCP connector can't send, so AiMe runs the tool
     loop itself — it fetches Composio's tool schemas, gives them to Claude as

@@ -89,7 +89,10 @@ return [
             'googlesheets' => [
                 'name' => 'Google Sheets',
                 'auth_config_id' => env('COMPOSIO_GOOGLESHEETS_AUTH_CONFIG'),
-                'keywords' => explode(',', (string) env('COMPOSIO_GOOGLESHEETS_KEYWORDS', 'sheet,sheets,spreadsheet,google sheet,worksheet,tab,cell,column,row,range,formula,csv,workbook')),
+                // Keywords match whole words (see matchesAny), so short ones are
+                // safe again — but "tab" is dropped anyway: browser tabs and tab
+                // characters come up far more often than spreadsheet tabs.
+                'keywords' => explode(',', (string) env('COMPOSIO_GOOGLESHEETS_KEYWORDS', 'sheet,sheets,spreadsheet,google sheet,worksheet,cell,cells,column,columns,row,rows,range,formula,csv,workbook')),
             ],
         ],
     ],
@@ -223,6 +226,14 @@ return [
             most one short quote per source. Name or link the source naturally in
             the sentence.
             PROMPT),
+
+        // Names the user's connected data sources (Composio toolkits, NetSuite)
+        // in the system prompt, so the model knows WHOSE data its tools reach
+        // instead of inferring from bare schemas — the same reason
+        // web_tools_prompt exists. The text is generated per turn from what
+        // actually shipped after keyword routing, so this is an on/off toggle,
+        // not a template. Set ANTHROPIC_CONNECTED_TOOLS_PROMPT=false to drop it.
+        'connected_tools_prompt' => (bool) env('ANTHROPIC_CONNECTED_TOOLS_PROMPT', true),
 
         // Appended to the system prompt so the model knows the user can export
         // any answer to a file. The portal renders Copy / Markdown / PDF / CSV /

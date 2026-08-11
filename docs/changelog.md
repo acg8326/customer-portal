@@ -3,6 +3,56 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Fix: the assistant silently skipped connected data sources
+
+Reported as "whenever I ask something, especially on integrations, it's not
+properly checking". Four separate causes, all of which made the assistant answer
+without consulting a source it was supposed to consult.
+
+**1. Keyword routing matched substrings, not words.** `matchesAny()` used
+`str_contains`, so Slack's `dm` fired on "a**dm**in", GitHub's `pr` on
+"a**pr**prove", and Sheets' `row`/`tab`/`cell` on "tomor**row**",
+"da**tab**ase", "ex**cell**ent". This is worse than wasted schema tokens: a
+false match **narrows the turn to the wrong source and drops the right one**, so
+"what was our growth last quarter?" routed to Google Sheets (via "g-**row**-th")
+and NetSuite never got asked. Single-word keywords now match on word boundaries
+— the same rule `isDestructiveTool()` has always used, and the inconsistency
+between the two matchers was the bug. Multi-word keywords ("sales order", "pull
+request") stay phrase matches, since there is no token boundary to compare.
+`matchesAny()` also lowercases its own haystack now instead of trusting callers.
+
+**2. Adding a second source silently turned routing on.** Routing is skipped
+below two sources (`$sources < 2`), so an account with only NetSuite connected
+had every tool shipped on every turn. Connecting Google Sheets made it two and
+switched keyword gating on for the first time — which is why this got notably
+worse the same day Sheets landed. `tab` is dropped from the Sheets keywords
+(browser tabs and tab characters dominate real usage); the rest are safe again
+under word matching.
+
+**3. The model was never told what the user has connected.** It got tool schemas
+and no idea whose data they reached, so "what am I connected to?" was answered by
+guessing. There is now a **`## The user's connected data`** block naming the
+sources — the same treatment `web_tools_prompt` already gets, and for the same
+reason ("so it stops claiming it can't"). It lists only what **actually shipped
+after routing**: advertising a source that routing dropped would invite the model
+to claim it checked something it couldn't reach. Toggle with
+`ANTHROPIC_CONNECTED_TOOLS_PROMPT` (default on).
+
+**4. MCP servers were suppressed with no disclosure.** Any active Composio
+toolkit sets `$mcp = []`, because the client-side tool loop can't carry
+server-side MCP in the same call. The turn simply didn't check them and said
+nothing. Suppressed servers are now named in that prompt block, so the assistant
+can tell the user instead of quietly skipping them.
+
+Also folded the duplicated resolve-and-route logic in `send()` and `stream()`
+into one `resolveToolSources()`, which is what records the outcome for the prompt.
+
+Tests: new [`ChatToolRoutingTest`](../tests/Feature/ChatToolRoutingTest.php) —
+12 covering word-boundary matching, the phrase exception, the `< 2 sources` and
+no-match escape hatches, the growth/NetSuite regression specifically, and the
+prompt block (names only what shipped, discloses suppressed MCP, honours the
+toggle, empty in private chats).
+
 ## Google Sheets integration — and the gate-verb gap it exposed
 
 The **Google Sheets** card on Integrations was a "Coming soon" placeholder;
