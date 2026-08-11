@@ -248,7 +248,10 @@ the **Claude API**.
   refresh, appear in the sidebar (most-recent first), and reopen with their full
   history. The server is the source of truth — each turn sends only the new
   message + conversation id, and history is loaded from the DB. All endpoints
-  are scoped to the authenticated user.
+  are scoped to the authenticated user. The **open chat is reflected in the URL**
+  (`?c={id}`, kept in sync with `replaceState`), so refreshing, copying the link,
+  or reopening the tab returns to that conversation instead of a blank one; a
+  stale id falls back quietly to a new chat.
 - **File uploads (images, PDFs + Office files):** attach files with the
   composer paperclip **or paste an image straight into the composer with
   Ctrl/Cmd+V** (a screenshot or copied image becomes an attachment; plain-text
@@ -738,6 +741,20 @@ boxes to enable, a paste-exactly code block, and info/warning callouts
     conversation, not one instruction.
   - Writes still hit the **approval gate** — a NetSuite→Sheets copy pauses on
     the Sheets write with the exact call shown before anything is written.
+- **Tool failures are shown, not paraphrased.** When a connected tool fails, a
+  card appears under the reply naming the system and the kind of failure
+  (missing permission, expired connection, not found, rate limited, …), a
+  concrete fix, and — collapsed — **the provider's own message verbatim**, which
+  is where the missing scope or bad id actually is. Plus the tool slug and a
+  link to Integrations. Classified by
+  [`ToolFailure`](../app/Services/ToolFailure.php) from rules in
+  `services.anthropic.tool_errors.rules` (first match wins, `:source`
+  substituted), so adding a pattern is a config edit. Streamed live on a
+  `tool_error` SSE frame and **persisted** on `messages.tool_errors`, so it is
+  still there after you reload on the way to fix the setting. Identical repeats
+  in a turn collapse to one card; shared conversations exclude them (error text
+  can name accounts and endpoints). `ANTHROPIC_TOOL_ERROR_CARDS`,
+  `ANTHROPIC_TOOL_ERROR_MAX_CHARS`.
 - **Hard approval gate (destructive tool calls).** In the connected-tools loop
   (Composio + NetSuite), a tool call whose name contains a destructive verb
   (`ANTHROPIC_TOOL_GATE_VERBS`: create/update/delete/send/…) **pauses the turn

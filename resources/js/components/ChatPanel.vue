@@ -31,12 +31,13 @@ import {
     Sparkles,
     ThumbsDown,
     ThumbsUp,
+    TriangleAlert,
     X,
     Zap,
 } from '@lucide/vue';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import ChatSidebar from '@/components/ChatSidebar.vue';
 import { Button } from '@/components/ui/button';
 import {
@@ -74,6 +75,16 @@ type PendingFile = {
     preview: string | null;
 };
 
+// A connected tool that failed during a turn, classified server-side with the
+// provider's own message kept verbatim.
+type ToolError = {
+    tool: string;
+    source: string;
+    kind: string;
+    fix: string;
+    detail: string;
+};
+
 type ChatMessage = {
     id?: number;
     role: 'user' | 'assistant';
@@ -81,6 +92,7 @@ type ChatMessage = {
     thinking?: string | null;
     feedback?: number | null;
     attachments?: Attachment[];
+    tool_errors?: ToolError[];
 };
 
 type ConversationSummary = {
@@ -1337,6 +1349,11 @@ async function consumeStream(
                 server?: string;
                 label?: string;
                 calls?: PendingCall[];
+                tool?: string;
+                source?: string;
+                kind?: string;
+                fix?: string;
+                detail?: string;
                 usage?: {
                     prompt_tokens?: number;
                     completion_tokens?: number;
@@ -1365,6 +1382,22 @@ async function consumeStream(
                 streamingTool.value =
                     payload.label ??
                     `Using ${payload.server ?? payload.name ?? 'a tool'}`;
+            } else if (evt === 'tool_error') {
+                // A connected tool failed. Surface it as its own card straight
+                // away — the reply that follows describes the problem in prose,
+                // but the actual cause (scope, status, id) lives here.
+                streamingTool.value = null;
+                messages.value[assistantIndex].tool_errors = [
+                    ...(messages.value[assistantIndex].tool_errors ?? []),
+                    {
+                        tool: payload.tool ?? '',
+                        source: payload.source ?? 'The tool',
+                        kind: payload.kind ?? 'Tool error',
+                        fix: payload.fix ?? '',
+                        detail: payload.detail ?? '',
+                    },
+                ];
+                await scrollToBottom();
             } else if (evt === 'approval') {
                 // Hard gate: the turn paused before a destructive tool call.
                 pendingApproval.value = payload.calls ?? [];
@@ -1589,14 +1622,47 @@ function onKeydown(e: KeyboardEvent) {
     }
 }
 
-onMounted(() => {
-    // Opened from a search result (…?c={id}) — load that conversation.
+// Keep the URL pointing at whichever conversation is open, so a refresh (or a
+// copied link, or reopening the tab) comes back to it instead of a blank new
+// chat. Only the search dialog used to write ?c=, which is why every other way
+// of opening a chat lost it on reload.
+//
+// replaceState, not pushState: activeId also changes when a brand-new chat gets
+// its id mid-send, and pushing there would put a history entry between every
+// message. The existing state object is passed through untouched — Inertia
+// keeps its page data in there, and dropping it breaks back-navigation.
+watch(activeId, (id) => {
+    const url = new URL(window.location.href);
+
+    if (id == null) {
+        url.searchParams.delete('c');
+    } else {
+        url.searchParams.set('c', String(id));
+    }
+
+    window.history.replaceState(window.history.state, '', url);
+});
+
+onMounted(async () => {
+    // Restoring an open chat on refresh, or arriving from a search result.
     const requested = Number(
         new URLSearchParams(window.location.search).get('c'),
     );
 
-    if (Number.isInteger(requested) && requested > 0) {
-        selectConversation(requested);
+    if (!Number.isInteger(requested) || requested <= 0) {
+        return;
+    }
+
+    await selectConversation(requested);
+
+    // The id can be stale — the chat was deleted, or this link came from
+    // someone else. Restoring on refresh is automatic, so an error banner the
+    // user never asked for would be wrong; drop quietly to a new chat instead.
+    if (activeId.value !== requested) {
+        error.value = null;
+        const url = new URL(window.location.href);
+        url.searchParams.delete('c');
+        window.history.replaceState(window.history.state, '', url);
     }
 });
 </script>
@@ -2061,7 +2127,8 @@ onMounted(() => {
                                 m.role !== 'assistant' ||
                                 m.content ||
                                 m.thinking ||
-                                m.attachments?.length
+                                m.attachments?.length ||
+                                m.tool_errors?.length
                             "
                             class="message-row flex items-start gap-3"
                             :class="
@@ -2158,6 +2225,62 @@ onMounted(() => {
                                         {{ m.thinking }}
                                     </div>
                                 </details>
+
+                                <!-- Connected-tool failures: the actual cause,
+                                 not just the model's paraphrase of it -->
+                                <div
+                                    v-if="m.tool_errors?.length"
+                                    class="mb-2 space-y-2"
+                                >
+                                    <div
+                                        v-for="(te, ti) in m.tool_errors"
+                                        :key="'te-' + ti"
+                                        class="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2"
+                                    >
+                                        <div
+                                            class="flex items-center gap-1.5 text-xs font-semibold text-destructive"
+                                        >
+                                            <TriangleAlert
+                                                class="size-3.5 shrink-0"
+                                            />
+                                            <span
+                                                >{{ te.source }} —
+                                                {{ te.kind }}</span
+                                            >
+                                        </div>
+                                        <p
+                                            v-if="te.fix"
+                                            class="mt-1 text-xs text-foreground/90"
+                                        >
+                                            {{ te.fix }}
+                                        </p>
+                                        <details
+                                            v-if="te.detail"
+                                            class="mt-1.5"
+                                        >
+                                            <summary
+                                                class="cursor-pointer text-xs text-muted-foreground select-none"
+                                            >
+                                                What {{ te.source }} returned
+                                            </summary>
+                                            <pre
+                                                class="mt-1 overflow-x-auto rounded bg-background/70 p-2 text-[11px] whitespace-pre-wrap text-muted-foreground"
+                                                >{{ te.detail }}</pre
+                                            >
+                                            <p
+                                                class="mt-1 text-[11px] text-muted-foreground"
+                                            >
+                                                Tool: <code>{{ te.tool }}</code>
+                                            </p>
+                                        </details>
+                                        <a
+                                            href="/integrations"
+                                            class="mt-1.5 inline-block text-xs font-medium text-destructive underline underline-offset-2"
+                                        >
+                                            Open Integrations
+                                        </a>
+                                    </div>
+                                </div>
 
                                 <!-- Edit-and-resend (last user message) -->
                                 <div

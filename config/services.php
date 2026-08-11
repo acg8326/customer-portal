@@ -443,6 +443,72 @@ return [
         'tool_gate_verbs' => env('ANTHROPIC_TOOL_GATE_VERBS', 'create,update,delete,remove,send,post,write,add,move,archive,set,edit,upload,invite,kick,ban,schedule,cancel,publish,merge,close,assign'
             .',append,clear,insert,copy,format,duplicate,replace,sort,rename,drop,truncate'),
 
+        // When a connected tool fails, show the user WHY in the chat instead of
+        // leaving it to whatever the model paraphrases. The provider's own
+        // message is always shown verbatim; these rules just add a category and
+        // a concrete fix on top. First match wins, so order matters — put the
+        // specific patterns above the generic ones. `:source` is replaced with
+        // the system's name (Google Sheets, NetSuite, …).
+        'tool_errors' => [
+            'enabled' => (bool) env('ANTHROPIC_TOOL_ERROR_CARDS', true),
+            'max_detail_chars' => (int) env('ANTHROPIC_TOOL_ERROR_MAX_CHARS', 600),
+
+            'rules' => [
+                [
+                    'match' => ['missing_scope', 'insufficient scope', 'insufficient_scope', 'scope'],
+                    'kind' => 'Missing permission',
+                    'fix' => 'Your :source connection is missing a permission this action needs.'
+                        .' Reconnect it on the Integrations page and approve the additional'
+                        .' access when prompted.',
+                ],
+                [
+                    'match' => ['invalid_grant', 'token expired', 'token has expired', 'refresh token', 'reauthenticate', 're-authenticate'],
+                    'kind' => 'Connection expired',
+                    'fix' => 'Your :source sign-in has expired. Reconnect it on the'
+                        .' Integrations page — no settings change needed.',
+                ],
+                [
+                    'match' => ['401', 'unauthorized', 'unauthenticated', 'invalid credentials', 'invalid_api_key'],
+                    'kind' => 'Not signed in',
+                    'fix' => ':source rejected the credentials. Reconnect it on the'
+                        .' Integrations page; if it keeps failing, the account may have been'
+                        .' revoked on the provider side.',
+                ],
+                [
+                    'match' => ['403', 'forbidden', 'permission denied', 'not authorized', 'access denied', 'insufficient permission'],
+                    'kind' => 'Permission denied',
+                    'fix' => 'The connected :source account is not allowed to do this. Either'
+                        .' the record is not shared with it, or its role lacks the right.'
+                        .' Share the item with that account, or reconnect using one that has'
+                        .' access.',
+                ],
+                [
+                    'match' => ['404', 'not found', 'no such', 'does not exist'],
+                    'kind' => 'Not found',
+                    'fix' => ':source could not find what was asked for. Check the id, name or'
+                        .' URL — and that it belongs to the connected account.',
+                ],
+                [
+                    'match' => ['429', 'rate limit', 'too many requests', 'quota'],
+                    'kind' => 'Rate limited',
+                    'fix' => ':source is throttling requests. Wait a moment and ask again;'
+                        .' narrowing the request also helps.',
+                ],
+                [
+                    'match' => ['could not reach', 'timed out', 'timeout', 'connection refused', 'network'],
+                    'kind' => 'Could not reach it',
+                    'fix' => ':source did not respond. This is usually temporary — try again'
+                        .' shortly. If it persists, check the service status.',
+                ],
+                [
+                    'match' => ['400', '422', 'invalid', 'required', 'missing parameter', 'validation'],
+                    'kind' => 'Request rejected',
+                    'fix' => ':source rejected the request as malformed — usually a wrong or'
+                        .' missing value. The detail below normally names the field.',
+                ],
+            ],
+        ],
+
         'tool_safety_prompt' => env('ANTHROPIC_TOOL_SAFETY_PROMPT', <<<'PROMPT'
             ## Using connected tools safely
             You may freely READ, search, list, or fetch data with connected tools.

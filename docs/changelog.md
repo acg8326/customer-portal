@@ -3,6 +3,66 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Fix: refreshing the chat opened a blank new chat
+
+Reloading the page dropped you into a new conversation instead of the one you
+were reading. The `?c={id}` mechanism to restore a chat already existed and was
+already read on mount — but **only the search dialog ever wrote it**. Picking a
+chat from the sidebar, or starting one and sending a message, never touched the
+URL, so a refresh landed on a bare `/chat` with nothing to restore.
+
+The URL now tracks the open conversation. `replaceState`, not `pushState`:
+`activeId` also changes when a brand-new chat gets its id mid-send, and pushing
+there would wedge a history entry between every message. The existing history
+state object is passed through untouched — Inertia keeps its page data in there
+and dropping it would break back-navigation.
+
+Restoring is automatic now, so a stale id (chat deleted in another tab, link
+from someone else) drops quietly to a new chat and clears the parameter, rather
+than showing an error banner the user never asked for.
+
+## Tool failures now show what actually went wrong
+
+When a connected tool failed, the raw cause went to the *model* as a
+`tool_result` and never to the user. You got whatever prose the model chose —
+"I couldn't retrieve that" — when the real answer was "Slack is connected
+without `channels:read`". Nothing on screen told you which permission, which
+account, or which id was wrong.
+
+Failed calls now render as their own card under the reply, with:
+
+- **the system and what kind of failure it was** — Missing permission,
+  Connection expired, Not signed in, Permission denied, Not found, Rate limited,
+  Could not reach it, Request rejected;
+- **a concrete fix** naming the system ("Your Google Sheets connection is missing
+  a permission this action needs — reconnect it on the Integrations page and
+  approve the additional access");
+- **the provider's own message, verbatim**, in a collapsible *"What Slack
+  returned"* — that's where `channels:read` or the failing id actually lives, so
+  it is never replaced by our paraphrase;
+- the tool slug, and a link straight to Integrations.
+
+[`ToolFailure`](../app/Services/ToolFailure.php) does the classification against
+rules in `config/services.php` (`anthropic.tool_errors.rules`, first match wins,
+`:source` substituted) so a new pattern is a config edit. The source name comes
+from the tool slug's prefix matched against the configured toolkits, so it can't
+drift from what's actually connected. An unrecognised error still gets a card
+rather than being swallowed.
+
+Cards are emitted live over a new `tool_error` SSE frame — they appear the
+moment the call fails, not after the model finishes writing around it — and are
+**persisted on the message** (`messages.tool_errors`), because the reload you do
+on your way to fix the permission would otherwise take the explanation with it.
+Repeated identical failures within a turn collapse to one card. Shared
+conversations deliberately exclude them: error detail can name accounts and
+internal endpoints, which is the owner's business, not a share link's.
+
+`ANTHROPIC_TOOL_ERROR_CARDS` (default on), `ANTHROPIC_TOOL_ERROR_MAX_CHARS`
+(600). Tests: [`ToolFailureTest`](../tests/Feature/ToolFailureTest.php) — 11
+covering slug→source naming, every classification rule against realistic
+provider strings, `:source` substitution, the unknown-error fallback, truncation,
+persistence through a reload, the share-link leak, the off switch, and dedupe.
+
 ## Cross-tool workflows: verified, plus a compaction gap closed
 
 Checked whether "pull this from NetSuite and save it to Google Sheets" actually

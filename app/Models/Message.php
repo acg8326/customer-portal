@@ -14,8 +14,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string|null $thinking
  * @property int|null $feedback
  * @property array<int, array{name: string, mime: string, size: int, path: string}>|null $attachments
+ * @property array<int, array{tool: string, source: string, kind: string, fix: string, detail: string}>|null $tool_errors Connected-tool failures during this turn, shown as error cards.
  */
-#[Fillable(['role', 'content', 'thinking', 'attachments'])]
+#[Fillable(['role', 'content', 'thinking', 'attachments', 'tool_errors'])]
 class Message extends Model
 {
     /**
@@ -25,6 +26,7 @@ class Message extends Model
     {
         return [
             'attachments' => 'array',
+            'tool_errors' => 'array',
         ];
     }
 

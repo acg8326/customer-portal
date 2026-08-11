@@ -130,6 +130,8 @@ handlers, session internals) are stock Laravel and intentionally absent from
 | --- | --- | --- | --- |
 | `ANTHROPIC_TOOL_SAFETY` | `true` | Recommended | Model must confirm before destructive tool actions. |
 | `ANTHROPIC_TOOL_HARD_GATE` | `true` | Recommended | Hard Approve/Cancel card — nothing runs until the user approves. |
+| `ANTHROPIC_TOOL_ERROR_CARDS` | `true` | Recommended | Surfaces a failed tool call in chat with the provider's own message and a fix, instead of leaving it to the model's paraphrase. |
+| `ANTHROPIC_TOOL_ERROR_MAX_CHARS` | `600` | Optional | Caps the verbatim provider message shown in the card. |
 | `ANTHROPIC_TOOL_GATE_VERBS` | `create,update,delete,remove,send,post,write,add,…,append,clear,insert,copy,format,…` | Recommended | Names a tool destructive by verb token. Extend it when wiring a toolkit that names writes differently — Sheets' `CLEAR_VALUES` matched nothing until `clear` was added. |
 | `ANTHROPIC_TOOL_RESULT_MAX_CHARS` | `20000` | Recommended | Truncates every tool result fed back to the model. Cost control. |
 | `ANTHROPIC_TOOL_SAFETY_PROMPT` / `ANTHROPIC_TOOL_USE_PROMPT` | *(multi-line)* | Optional | |

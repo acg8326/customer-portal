@@ -67,6 +67,7 @@ use App\Services\OpenAiCompatibleChat;
 use App\Services\OpenAiMedia;
 use App\Services\TokenBudget;
 use App\Services\TokenUsage;
+use App\Services\ToolFailure;
 use App\Services\UploadScanner;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -137,6 +138,21 @@ class ChatController extends Controller
      * loses tools/attachments/thinking, and the web toggle is per-message.
      */
     private bool $claudeTurn = true;
+
+    /**
+     * Connected-tool failures during this turn. Surfaced live over SSE and
+     * persisted on the assistant message, so the explanation is still there
+     * after the reload the user does while going to fix the permission.
+     *
+     * @var list<array{tool: string, source: string, kind: string, fix: string, detail: string}>
+     */
+    private array $toolFailures = [];
+
+    /**
+     * True only inside the SSE response callback. emit() writes straight to the
+     * output buffer, so a stray call on the JSON path would corrupt the body.
+     */
+    private bool $streaming = false;
 
     /**
      * Prompt-cache usage accumulated across every API round of this turn
@@ -337,7 +353,7 @@ class ChatController extends Controller
                 : null,
             'messages' => $conversation->messages()
                 ->orderBy('id')
-                ->get(['id', 'role', 'content', 'thinking', 'feedback', 'attachments'])
+                ->get(['id', 'role', 'content', 'thinking', 'feedback', 'attachments', 'tool_errors'])
                 ->map(fn (Message $m): array => [
                     'id' => $m->id,
                     'role' => $m->role,
@@ -345,6 +361,7 @@ class ChatController extends Controller
                     'thinking' => $m->thinking,
                     'feedback' => $m->feedback,
                     'attachments' => $this->publicAttachments($m),
+                    'tool_errors' => $m->tool_errors,
                 ])
                 ->all(),
         ]);
@@ -593,6 +610,8 @@ class ChatController extends Controller
         $thinkingOn = $this->thinkingEnabled($request, $selectedModel);
 
         return response()->stream(function () use ($request, $conversation, $mcp, $composioKeys, $netsuiteConn, $useClientTools, $openAiProvider, $selectedModel, $maxTokens, $thinkingOn, $userId, $apiKey): void {
+            $this->streaming = true;
+
             $this->emit('meta', [
                 'conversation_id' => $conversation->id,
                 'title' => $conversation->title,
@@ -1994,6 +2013,12 @@ class ChatController extends Controller
             $content = $this->truncateToolResult($content);
             $content = $content !== '' ? $content : '(no output)';
 
+            // The model still gets the raw text as a tool_result; this is the
+            // copy the USER sees, classified and with a fix attached.
+            if (! $result['ok']) {
+                $this->recordToolFailure($call['name'], $content);
+            }
+
             $results[] = BetaToolResultBlockParam::with(
                 toolUseID: $call['id'],
                 content: $content,
@@ -2011,6 +2036,33 @@ class ChatController extends Controller
         $plain[] = ['role' => 'user', 'content' => $resultsPlain];
 
         return [$messages, $plain];
+    }
+
+    /**
+     * Classify a failed tool call and queue it for the user. Emitted live so
+     * the card appears the moment it happens rather than after the model has
+     * finished writing around it. Deduped by tool + kind: a loop that retries
+     * the same broken call three times should show one card, not three.
+     */
+    private function recordToolFailure(string $tool, string $raw): void
+    {
+        if (! config('services.anthropic.tool_errors.enabled', true)) {
+            return;
+        }
+
+        $failure = ToolFailure::from($tool, $raw)->toArray();
+
+        foreach ($this->toolFailures as $seen) {
+            if ($seen['tool'] === $failure['tool'] && $seen['detail'] === $failure['detail']) {
+                return;
+            }
+        }
+
+        $this->toolFailures[] = $failure;
+
+        if ($this->streaming) {
+            $this->emit('tool_error', $failure);
+        }
     }
 
     /**
@@ -2261,6 +2313,7 @@ class ChatController extends Controller
             $assistantMessage->role = 'assistant';
             $assistantMessage->content = $reply;
             $assistantMessage->thinking = filled($thinking) ? $thinking : null;
+            $assistantMessage->tool_errors = $this->toolFailures !== [] ? $this->toolFailures : null;
 
             return $assistantMessage;
         }
@@ -2269,6 +2322,9 @@ class ChatController extends Controller
             'role' => 'assistant',
             'content' => $reply,
             'thinking' => filled($thinking) ? $thinking : null,
+            // Persisted so the card is still there after the reload the user
+            // does on their way to fix the permission.
+            'tool_errors' => $this->toolFailures !== [] ? $this->toolFailures : null,
         ]);
 
         $conversation->model = $selectedModel;
