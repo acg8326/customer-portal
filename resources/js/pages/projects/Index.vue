@@ -136,7 +136,9 @@ function confirmDelete(id: number) {
                     >
                         <FolderOpen class="size-5" />
                     </div>
-                    <p class="truncate pr-6 font-medium">{{ p.name }}</p>
+                    <p class="truncate pr-6 font-medium" :title="p.name">
+                        {{ p.name }}
+                    </p>
                     <p class="mt-1 text-xs text-muted-foreground">
                         Open workspace
                     </p>

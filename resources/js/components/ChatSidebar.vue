@@ -69,7 +69,13 @@ const groups = computed(() => {
                     "
                     @click="emit('select', c.id)"
                 >
-                    <span class="flex-1 truncate">{{ c.title }}</span>
+                    <!-- The rail is narrow and auto-titles are long, so most
+                     titles truncate. Hovering has to be able to reveal the
+                     rest — otherwise two chats that differ past the cut are
+                     indistinguishable. -->
+                    <span class="min-w-0 flex-1 truncate" :title="c.title">{{
+                        c.title
+                    }}</span>
                     <span
                         role="button"
                         :aria-label="c.starred ? 'Unstar chat' : 'Star chat'"

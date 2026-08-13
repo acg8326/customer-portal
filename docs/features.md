@@ -147,6 +147,21 @@ the **Claude API**.
   "Hi, I'm AiMe BOT. Ask me anything." subtitle.
 - **Model switching is live:** changing the model in the header applies to the
   next message (no refresh); you can even switch models mid-conversation.
+- **Where the controls live.** Chat modes sit behind a **+** on the composer
+  (like claude.ai's), not spread across the header: attachments, image
+  generation, web search, extended thinking, private chat, auto-approve, and
+  the NetSuite account picker. The header keeps only the **model picker** and a
+  **⋯** menu of one-off actions on the conversation (Share, Compact). Before
+  this, seven chips competed for the header on one line — they wrapped on a
+  small laptop, then collapsed to unlabelled icons below `sm`.
+  - **Active modes stay visible.** Anything switched on also renders as a small
+    gold chip next to the **+**, clickable to switch it back off. Hiding a mode
+    entirely would be wrong for the ones with consequences: **Private** (nothing
+    is being saved), **Auto-approve** (tool actions run unconfirmed), **Image
+    mode** (the next message goes to the image model), and the **NetSuite
+    account** (which company's books a query hits). Web search and extended
+    thinking are deliberately *not* chipped — web defaults to on, so a permanent
+    chip for it is noise, and neither changes what happens to your data.
 
 > Note: the chat follows the app's light/dark theme (Settings → General). The
 > dark background is dark mode, not the chat itself.
@@ -187,7 +202,7 @@ the **Claude API**.
   `.env`). A per-chat pick in the header still wins for that browser
   (`localStorage`). Values that drop off the allowlist are skipped
   automatically.
-- **Private chat:** the header's **Private** toggle (ghost icon) starts a chat
+- **Private chat:** the composer menu's **Private chat** toggle (ghost icon) starts a chat
   that **never touches the database** — no conversation row, no messages, no
   auto-title, no memory extraction, no webhooks. The browser holds the
   transcript and resends it with each turn; it disappears on refresh, on
@@ -480,8 +495,8 @@ the **Claude API**.
   name** at runtime — the model stops reasoning from its training cutoff, and
   the web-tools note tells it to search for anything recent instead of
   mentioning a "knowledge cutoff".
-- **Compact a conversation (like Claude's /compact):** a **Compact** button in
-  the chat header (shown once a conversation has a real exchange) asks Claude to
+- **Compact a conversation (like Claude's /compact):** **Compact** in the header's
+  ⋯ menu (shown once a conversation has a real exchange) asks Claude to
   summarize the transcript so far into a running summary stored on the
   conversation (`conversations.summary` + `summary_through_id`). From then on
   only messages **newer than the summary** are replayed to the API — the summary
@@ -496,8 +511,8 @@ the **Claude API**.
   100k; 0 disables) — like claude.ai, the user never has to notice degradation.
   ([`ConversationCompactor`](../app/Services/ConversationCompactor.php),
   [`AutoCompactConversation`](../app/Jobs/AutoCompactConversation.php).)
-- **Extended thinking (visible thought process):** a **Thinking** toggle in the
-  chat header enables adaptive thinking (summarized display) on supported models
+- **Extended thinking (visible thought process):** an **Extended thinking** toggle in
+  the composer menu enables adaptive thinking (summarized display) on supported models
   (`ANTHROPIC_THINKING_MODELS`); the thought process streams into a collapsible
   block above the answer and is stored per message (`messages.thinking`). Not
   applied on the connected-tools loop or unsupported models (silently skipped).
@@ -522,7 +537,7 @@ the **Claude API**.
   (max 2000 chars), Send (`POST /feedback`, `feedback_entries` table). Entries
   land on the super admin's Team feedback card with author, type, and time —
   the free-text complement to the thumbs.
-- **Share a chat (team-only):** the header's **Share** button creates a
+- **Share a chat (team-only):** **Share** in the header's ⋯ menu creates a
   read-only link any **logged-in** member can open (`/chat/shared/{token}`) —
   never public. Copy it from the dialog; **Stop sharing** invalidates it.
   Owner-only toggle; the shared view has no composer, thinking, or feedback.
@@ -551,7 +566,7 @@ the **Claude API**.
 - **Web search + fetch (Claude's native tools).** With `ANTHROPIC_WEB_TOOLS=true`
   (default) the assistant can **search the web** and **read a URL** using
   Anthropic's server-side `web_search` + `web_fetch` tools — no scraping infra on
-  our side. A **Web toggle** in the chat header (like claude.ai's) turns it off
+  our side. A **Web search** toggle in the composer menu (like claude.ai's) turns it off
   per session — answers then use only the model + connected tools, and the web
   tools' schema/prompt tokens are saved. Active on **every** chat path — plain, MCP, and the connected-tools
   (Composio/NetSuite) loop, so a user with Slack/NetSuite connected keeps web
@@ -816,9 +831,10 @@ boxes to enable, a paste-exactly code block, and info/warning callouts
   the picker against the live API via the free `count_tokens` endpoint (no tokens
   billed), so a stale id can't 404 on users mid-chat. Run it after editing
   `anthropic.models` or as a deploy step.
-- **Auto-approve toggle (per session).** For power users, the chat header shows an
-  **Auto-approve** switch (only when tools are connected) — a labelled on/off
-  toggle rather than a button whose label flipped. When on, the destructive-action
+- **Auto-approve toggle (per session).** For power users, the composer menu shows an
+  **Auto-approve tools** switch (only when tools are connected). When on, it also
+  raises a chip beside the composer's **+**, so the guardrail can never be off with
+  nothing on screen saying so. When on, the destructive-action
   guardrail above is **omitted** for that conversation so the assistant acts
   without asking each time. Turning it **on** first pops a **confirmation dialog**
   ("Auto-approve tool actions this session?") — the state only flips once the user

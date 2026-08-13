@@ -7,7 +7,6 @@ import {
     Check,
     ChevronDown,
     ChevronRight,
-    ClipboardList,
     Copy,
     Download,
     FileText,
@@ -21,8 +20,10 @@ import {
     Lock,
     Menu,
     Mic,
+    MoreHorizontal,
     Paperclip,
     Pencil,
+    Plus,
     RefreshCw,
     Square,
     Volume2,
@@ -38,6 +39,7 @@ import {
 } from '@lucide/vue';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
+import type { Component } from 'vue';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import ChatSidebar from '@/components/ChatSidebar.vue';
 import { Button } from '@/components/ui/button';
@@ -50,6 +52,20 @@ import {
     DialogHeader,
     DialogTitle,
 } from '@/components/ui/dialog';
+import {
+    DropdownMenu,
+    DropdownMenuCheckboxItem,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuRadioGroup,
+    DropdownMenuRadioItem,
+    DropdownMenuSeparator,
+    DropdownMenuSub,
+    DropdownMenuSubContent,
+    DropdownMenuSubTrigger,
+    DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
     Select,
     SelectContent,
@@ -371,6 +387,20 @@ const shareUrl = ref<string | null>(null);
 const showShareDialog = ref(false);
 const shareBusy = ref(false);
 const shareCopied = ref(false);
+
+/**
+ * Run an action that opens a dialog once the menu that triggered it has closed.
+ * Opening a modal from inside an open menu races the menu's own close and
+ * focus-restore: the two overlays fight over the focus trap, and the page can
+ * be left with pointer-events suppressed.
+ */
+function afterMenuCloses(action: () => void) {
+    setTimeout(action, 0);
+}
+
+function openShareDialog() {
+    afterMenuCloses(() => (showShareDialog.value = true));
+}
 
 async function toggleShare() {
     if (activeId.value == null || shareBusy.value) {
@@ -880,6 +910,145 @@ function toggleImageMode() {
 
     imageMode.value = !imageMode.value;
 }
+
+// --- Composer "+" menu and its active-mode chips --------------------------------
+//
+// The chat modes used to sit in the header as seven side-by-side chips, which
+// wrapped and then collapsed to unlabelled icons on a small laptop. They now
+// live behind the "+" on the composer, next to where you type — the toggles
+// affect the *next* message, so that's where they belong.
+//
+// Hiding them all would be wrong, though: a mode you can't see is a mode you
+// can't audit. The chips below stay visible whenever they're on. Web search and
+// extended thinking are deliberately NOT in this list — web defaults to on, so a
+// permanent chip for it is noise, and neither changes what happens to your data
+// or what the assistant is allowed to do on your behalf. These four do.
+const plusMenuOpen = ref(false);
+
+type ActiveMode = {
+    key: string;
+    icon: Component;
+    label: string;
+    title: string;
+    /**
+     * Absent when the mode isn't a simple on/off (the NetSuite account is a
+     * choice, not a switch) — those chips open the menu instead.
+     */
+    turnOff?: () => void;
+};
+
+/**
+ * Keep the menu open while several switches are flipped — reka closes on select
+ * unless the event is defaulted out.
+ *
+ * Only for toggles that act immediately. Auto-approve and image mode both open
+ * a dialog on the way ON (a confirmation and an access request), so those let
+ * the menu close and defer through afterMenuCloses instead.
+ */
+function keepMenuOpen(event: Event) {
+    event.preventDefault();
+}
+
+function toggleImageModeFromMenu() {
+    afterMenuCloses(toggleImageMode);
+}
+
+function toggleAutoApproveFromMenu() {
+    afterMenuCloses(toggleAutoApprove);
+}
+
+/** The radio group speaks strings; the account id is a number. */
+const netsuiteAccountIdValue = computed({
+    get: () =>
+        netsuiteAccountId.value == null ? '' : String(netsuiteAccountId.value),
+    set: (value: string) => {
+        netsuiteAccountId.value = value === '' ? null : Number(value);
+    },
+});
+
+// Menu hints double as the disabled-reason, so a greyed-out row always says why.
+const attachHint = computed(() => {
+    if (privateOn.value) {
+        return 'Off in private chats — files would have to be stored';
+    }
+
+    if (!modelIsClaude.value) {
+        return 'Works with Claude models only';
+    }
+
+    return 'Images, PDFs, Office docs and text';
+});
+
+const imageHint = computed(() => {
+    if (privateOn.value) {
+        return 'Off in private chats — images would have to be stored';
+    }
+
+    if (!props.imageEnabled) {
+        return 'Not enabled — choosing it asks your admin for access';
+    }
+
+    return 'Your next message becomes an image prompt';
+});
+
+const netsuiteAccountLabel = computed(
+    () =>
+        props.netsuiteAccounts.find((a) => a.id === netsuiteAccountId.value)
+            ?.label ?? 'NetSuite',
+);
+
+const activeModes = computed<ActiveMode[]>(() => {
+    const modes: ActiveMode[] = [];
+
+    if (privateOn.value) {
+        modes.push({
+            key: 'private',
+            icon: Ghost,
+            label: 'Private',
+            title: 'Private chat is ON — nothing is saved and the conversation disappears when you leave. Click to turn it off.',
+            turnOff: togglePrivate,
+        });
+    }
+
+    // The one that matters most: with this on, tool actions run against real
+    // systems with no confirmation step.
+    if (props.mcpEnabled && autoApprove.value) {
+        modes.push({
+            key: 'auto-approve',
+            icon: Zap,
+            label: 'Auto-approve',
+            title: 'Auto-approve is ON — tool actions run without asking. Click to require confirmation again.',
+            turnOff: toggleAutoApprove,
+        });
+    }
+
+    if (imageMode.value) {
+        modes.push({
+            key: 'image',
+            icon: ImagePlus,
+            label: 'Image',
+            title: 'Image mode is ON — your message becomes an image prompt. Click to go back to chat.',
+            turnOff: toggleImageMode,
+        });
+    }
+
+    // Only ever shown to people with more than one linked account, and then it
+    // always shows: every NetSuite question in this chat hits the account named
+    // here, and getting that wrong means querying the wrong company's books.
+    if (showNetsuitePicker.value) {
+        modes.push({
+            key: 'netsuite',
+            icon: Boxes,
+            label: netsuiteAccountLabel.value,
+            // Names the account: the chip itself truncates, and this is the
+            // one mode where the exact value decides which company's data
+            // a query reads.
+            title: `NetSuite account: ${netsuiteAccountLabel.value}. Every NetSuite question in this chat runs against it. Click to switch.`,
+        });
+    }
+
+    return modes;
+});
 
 async function sendImage() {
     const prompt = draft.value.trim();
@@ -1951,190 +2120,71 @@ onMounted(async () => {
                     </slot>
                 </div>
 
-                <!-- Toolbar: wraps under the brand row on narrow screens;
-                 labels collapse to icons below sm so nothing gets cramped -->
+                <!-- Header carries only what you need to read at a glance: the
+                 model, and a ⋯ menu of one-off actions on this conversation.
+                 The chat *modes* moved to the composer's + menu — they affect
+                 the next message, so they belong next to where you type. -->
                 <div
                     class="flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:gap-2"
                 >
-                    <button
-                        type="button"
-                        class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors"
-                        :class="
-                            privateOn
-                                ? 'border-brand-gold/50 bg-brand-gold/10 text-brand-gold'
-                                : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
-                        "
-                        :title="
-                            privateOn
-                                ? 'Private chat is ON — nothing is saved; the conversation disappears when you leave. Click to go back to normal chats.'
-                                : 'Start a private chat — messages are not saved to your history or the database.'
-                        "
-                        @click="togglePrivate"
-                    >
-                        <Ghost class="size-3.5" />
-                        <span class="hidden sm:inline">Private</span>
-                    </button>
-                    <button
-                        v-if="webEnabled"
-                        type="button"
-                        class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
-                        :class="
-                            webOn && modelIsClaude
-                                ? 'border-brand-gold/50 bg-brand-gold/10 text-brand-gold'
-                                : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
-                        "
-                        :disabled="!modelIsClaude"
-                        :title="
-                            !modelIsClaude
-                                ? 'Web search works with Claude models only'
-                                : webOn
-                                  ? 'Web search is ON — answers can use live web results with sources. Click to turn off.'
-                                  : 'Web search is OFF — answers use only the knowledge base and connected tools. Click to turn on.'
-                        "
-                        @click="toggleWeb"
-                    >
-                        <Globe class="size-3.5" />
-                        <span class="hidden sm:inline">Web</span>
-                    </button>
-                    <button
-                        type="button"
-                        class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
-                        :class="
-                            thinkingOn && modelIsClaude
-                                ? 'border-brand-gold/50 bg-brand-gold/10 text-brand-gold'
-                                : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
-                        "
-                        :disabled="!modelIsClaude"
-                        :title="
-                            !modelIsClaude
-                                ? 'Extended thinking works with Claude models only'
-                                : thinkingOn
-                                  ? 'Extended thinking is ON — the thought process shows in a collapsible block. Click to turn off.'
-                                  : 'Turn on extended thinking — the assistant reasons longer and shows its thought process.'
-                        "
-                        @click="toggleThinking"
-                    >
-                        <Brain class="size-3.5" />
-                        <span class="hidden sm:inline">Thinking</span>
-                    </button>
-                    <div
-                        v-if="showNetsuitePicker"
-                        class="inline-flex h-8 items-center gap-1.5 rounded-md border border-brand-gold/50 bg-brand-gold/10 px-2.5 text-xs font-medium text-brand-gold"
-                        title="Which NetSuite account this chat queries — every NetSuite question here runs against the selected account only. The choice is saved on this chat."
-                    >
-                        <Boxes class="size-3.5" />
-                        <select
-                            v-model="netsuiteAccountId"
-                            aria-label="NetSuite account for this chat"
-                            class="h-full max-w-36 cursor-pointer truncate bg-transparent text-xs font-medium outline-none"
-                        >
-                            <option
-                                v-for="a in netsuiteAccounts"
-                                :key="a.id"
-                                :value="a.id"
+                    <DropdownMenu v-if="activeId != null">
+                        <DropdownMenuTrigger as-child>
+                            <button
+                                type="button"
+                                class="inline-flex size-8 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                                aria-label="Conversation actions"
+                                title="Share or compact this conversation"
                             >
-                                {{ a.label }}
-                            </option>
-                        </select>
-                    </div>
-                    <div
-                        v-if="mcpEnabled"
-                        class="inline-flex h-8 items-center gap-2 rounded-md border px-2.5 transition-colors"
-                        :class="
-                            autoApprove
-                                ? 'border-brand-gold/50 bg-brand-gold/10'
-                                : 'border-border'
-                        "
-                        :title="
-                            autoApprove
-                                ? 'Auto-approve is ON — tool actions run without asking. Toggle off to require confirmation.'
-                                : 'Tool actions ask for confirmation first. Toggle on to auto-approve them for this session.'
-                        "
-                    >
-                        <component
-                            :is="autoApprove ? Zap : ShieldCheck"
-                            class="size-3.5"
-                            :class="
-                                autoApprove
-                                    ? 'text-brand-gold'
-                                    : 'text-muted-foreground'
-                            "
-                        />
-                        <span
-                            class="hidden text-xs font-medium sm:inline"
-                            :class="
-                                autoApprove
-                                    ? 'text-brand-gold'
-                                    : 'text-muted-foreground'
-                            "
-                        >
-                            Auto-approve
-                        </span>
-                        <button
-                            type="button"
-                            role="switch"
-                            :aria-checked="autoApprove"
-                            aria-label="Auto-approve tool actions for this session"
-                            class="relative inline-flex h-4 w-7 shrink-0 cursor-pointer items-center rounded-full transition-colors"
-                            :class="
-                                autoApprove
-                                    ? 'bg-brand-gold'
-                                    : 'bg-muted-foreground/30'
-                            "
-                            @click="toggleAutoApprove"
-                        >
-                            <span
-                                class="inline-block size-3 rounded-full bg-white shadow transition-transform"
-                                :class="
-                                    autoApprove
-                                        ? 'translate-x-3.5'
-                                        : 'translate-x-0.5'
-                                "
-                            />
-                        </button>
-                    </div>
-                    <button
-                        v-if="activeId != null"
-                        type="button"
-                        class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors"
-                        :class="
-                            shareUrl
-                                ? 'border-brand-gold/50 bg-brand-gold/10 text-brand-gold'
-                                : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
-                        "
-                        :title="
-                            shareUrl
-                                ? 'Shared — any logged-in member with the link can view. Click to manage.'
-                                : 'Share a read-only link with your team'
-                        "
-                        @click="showShareDialog = true"
-                    >
-                        <Share2 class="size-3.5" />
-                        <span class="hidden sm:inline">{{
-                            shareUrl ? 'Shared' : 'Share'
-                        }}</span>
-                    </button>
-                    <button
-                        v-if="activeId != null && messages.length > 1"
-                        type="button"
-                        :disabled="compacting || loading"
-                        class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-                        :title="
-                            compacted
-                                ? 'Already compacted — run again to fold in newer messages'
-                                : 'Summarize this conversation to save context on long chats'
-                        "
-                        @click="compactConversation"
-                    >
-                        <FoldVertical class="size-3.5" />
-                        <span class="hidden sm:inline">{{
-                            compacting
-                                ? 'Compacting…'
-                                : compacted
-                                  ? 'Compacted'
-                                  : 'Compact'
-                        }}</span>
-                    </button>
+                                <MoreHorizontal class="size-4" />
+                            </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" class="w-64">
+                            <DropdownMenuItem @select="openShareDialog">
+                                <Share2
+                                    :class="shareUrl ? 'text-brand-gold!' : ''"
+                                />
+                                <div class="min-w-0 flex-1">
+                                    <p class="font-medium">
+                                        {{ shareUrl ? 'Shared' : 'Share' }}
+                                    </p>
+                                    <p
+                                        class="text-[11px] leading-snug text-muted-foreground"
+                                    >
+                                        {{
+                                            shareUrl
+                                                ? 'Any logged-in member with the link can view'
+                                                : 'Create a read-only link for your team'
+                                        }}
+                                    </p>
+                                </div>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                v-if="messages.length > 1"
+                                :disabled="compacting || loading"
+                                @select="compactConversation"
+                            >
+                                <FoldVertical />
+                                <div class="min-w-0 flex-1">
+                                    <p class="font-medium">
+                                        {{
+                                            compacting
+                                                ? 'Compacting…'
+                                                : 'Compact'
+                                        }}
+                                    </p>
+                                    <p
+                                        class="text-[11px] leading-snug text-muted-foreground"
+                                    >
+                                        {{
+                                            compacted
+                                                ? 'Already compacted — run again to fold in newer messages'
+                                                : 'Summarise this chat to save context on long threads'
+                                        }}
+                                    </p>
+                                </div>
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
 
                     <!-- Grouped model picker: providers left, models right -->
                     <div class="relative">
@@ -2459,6 +2509,7 @@ onMounted(async () => {
                                             />
                                             <span
                                                 class="max-w-[12rem] truncate"
+                                                :title="a.name"
                                                 >{{ a.name }}</span
                                             >
                                         </component>
@@ -3050,9 +3101,11 @@ onMounted(async () => {
                                         "
                                         class="size-3.5 shrink-0 text-muted-foreground"
                                     />
-                                    <span class="max-w-[10rem] truncate">{{
-                                        f.file.name
-                                    }}</span>
+                                    <span
+                                        class="max-w-[10rem] truncate"
+                                        :title="f.file.name"
+                                        >{{ f.file.name }}</span
+                                    >
                                     <button
                                         type="button"
                                         class="text-muted-foreground hover:text-foreground"
@@ -3066,45 +3119,238 @@ onMounted(async () => {
                         </div>
 
                         <div class="flex items-end gap-2">
+                            <!-- Attachments and every chat mode live behind
+                             this one control. Modes that are ON also render as
+                             chips beside it, so a mode can never be active with
+                             nothing on screen to say so. -->
+                            <DropdownMenu v-model:open="plusMenuOpen">
+                                <DropdownMenuTrigger as-child>
+                                    <button
+                                        type="button"
+                                        class="flex size-9 shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground"
+                                        aria-label="Attachments and chat modes"
+                                        title="Attachments and chat modes"
+                                    >
+                                        <Plus class="size-5" />
+                                    </button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent
+                                    align="start"
+                                    side="top"
+                                    class="w-80"
+                                >
+                                    <DropdownMenuItem
+                                        v-if="uploads.enabled"
+                                        :disabled="privateOn || !modelIsClaude"
+                                        @select="openFilePicker"
+                                    >
+                                        <Paperclip />
+                                        <div class="min-w-0 flex-1">
+                                            <p class="font-medium">
+                                                Add files or photos
+                                            </p>
+                                            <p
+                                                class="text-[11px] leading-snug text-muted-foreground"
+                                            >
+                                                {{ attachHint }}
+                                            </p>
+                                        </div>
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                        :disabled="privateOn"
+                                        @select="toggleImageModeFromMenu"
+                                    >
+                                        <ImagePlus
+                                            :class="
+                                                imageMode
+                                                    ? 'text-brand-gold!'
+                                                    : ''
+                                            "
+                                        />
+                                        <div class="min-w-0 flex-1">
+                                            <p class="font-medium">
+                                                Generate an image
+                                            </p>
+                                            <p
+                                                class="text-[11px] leading-snug text-muted-foreground"
+                                            >
+                                                {{ imageHint }}
+                                            </p>
+                                        </div>
+                                        <Check
+                                            v-if="imageMode"
+                                            class="size-4 text-brand-gold!"
+                                        />
+                                    </DropdownMenuItem>
+
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuLabel
+                                        class="text-[11px] font-normal text-muted-foreground"
+                                    >
+                                        Modes for this chat
+                                    </DropdownMenuLabel>
+
+                                    <DropdownMenuCheckboxItem
+                                        v-if="webEnabled"
+                                        :model-value="webOn && modelIsClaude"
+                                        :disabled="!modelIsClaude"
+                                        @select="keepMenuOpen"
+                                        @update:model-value="toggleWeb"
+                                    >
+                                        <Globe class="size-4" />
+                                        <div class="min-w-0 flex-1">
+                                            <p class="font-medium">
+                                                Web search
+                                            </p>
+                                            <p
+                                                class="text-[11px] leading-snug text-muted-foreground"
+                                            >
+                                                {{
+                                                    modelIsClaude
+                                                        ? 'Answers can cite live web results'
+                                                        : 'Claude models only'
+                                                }}
+                                            </p>
+                                        </div>
+                                    </DropdownMenuCheckboxItem>
+
+                                    <DropdownMenuCheckboxItem
+                                        :model-value="
+                                            thinkingOn && modelIsClaude
+                                        "
+                                        :disabled="!modelIsClaude"
+                                        @select="keepMenuOpen"
+                                        @update:model-value="toggleThinking"
+                                    >
+                                        <Brain class="size-4" />
+                                        <div class="min-w-0 flex-1">
+                                            <p class="font-medium">
+                                                Extended thinking
+                                            </p>
+                                            <p
+                                                class="text-[11px] leading-snug text-muted-foreground"
+                                            >
+                                                {{
+                                                    modelIsClaude
+                                                        ? 'Reasons longer and shows its working'
+                                                        : 'Claude models only'
+                                                }}
+                                            </p>
+                                        </div>
+                                    </DropdownMenuCheckboxItem>
+
+                                    <DropdownMenuCheckboxItem
+                                        :model-value="privateOn"
+                                        @select="keepMenuOpen"
+                                        @update:model-value="togglePrivate"
+                                    >
+                                        <Ghost class="size-4" />
+                                        <div class="min-w-0 flex-1">
+                                            <p class="font-medium">
+                                                Private chat
+                                            </p>
+                                            <p
+                                                class="text-[11px] leading-snug text-muted-foreground"
+                                            >
+                                                Nothing saved — gone when you
+                                                leave
+                                            </p>
+                                        </div>
+                                    </DropdownMenuCheckboxItem>
+
+                                    <DropdownMenuCheckboxItem
+                                        v-if="mcpEnabled"
+                                        :model-value="autoApprove"
+                                        @update:model-value="
+                                            toggleAutoApproveFromMenu
+                                        "
+                                    >
+                                        <component
+                                            :is="
+                                                autoApprove ? Zap : ShieldCheck
+                                            "
+                                            class="size-4"
+                                        />
+                                        <div class="min-w-0 flex-1">
+                                            <p class="font-medium">
+                                                Auto-approve tools
+                                            </p>
+                                            <p
+                                                class="text-[11px] leading-snug text-muted-foreground"
+                                            >
+                                                {{
+                                                    autoApprove
+                                                        ? 'Tool actions run without asking'
+                                                        : 'Tool actions ask before they run'
+                                                }}
+                                            </p>
+                                        </div>
+                                    </DropdownMenuCheckboxItem>
+
+                                    <DropdownMenuSub v-if="showNetsuitePicker">
+                                        <DropdownMenuSubTrigger>
+                                            <Boxes class="size-4" />
+                                            <div class="min-w-0 flex-1">
+                                                <p class="font-medium">
+                                                    NetSuite account
+                                                </p>
+                                                <p
+                                                    class="truncate text-[11px] leading-snug text-muted-foreground"
+                                                >
+                                                    {{ netsuiteAccountLabel }}
+                                                </p>
+                                            </div>
+                                        </DropdownMenuSubTrigger>
+                                        <DropdownMenuSubContent
+                                            class="max-w-72"
+                                        >
+                                            <DropdownMenuLabel
+                                                class="text-[11px] leading-snug font-normal text-wrap text-muted-foreground"
+                                            >
+                                                Every NetSuite question in this
+                                                chat runs against the selected
+                                                account.
+                                            </DropdownMenuLabel>
+                                            <DropdownMenuRadioGroup
+                                                v-model="netsuiteAccountIdValue"
+                                            >
+                                                <DropdownMenuRadioItem
+                                                    v-for="a in netsuiteAccounts"
+                                                    :key="a.id"
+                                                    :value="String(a.id)"
+                                                >
+                                                    {{ a.label }}
+                                                </DropdownMenuRadioItem>
+                                            </DropdownMenuRadioGroup>
+                                        </DropdownMenuSubContent>
+                                    </DropdownMenuSub>
+                                </DropdownMenuContent>
+                            </DropdownMenu>
+
+                            <!-- Whatever is switched on, spelled out. Web and
+                             thinking are deliberately absent: web defaults to
+                             on, so a permanent chip for it is just noise. -->
                             <button
-                                v-if="uploads.enabled"
+                                v-for="mode in activeModes"
+                                :key="mode.key"
                                 type="button"
-                                class="flex size-9 shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-                                aria-label="Attach files"
-                                :disabled="privateOn || !modelIsClaude"
-                                :title="
-                                    privateOn
-                                        ? 'Attachments are off in private chats — files would have to be stored'
-                                        : !modelIsClaude
-                                          ? 'Attachments work with Claude models only'
-                                          : 'Attach images or PDFs'
+                                class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-brand-gold/50 bg-brand-gold/10 px-2 text-xs font-medium text-brand-gold transition-colors hover:bg-brand-gold/20"
+                                :title="mode.title"
+                                @click="
+                                    mode.turnOff
+                                        ? mode.turnOff()
+                                        : (plusMenuOpen = true)
                                 "
-                                @click="openFilePicker"
                             >
-                                <Paperclip class="size-5" />
-                            </button>
-                            <button
-                                type="button"
-                                class="flex size-9 shrink-0 items-center justify-center rounded-xl transition-colors disabled:cursor-not-allowed disabled:opacity-40"
-                                :class="
-                                    imageMode
-                                        ? 'bg-brand-gold/10 text-brand-gold'
-                                        : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-                                "
-                                aria-label="Generate an image"
-                                :disabled="privateOn"
-                                :title="
-                                    privateOn
-                                        ? 'Image generation is off in private chats — images would have to be stored'
-                                        : imageMode
-                                          ? 'Image mode is ON — your message becomes an image prompt. Click to go back to chat.'
-                                          : imageEnabled
-                                            ? 'Generate an image from your next message'
-                                            : 'Image generation isn\'t enabled — click to request it from your admin'
-                                "
-                                @click="toggleImageMode"
-                            >
-                                <ImagePlus class="size-5" />
+                                <component :is="mode.icon" class="size-3.5" />
+                                <span
+                                    class="hidden max-w-28 truncate sm:inline"
+                                    >{{ mode.label }}</span
+                                >
+                                <X
+                                    v-if="mode.turnOff"
+                                    class="size-3 opacity-60"
+                                />
                             </button>
                             <textarea
                                 v-model="draft"

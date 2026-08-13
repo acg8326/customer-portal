@@ -97,7 +97,10 @@ const railClass = computed(() =>
                             <FolderOpen class="size-4" />
                         </div>
                         <div class="min-w-0 leading-tight">
-                            <p class="truncate text-sm font-semibold">
+                            <p
+                                class="truncate text-sm font-semibold"
+                                :title="project.name"
+                            >
                                 {{ project.name }}
                             </p>
                             <p class="text-xs text-muted-foreground">Project</p>

@@ -3,6 +3,49 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Fix: truncated names had no way to read the rest
+
+A chat titled "NetSuite API Limitations and SuiteQL Permission Errors" showed as
+"NetSuite API Limitatio…" in the rail, and hovering did nothing — 363px of title
+in a 155px slot with no `title` attribute for the browser to draw a tooltip
+from. Two chats whose titles differ past the cut were indistinguishable.
+
+Fixed there and in the four other places with the same defect: the project name
+on the projects grid and in the project header, and the attachment filename both
+in a sent message and in the composer chip before sending. The NetSuite chip
+gained the account name in its tooltip too — its label truncates, and that value
+decides which company's data a query reads.
+
+Model-picker labels truncate as well but were left alone on purpose: the full
+text is already visible in the open menu, so a tooltip would just be noise.
+
+## Chat controls move behind a "+" on the composer
+
+The header carried seven controls on one line — Private, Web, Thinking, the
+NetSuite account, Auto-approve, Share, Compact — plus the model picker. They
+wrapped on a small laptop and collapsed to unlabelled icons below `sm`, trading
+cramped for cryptic.
+
+They now live behind a **+** on the composer, like claude.ai's: attachments,
+image generation, and the chat modes, each with a one-line description that
+doubles as the disabled reason ("Claude models only", "Off in private chats").
+The NetSuite account is a submenu. The header keeps only the model picker and a
+**⋯** menu for Share and Compact, which are actions on the conversation rather
+than modes for the next message.
+
+**Not everything is hidden, on purpose.** Modes that are on also show as a small
+gold chip beside the **+**, clickable to switch off. A mode you can't see is a
+mode you can't audit, and four of these have consequences: Private (nothing is
+saved), Auto-approve (tool actions run with no confirmation step), Image mode
+(the next message goes to the image model), and the NetSuite account (which
+company's books a query hits). Web search and extended thinking get no chip —
+web defaults to on, so a permanent chip is noise, and neither changes what
+happens to your data.
+
+Two menu entries open a dialog on the way on — Auto-approve's confirmation and
+image generation's access request — so those let the menu close first. Opening a
+modal from inside an open menu leaves two overlays fighting over the focus trap.
+
 ## Stop button, and the sent paste renders as its card
 
 **Stop.** There was no way to interrupt a reply short of reloading the page — a
