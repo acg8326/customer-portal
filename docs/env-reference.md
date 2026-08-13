@@ -115,6 +115,8 @@ handlers, session internals) are stock Laravel and intentionally absent from
 
 | Key | Default | Tier |
 | --- | --- | --- |
+| `ANTHROPIC_MAX_INPUT_CHARS` | `8000` | Optional |
+| `ANTHROPIC_PASTE_TO_FILE_CHARS` | `4000` | Optional |
 | `ANTHROPIC_UPLOADS_ENABLED` | `true` | Optional |
 | `ANTHROPIC_UPLOADS_MAX_FILES` | `5` | Optional |
 | `ANTHROPIC_UPLOADS_MAX_SIZE_KB` | `10240` | Optional |

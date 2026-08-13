@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Conversation;
 use App\Models\Project;
 use App\Models\ProjectFile;
+use App\Rules\UploadableFile;
 use App\Services\ModelCatalog;
 use App\Services\OfficeTextExtractor;
 use App\Services\OpenAiMedia;
@@ -151,7 +152,12 @@ class ProjectController extends Controller
 
         $request->validate([
             'files' => ['required', 'array', 'max:'.$maxFiles],
-            'files.*' => ['file', 'mimes:'.$mimes, 'max:'.$maxSizeKb],
+            // Same rule as chat uploads: a .txt/.md of code or JSON is not
+            // sniffed as text/plain, and `mimes:` would reject it.
+            'files.*' => ['file', 'max:'.$maxSizeKb, new UploadableFile(array_values(array_filter(array_map(
+                static fn (string $e): string => mb_strtolower(trim($e)),
+                explode(',', $mimes),
+            ))))],
         ]);
 
         if ($project->files()->count() + count((array) $request->file('files')) > $maxFiles) {

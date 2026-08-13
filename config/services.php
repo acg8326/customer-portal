@@ -575,8 +575,20 @@ return [
         // Chat file uploads (images + PDFs). Claude reads these natively; each
         // attachment is re-sent with every turn so follow-up questions keep the
         // file in view. All tunables here are .env-overridable.
+        // Hard cap on a single typed message. Long content belongs in an
+        // attachment, not the textarea — see paste_to_file_chars below, which
+        // turns an oversized paste into one automatically.
+        'max_input_chars' => (int) env('ANTHROPIC_MAX_INPUT_CHARS', 8000),
+
         'uploads' => [
             'enabled' => (bool) env('ANTHROPIC_UPLOADS_ENABLED', true),
+
+            // Paste longer than this and the composer captures it as a .txt
+            // attachment ("Pasted text") instead of filling the box. Keeps a
+            // pasted log or CSV out of the message body — which would blow
+            // max_input_chars — while the model still receives every character
+            // as a labeled text block. 0 disables the behaviour.
+            'paste_to_file_chars' => (int) env('ANTHROPIC_PASTE_TO_FILE_CHARS', 4000),
             'max_files' => (int) env('ANTHROPIC_UPLOADS_MAX_FILES', 5),
             'max_size_kb' => (int) env('ANTHROPIC_UPLOADS_MAX_SIZE_KB', 10240),
             // Comma-separated file extensions accepted by the picker + validator.

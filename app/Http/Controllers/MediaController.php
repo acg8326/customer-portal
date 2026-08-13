@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\OfficeTextExtractor;
 use App\Services\OpenAiMedia;
 use App\Services\TokenBudget;
 use Illuminate\Http\JsonResponse;
@@ -136,6 +137,37 @@ class MediaController extends Controller
 
         return response()->file(Storage::path($att['path']), [
             'Content-Type' => (string) $att['mime'],
+            'Cache-Control' => 'private, max-age=86400',
+        ]);
+    }
+
+    /**
+     * Serve a text attachment's contents for the in-chat viewer — owner-only.
+     *
+     * Returns the ORIGINAL file, not the extracted sidecar: the sidecar is
+     * truncated at ANTHROPIC_UPLOADS_EXTRACT_MAX_CHARS for the model's benefit,
+     * and a user opening their own paste to copy it should get all of it back.
+     */
+    public function showText(Request $request, Message $message, int $index): Response
+    {
+        abort_unless($message->conversation?->user_id === $request->user()->id, 404);
+
+        $att = ($message->attachments ?? [])[$index] ?? null;
+
+        abort_unless(
+            $att !== null
+            && app(OfficeTextExtractor::class)->supports((string) $att['mime'])
+            && Storage::exists($att['path']),
+            404,
+        );
+
+        return response((string) Storage::get($att['path']), 200, [
+            // text/plain regardless of the sniffed type: this is displayed in
+            // the chat, and serving user content as text/html or a script type
+            // would be an XSS vector.
+            'Content-Type' => 'text/plain; charset=UTF-8',
+            'Content-Disposition' => 'inline',
+            'X-Content-Type-Options' => 'nosniff',
             'Cache-Control' => 'private, max-age=86400',
         ]);
     }

@@ -7,6 +7,7 @@ import {
     Check,
     ChevronDown,
     ChevronRight,
+    ClipboardList,
     Copy,
     Download,
     FileText,
@@ -62,6 +63,17 @@ import { getInitials } from '@/composables/useInitials';
 type Attachment = {
     name: string;
     mime: string;
+    size?: number;
+    // Captured from a long paste — rendered as a PASTED card, openable in the
+    // viewer, rather than as a filename the user never chose.
+    pasted?: boolean;
+    lines?: number | null;
+    snippet?: string | null;
+    // Owner-only endpoint serving the file's text, for the viewer.
+    text_url?: string | null;
+    // Set on a just-sent message so the viewer works before the server URL
+    // exists — the browser still has the text it captured.
+    local_text?: string;
     // Set for stored images (uploaded or AI-generated) — rendered inline. Also
     // set to a local blob URL on a just-sent message, so the picture shows
     // immediately instead of waiting for a reload to get the server URL.
@@ -73,6 +85,9 @@ type Attachment = {
 type PendingFile = {
     file: File;
     preview: string | null;
+    // Captured from an oversized paste rather than picked from disk — shown as
+    // a "Pasted text" card with a snippet instead of a filename chip.
+    pasted?: { snippet: string; chars: number; lines: number; text: string };
 };
 
 // A connected tool that failed during a turn, classified server-side with the
@@ -112,6 +127,10 @@ type UploadConfig = {
     maxFiles: number;
     maxSizeKb: number;
     mimes: string;
+    // Hard cap on the typed message, mirrored from the server validator.
+    maxChars: number;
+    // Paste longer than this becomes a .txt attachment (0 = never).
+    pasteToFileChars: number;
 };
 
 type SkillOption = {
@@ -166,6 +185,8 @@ const props = withDefaults(
             maxFiles: 0,
             maxSizeKb: 0,
             mimes: '',
+            maxChars: 8000,
+            pasteToFileChars: 0,
         }),
         skills: () => [],
         mcpEnabled: false,
@@ -257,6 +278,16 @@ const promptTokens = ref(0);
 const completionTokens = ref(0);
 const tokenTotal = computed(() => promptTokens.value + completionTokens.value);
 const pendingFiles = ref<PendingFile[]>([]);
+// Numbers the pasted-text attachments within a session so two pastes don't
+// arrive with the same filename.
+const pastedCount = ref(0);
+// Lets the send button become a stop button mid-reply. Without it the only way
+// out of a long or stuck generation was reloading the page.
+const streamAbort = ref<AbortController | null>(null);
+
+function stopStreaming() {
+    streamAbort.value?.abort();
+}
 const fileInput = ref<HTMLInputElement | null>(null);
 const compacted = ref(false);
 const compacting = ref(false);
@@ -597,6 +628,12 @@ function onPaste(event: ClipboardEvent) {
     );
 
     if (images.length === 0) {
+        // No image on the clipboard — a long text paste becomes an attachment
+        // instead, the way it does in Claude. Pasting a log or a CSV into the
+        // box would blow the server's per-message cap and get rejected; as a
+        // .txt the model still receives every character, as a labeled block.
+        pasteLongText(event);
+
         return;
     }
 
@@ -623,6 +660,130 @@ function onPaste(event: ClipboardEvent) {
     });
 
     addFiles(files);
+}
+
+// Capture an oversized text paste as a .txt attachment. Returns quietly for
+// anything short enough to type, which falls through to the textarea.
+function pasteLongText(event: ClipboardEvent) {
+    const limit = props.uploads.pasteToFileChars;
+    const text = event.clipboardData?.getData('text/plain') ?? '';
+
+    if (limit <= 0 || text.length <= limit) {
+        return;
+    }
+
+    if (pendingFiles.value.length >= props.uploads.maxFiles) {
+        // Let it fall through: the box will complain about length, which is
+        // still better than silently dropping what they pasted.
+        return;
+    }
+
+    event.preventDefault();
+
+    pastedCount.value += 1;
+
+    const file = new File([text], `pasted-text-${pastedCount.value}.txt`, {
+        type: 'text/plain',
+    });
+
+    const lines = text.split(/\r?\n/);
+
+    pendingFiles.value = [
+        ...pendingFiles.value,
+        {
+            file,
+            preview: null,
+            pasted: {
+                snippet: lines.slice(0, 4).join('\n'),
+                chars: text.length,
+                lines: lines.length,
+                // Kept so the viewer can open it before the message is saved.
+                text,
+            },
+        },
+    ];
+
+    error.value = null;
+}
+
+// --- Pasted-content viewer ---------------------------------------------------
+// A sent paste is still readable and copyable: the card opens a panel with the
+// full text. Local text is used when we have it (just-sent message), otherwise
+// it's fetched from the owner-only endpoint.
+const viewer = ref<{
+    name: string;
+    lines: number | null;
+    size: number | null;
+    text: string;
+    loading: boolean;
+    error: string | null;
+} | null>(null);
+const viewerCopied = ref(false);
+
+async function openAttachment(a: Attachment) {
+    viewerCopied.value = false;
+    viewer.value = {
+        name: a.name,
+        lines: a.lines ?? null,
+        size: a.size ?? null,
+        text: a.local_text ?? '',
+        loading: !a.local_text,
+        error: null,
+    };
+
+    if (a.local_text || !a.text_url) {
+        if (!a.local_text) {
+            viewer.value.loading = false;
+            viewer.value.error = 'That attachment is no longer available.';
+        }
+
+        return;
+    }
+
+    try {
+        const res = await fetch(a.text_url, { headers: baseHeaders() });
+
+        if (!res.ok) {
+            throw new Error('unavailable');
+        }
+
+        const text = await res.text();
+
+        if (viewer.value) {
+            viewer.value.text = text;
+            viewer.value.lines = text.split(/\r?\n/).length;
+            viewer.value.loading = false;
+        }
+    } catch {
+        if (viewer.value) {
+            viewer.value.loading = false;
+            viewer.value.error = 'Could not load that content.';
+        }
+    }
+}
+
+async function copyViewer() {
+    if (!viewer.value?.text) {
+        return;
+    }
+
+    try {
+        await navigator.clipboard.writeText(viewer.value.text);
+        viewerCopied.value = true;
+        setTimeout(() => (viewerCopied.value = false), 1500);
+    } catch {
+        viewerCopied.value = false;
+    }
+}
+
+function formatBytes(bytes: number): string {
+    if (bytes < 1024) {
+        return `${bytes} B`;
+    }
+
+    const kb = bytes / 1024;
+
+    return kb < 1024 ? `${kb.toFixed(2)} KB` : `${(kb / 1024).toFixed(2)} MB`;
 }
 
 function removeFile(index: number) {
@@ -1125,6 +1286,17 @@ async function send(opts: SendOptions = {}) {
         return;
     }
 
+    // The server caps a typed message; catching it here turns a raw 422 into
+    // advice. Reachable even with paste-capture on — several sub-threshold
+    // pastes, or typing, can still add up past the limit.
+    if (text.length > props.uploads.maxChars) {
+        error.value = props.uploads.enabled
+            ? `That message is ${text.length.toLocaleString()} characters — the limit is ${props.uploads.maxChars.toLocaleString()}. Attach it as a file instead (paperclip), or trim it.`
+            : `That message is ${text.length.toLocaleString()} characters — the limit is ${props.uploads.maxChars.toLocaleString()}.`;
+
+        return;
+    }
+
     error.value = null;
     lastStopReason.value = null;
     editingIndex.value = null;
@@ -1159,9 +1331,16 @@ async function send(opts: SendOptions = {}) {
                 ? files.map((f) => ({
                       name: f.file.name,
                       mime: f.file.type,
+                      size: f.file.size,
+                      pasted: Boolean(f.pasted),
+                      lines: f.pasted?.lines ?? null,
+                      snippet: f.pasted?.snippet ?? null,
                       // Local blob URL: the picture shows in the bubble right
                       // away; a later reload swaps in the server URL.
                       url: f.preview,
+                      // Same idea for pasted text — the viewer opens instantly
+                      // instead of waiting for the message to have an id.
+                      local_text: f.pasted?.text,
                   }))
                 : undefined,
         });
@@ -1181,6 +1360,9 @@ async function send(opts: SendOptions = {}) {
         messages.value.push({ role: 'assistant', content: '' }) - 1;
     let streamed = '';
     streamingTool.value = null;
+
+    const controller = new AbortController();
+    streamAbort.value = controller;
 
     try {
         let res: Response;
@@ -1213,12 +1395,17 @@ async function send(opts: SendOptions = {}) {
                 form.append('skill_id', String(skillId.value));
             }
 
-            files.forEach((f) => form.append('files[]', f.file));
+            files.forEach((f) => {
+                form.append('files[]', f.file);
+                // The server can't tell a paste from an upload; only we know.
+                form.append('pasted[]', f.pasted ? '1' : '0');
+            });
 
             res = await fetch('/chat/stream', {
                 method: 'POST',
                 headers: baseHeaders(),
                 body: form,
+                signal: controller.signal,
             });
         } else {
             // Private mode replays the browser-held transcript instead of a
@@ -1260,6 +1447,7 @@ async function send(opts: SendOptions = {}) {
                 method: 'POST',
                 headers: jsonHeaders(),
                 body: JSON.stringify(body),
+                signal: controller.signal,
             });
         }
 
@@ -1273,7 +1461,14 @@ async function send(opts: SendOptions = {}) {
 
         streamed = await consumeStream(res, assistantIndex);
     } catch (e) {
-        error.value = e instanceof Error ? e.message : 'Something went wrong.';
+        // The user pressed stop. Keep whatever streamed and say nothing —
+        // an error banner for something they chose would be wrong.
+        const stopped = e instanceof DOMException && e.name === 'AbortError';
+
+        if (!stopped) {
+            error.value =
+                e instanceof Error ? e.message : 'Something went wrong.';
+        }
 
         // Drop the assistant bubble if nothing arrived before failing.
         if (
@@ -1284,6 +1479,7 @@ async function send(opts: SendOptions = {}) {
             messages.value.splice(assistantIndex, 1);
         }
     } finally {
+        streamAbort.value = null;
         loading.value = false;
         streaming.value = false;
         streamingTool.value = null;
@@ -1460,6 +1656,10 @@ async function decideTools(approve: boolean) {
             messages.value.push({ role: 'assistant', content: '' }) - 1;
     }
 
+    // Approved tool runs are the slowest turns there are — stoppable too.
+    const controller = new AbortController();
+    streamAbort.value = controller;
+
     try {
         const res = await fetch(
             `/chat/conversations/${activeId.value}/tools/decision`,
@@ -1467,6 +1667,7 @@ async function decideTools(approve: boolean) {
                 method: 'POST',
                 headers: jsonHeaders(),
                 body: JSON.stringify({ approve }),
+                signal: controller.signal,
             },
         );
 
@@ -1478,8 +1679,12 @@ async function decideTools(approve: boolean) {
 
         await consumeStream(res, assistantIndex);
     } catch (e) {
-        error.value = e instanceof Error ? e.message : 'Something went wrong.';
+        if (!(e instanceof DOMException && e.name === 'AbortError')) {
+            error.value =
+                e instanceof Error ? e.message : 'Something went wrong.';
+        }
     } finally {
+        streamAbort.value = null;
         loading.value = false;
         streaming.value = false;
         streamingTool.value = null;
@@ -2182,30 +2387,82 @@ onMounted(async () => {
                                     class="flex flex-wrap gap-1.5"
                                     :class="m.content ? 'mb-2' : ''"
                                 >
-                                    <span
+                                    <template
                                         v-for="(a, ai) in m.attachments.filter(
                                             (a) => !a.url,
                                         )"
                                         :key="ai"
-                                        class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs"
-                                        :class="
-                                            m.role === 'user'
-                                                ? 'bg-white/15'
-                                                : 'border border-border bg-background'
-                                        "
                                     >
+                                        <!-- A paste keeps the identity it had
+                                         in the composer, and stays readable:
+                                         click to open the full text. -->
+                                        <!-- The same card the composer showed,
+                                         so a sent paste still reads as a paste
+                                         — and opens to the full text. -->
+                                        <button
+                                            v-if="a.pasted"
+                                            type="button"
+                                            class="w-44 overflow-hidden rounded-lg border border-black/10 bg-background/80 text-left transition-opacity hover:opacity-90"
+                                            :title="`Open pasted content${a.lines ? ` — ${a.lines.toLocaleString()} lines` : ''}`"
+                                            @click="openAttachment(a)"
+                                        >
+                                            <pre
+                                                v-if="a.snippet"
+                                                class="max-h-16 overflow-hidden px-2 pt-2 text-[10px] leading-tight break-all whitespace-pre-wrap text-muted-foreground/70"
+                                                >{{ a.snippet }}</pre
+                                            >
+                                            <div
+                                                class="flex items-center justify-between gap-1 border-t border-border/60 bg-muted/40 px-2 py-1"
+                                            >
+                                                <span
+                                                    class="text-[10px] font-semibold tracking-wide text-muted-foreground uppercase"
+                                                    >Pasted</span
+                                                >
+                                                <span
+                                                    v-if="a.lines"
+                                                    class="text-[10px] text-muted-foreground"
+                                                    >{{
+                                                        a.lines.toLocaleString()
+                                                    }}
+                                                    lines</span
+                                                >
+                                            </div>
+                                        </button>
                                         <component
-                                            :is="
-                                                isImageMime(a.mime)
-                                                    ? ImageIcon
-                                                    : FileText
+                                            :is="a.text_url ? 'button' : 'span'"
+                                            v-else
+                                            :type="
+                                                a.text_url
+                                                    ? 'button'
+                                                    : undefined
                                             "
-                                            class="size-3.5 shrink-0"
-                                        />
-                                        <span class="max-w-[12rem] truncate">{{
-                                            a.name
-                                        }}</span>
-                                    </span>
+                                            class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs"
+                                            :class="[
+                                                m.role === 'user'
+                                                    ? 'bg-white/15'
+                                                    : 'border border-border bg-background',
+                                                a.text_url
+                                                    ? 'transition-opacity hover:opacity-80'
+                                                    : '',
+                                            ]"
+                                            @click="
+                                                a.text_url && openAttachment(a)
+                                            "
+                                        >
+                                            <component
+                                                :is="
+                                                    isImageMime(a.mime)
+                                                        ? ImageIcon
+                                                        : FileText
+                                                "
+                                                class="size-3.5 shrink-0"
+                                            />
+                                            <span
+                                                class="max-w-[12rem] truncate"
+                                                >{{ a.name }}</span
+                                            >
+                                        </component>
+                                    </template>
                                 </div>
                                 <!-- Extended thinking: collapsible thought process -->
                                 <details
@@ -2570,6 +2827,87 @@ onMounted(async () => {
                         </div>
                     </div>
 
+                    <!-- Pasted-content viewer: a sent paste stays readable
+                     and copyable instead of becoming an opaque filename. -->
+                    <div
+                        v-if="viewer"
+                        class="absolute inset-0 z-40 flex flex-col bg-background"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label="Pasted content"
+                        @keydown.esc="viewer = null"
+                    >
+                        <div
+                            class="flex items-start justify-between gap-3 border-b px-4 py-3"
+                        >
+                            <div class="min-w-0">
+                                <h2 class="truncate text-sm font-semibold">
+                                    Pasted content
+                                </h2>
+                                <p class="mt-0.5 text-xs text-muted-foreground">
+                                    <template v-if="viewer.size">{{
+                                        formatBytes(viewer.size)
+                                    }}</template>
+                                    <template
+                                        v-if="viewer.size && viewer.lines"
+                                    >
+                                        ·
+                                    </template>
+                                    <template v-if="viewer.lines"
+                                        >{{
+                                            viewer.lines.toLocaleString()
+                                        }}
+                                        lines</template
+                                    >
+                                    · Formatting may be inconsistent from source
+                                </p>
+                            </div>
+                            <div class="flex shrink-0 items-center gap-1">
+                                <button
+                                    type="button"
+                                    class="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                                    :aria-label="
+                                        viewerCopied ? 'Copied' : 'Copy'
+                                    "
+                                    :disabled="!viewer.text"
+                                    @click="copyViewer"
+                                >
+                                    <component
+                                        :is="viewerCopied ? Check : Copy"
+                                        class="size-4"
+                                    />
+                                </button>
+                                <button
+                                    type="button"
+                                    class="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                                    aria-label="Close"
+                                    @click="viewer = null"
+                                >
+                                    <X class="size-4" />
+                                </button>
+                            </div>
+                        </div>
+                        <div class="min-h-0 flex-1 overflow-auto p-4">
+                            <p
+                                v-if="viewer.loading"
+                                class="text-sm text-muted-foreground"
+                            >
+                                Loading…
+                            </p>
+                            <p
+                                v-else-if="viewer.error"
+                                class="text-sm text-destructive"
+                            >
+                                {{ viewer.error }}
+                            </p>
+                            <pre
+                                v-else
+                                class="font-mono text-xs leading-relaxed whitespace-pre"
+                                >{{ viewer.text }}</pre
+                            >
+                        </div>
+                    </div>
+
                     <!-- Typing / working indicator. Stays visible while a tool
                          runs (streamingTool set), even after text has started,
                          so a slow create/update doesn't look frozen. -->
@@ -2644,14 +2982,45 @@ onMounted(async () => {
                         </div>
 
                         <!-- Pending attachments: images preview as thumbnails,
-                         everything else as a named chip -->
+                         captured pastes as a snippet card, everything else as a
+                         named chip -->
                         <div
                             v-if="pendingFiles.length"
                             class="flex flex-wrap items-end gap-2 px-1 pt-1"
                         >
                             <template v-for="(f, i) in pendingFiles" :key="i">
                                 <div
-                                    v-if="f.preview"
+                                    v-if="f.pasted"
+                                    class="relative w-44 overflow-hidden rounded-lg border border-border bg-muted/40"
+                                    :title="`${f.pasted.chars.toLocaleString()} characters, ${f.pasted.lines.toLocaleString()} lines`"
+                                >
+                                    <pre
+                                        class="max-h-16 overflow-hidden px-2 pt-2 text-[10px] leading-tight break-all whitespace-pre-wrap text-muted-foreground/70"
+                                        >{{ f.pasted.snippet }}</pre
+                                    >
+                                    <div
+                                        class="flex items-center justify-between gap-1 border-t border-border/60 bg-background/60 px-2 py-1"
+                                    >
+                                        <span
+                                            class="text-[10px] font-semibold tracking-wide text-muted-foreground uppercase"
+                                            >Pasted</span
+                                        >
+                                        <span
+                                            class="text-[10px] text-muted-foreground"
+                                            >{{ f.pasted.lines }} lines</span
+                                        >
+                                    </div>
+                                    <button
+                                        type="button"
+                                        class="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm hover:text-foreground"
+                                        aria-label="Remove pasted text"
+                                        @click="removeFile(i)"
+                                    >
+                                        <X class="size-3" />
+                                    </button>
+                                </div>
+                                <div
+                                    v-else-if="f.preview"
                                     class="group relative"
                                     :title="f.file.name"
                                 >
@@ -2775,18 +3144,30 @@ onMounted(async () => {
                                     :class="transcribing ? 'animate-spin' : ''"
                                 />
                             </button>
+                            <!-- Doubles as the stop control: while a reply is
+                             generating the arrow becomes a stop square, so a
+                             long or stuck turn doesn't need a page reload. -->
                             <button
                                 type="button"
                                 :disabled="
-                                    loading ||
-                                    (draft.trim().length === 0 &&
-                                        pendingFiles.length === 0)
+                                    !streamAbort &&
+                                    (loading ||
+                                        (draft.trim().length === 0 &&
+                                            pendingFiles.length === 0))
                                 "
                                 class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
-                                aria-label="Send message"
-                                @click="send()"
+                                :aria-label="
+                                    streamAbort
+                                        ? 'Stop generating'
+                                        : 'Send message'
+                                "
+                                @click="streamAbort ? stopStreaming() : send()"
                             >
-                                <ArrowUp class="size-5" />
+                                <Square
+                                    v-if="streamAbort"
+                                    class="size-3.5 fill-current"
+                                />
+                                <ArrowUp v-else class="size-5" />
                             </button>
                         </div>
                         <input

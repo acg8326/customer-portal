@@ -13,7 +13,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string $content
  * @property string|null $thinking
  * @property int|null $feedback
- * @property array<int, array{name: string, mime: string, size: int, path: string}>|null $attachments
+ * @property array<int, array{name: string, mime: string, size: int, path: string, pasted?: bool, lines?: int, snippet?: string}>|null $attachments Uploaded files; `pasted` marks text captured from a long paste.
  * @property array<int, array{tool: string, source: string, kind: string, fix: string, detail: string}>|null $tool_errors Connected-tool failures during this turn, shown as error cards.
  */
 #[Fillable(['role', 'content', 'thinking', 'attachments', 'tool_errors'])]

@@ -3,6 +3,119 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Stop button, and the sent paste renders as its card
+
+**Stop.** There was no way to interrupt a reply short of reloading the page — a
+long generation or a stuck tool loop just had to be waited out. The send arrow
+now becomes a **stop square** while a reply is streaming; pressing it aborts the
+request, keeps whatever text arrived, and shows no error (the user chose it).
+Wired on both streaming paths, including the post-approval tool run, which is
+the slowest turn there is.
+
+One honest limitation: stopping aborts the *connection*. The server writes the
+assistant message when the turn completes, so a stopped reply stays on screen
+but is **not saved** — reload and you'll see your message without it. The user
+message is persisted before streaming starts, so nothing you typed is lost.
+
+**The sent paste now renders as the card, not a chip.** The transcript showed a
+small `PASTED · 1,603 lines` pill where the composer had shown a preview card.
+Attachments now carry a short `snippet` (first few lines, capped at 400 chars)
+recorded at upload, so the bubble draws the same card the composer did —
+preview, PASTED label, line count — and clicking it opens the full text. The
+snippet is deliberately small: the message payload shouldn't carry 56 KB to
+render a thumbnail.
+
+## A sent paste stays a paste — and stays readable
+
+The composer showed a **PASTED** card with a line count, then the sent message
+showed `pasted-text-1.txt` — a filename the user never chose, for content they
+could no longer read back.
+
+- The card survives into the transcript. Attachments carry a `pasted` flag and
+  a line count recorded at upload, so the bubble renders **PASTED · 1,603
+  lines** instead of a filename, and the card needs no round-trip to draw.
+  The browser sends the flag (`pasted[]`, parallel to `files[]`) because only it
+  knows a paste from an upload — inferring it from the filename would misfire
+  the moment someone uploads a file actually named `pasted-text-1.txt`.
+- Clicking it opens a **viewer**: full text, monospaced, with the byte size,
+  line count, a *"Formatting may be inconsistent from source"* note, and a copy
+  button. Any readable text attachment opens this way, not just pastes.
+- The viewer serves the **original** file, not the extracted sidecar. The
+  sidecar is truncated at `ANTHROPIC_UPLOADS_EXTRACT_MAX_CHARS` for the model's
+  benefit; someone opening their own paste to copy it should get all of it.
+- A just-sent message opens instantly from the text still in the browser, so the
+  viewer works before the message has an id.
+
+New owner-only `GET /chat/attachments/{message}/{index}/text`, served as
+`text/plain` with `nosniff` regardless of the sniffed type — this is user
+content rendered inside the chat, so a sniffable content type would be an XSS
+vector. It refuses anything that isn't extractable text, so it can't be turned
+into a generic file read for images or PDFs.
+
+## Fix: attached text files were silently invisible to the model
+
+Reported after the paste feature shipped: the card appeared, the message sent,
+and the assistant answered *"I can only see a small preview card — the content
+isn't visible to me."* It was right. The text never reached it.
+
+**Cause: a .txt of code is not sniffed as `text/plain`.** PHP's finfo reports a
+.txt of C as `text/x-c`, of PHP as `text/x-php`, of JSON as `application/json`.
+Two independent failures followed, and the second was silent:
+
+1. `mimes:txt` maps sniffed content back to an extension, so `text/x-c` never
+   matched "txt" and the upload was **rejected with a 422**.
+2. `OfficeTextExtractor::supports()` matched `text/plain` exactly, so anything
+   that squeaked past validation produced **no sidecar and no content block** —
+   stored, listed as an attachment, and contributing nothing to the prompt.
+
+Code, logs and config are most of what anyone attaches as text, and pasted text
+arrives as `pasted-text-N.txt`, so the feature failed on precisely its main case.
+
+- New [`UploadableFile`](../app/Rules/UploadableFile.php) rule validates the
+  **extension** against the allowlist, then checks the sniffed type is
+  consistent with it. The relaxation is narrow: for `txt`/`md`/`csv` the sniffed
+  type need only be a text family (`text/*`, JSON, XML, JS, PHP); every other
+  extension keeps the strict content check, so a PNG renamed `notes.txt` is
+  still rejected. `jpeg`/`jpg` are folded so a real JPEG isn't refused for
+  finfo preferring the other spelling.
+- `OfficeTextExtractor` now treats any `text/*` (plus those application/* text
+  formats) as readable — still not images, PDFs or `application/octet-stream`.
+- **Project knowledge files had the identical bug** (`ANTHROPIC_PROJECT_MIMES`
+  also lists `txt,md`, and those files are text-extracted into the system
+  prompt). Same rule applied there.
+
+Tests: [`TextAttachmentTest`](../tests/Feature/TextAttachmentTest.php) — 7 using
+**real bytes on disk**, not `UploadedFile::fake()`, because the entire bug lives
+in what finfo makes of the content. Covers the C and JSON pastes end-to-end
+through the endpoint to an extracted sidecar, plus the guards that must not
+loosen: `.exe` rejected, PNG-renamed-`.txt` rejected, real images still fine.
+
+## Long pastes become an attachment instead of a 422
+
+Pasting a log or a spreadsheet into the composer hit *"The content field must
+not be greater than 8000 characters"* — a dead end, with no hint about what to
+do instead. The 8,000 was also hardcoded in two validators.
+
+Paste more than `ANTHROPIC_PASTE_TO_FILE_CHARS` (4,000) of plain text and the
+composer now captures it as a `pasted-text-N.txt` attachment, shown as a
+**PASTED** card with a snippet of the content and its line count, removable like
+any other attachment. The message body stays short, and the model still receives
+every character — a `.txt` goes through the existing upload path and arrives as
+a labeled text block, so nothing is truncated or summarised on the way in.
+
+- The cap is now `ANTHROPIC_MAX_INPUT_CHARS` (default 8,000, unchanged),
+  read by both validators and passed to the UI through `uploadsProps()` — one
+  number, so the composer and the server can't disagree about where the line is.
+- The client checks it before sending, turning a raw 422 into advice ("that
+  message is 12,400 characters — attach it as a file instead"). Still reachable
+  with capture on: several sub-threshold pastes, or typing, add up.
+- Falls through to normal paste behaviour when uploads are off, when the
+  attachment slots are full, or when `ANTHROPIC_PASTE_TO_FILE_CHARS=0` —
+  in those cases the text lands in the box as before rather than vanishing.
+
+Image paste is untouched; the text path only runs when there's no image on the
+clipboard.
+
 ## Fix: refreshing the chat opened a blank new chat
 
 Reloading the page dropped you into a new conversation instead of the one you

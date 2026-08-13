@@ -55,6 +55,7 @@ use App\Models\Project;
 use App\Models\RequestLog;
 use App\Models\Skill;
 use App\Models\User;
+use App\Rules\UploadableFile;
 use App\Services\AppSettings;
 use App\Services\CapabilityInventory;
 use App\Services\ComposioService;
@@ -314,9 +315,33 @@ class ChatController extends Controller
     }
 
     /**
+     * Allowed upload extensions, from ANTHROPIC_UPLOADS_MIMES.
+     *
+     * @return list<string>
+     */
+    public static function allowedUploadExtensions(): array
+    {
+        $raw = (string) config('services.anthropic.uploads.mimes', '');
+
+        return array_values(array_filter(array_map(
+            static fn (string $e): string => mb_strtolower(trim($e)),
+            explode(',', $raw),
+        )));
+    }
+
+    /**
+     * Hard cap on a single typed message, shared by the validator and the UI so
+     * they can't disagree about where the line is.
+     */
+    public static function maxInputChars(): int
+    {
+        return (int) config('services.anthropic.max_input_chars', 8000);
+    }
+
+    /**
      * The upload settings the chat UI needs (from config, .env-overridable).
      *
-     * @return array{enabled: bool, maxFiles: int, maxSizeKb: int, mimes: string}
+     * @return array{enabled: bool, maxFiles: int, maxSizeKb: int, mimes: string, maxChars: int, pasteToFileChars: int}
      */
     public static function uploadsProps(): array
     {
@@ -327,6 +352,8 @@ class ChatController extends Controller
             'maxFiles' => (int) ($uploads['max_files'] ?? 0),
             'maxSizeKb' => (int) ($uploads['max_size_kb'] ?? 0),
             'mimes' => (string) ($uploads['mimes'] ?? ''),
+            'maxChars' => self::maxInputChars(),
+            'pasteToFileChars' => (int) ($uploads['paste_to_file_chars'] ?? 0),
         ];
     }
 
@@ -379,7 +406,7 @@ class ChatController extends Controller
         $request->validate([
             'conversation_id' => ['nullable', 'integer'],
             'project_id' => ['nullable', 'integer'],
-            'content' => [$hasFiles ? 'nullable' : 'required', 'string', 'max:8000'],
+            'content' => [$hasFiles ? 'nullable' : 'required', 'string', 'max:'.self::maxInputChars()],
             'model' => ['required', 'string', Rule::in(array_keys(Config::array('services.anthropic.models')))],
             'skill_id' => ['nullable', 'integer'],
             'auto_approve' => ['nullable', 'boolean'],
@@ -387,7 +414,9 @@ class ChatController extends Controller
             // Private chats go through the streaming endpoint only.
             'private' => ['prohibited'],
             'files' => [$uploads['enabled'] ? 'nullable' : 'prohibited', 'array', 'max:'.$uploads['maxFiles']],
-            'files.*' => ['file', 'mimes:'.$uploads['mimes'], 'max:'.$uploads['maxSizeKb']],
+            'pasted' => ['nullable', 'array', 'max:'.$uploads['maxFiles']],
+            'pasted.*' => ['nullable', 'boolean'],
+            'files.*' => ['file', 'max:'.$uploads['maxSizeKb'], new UploadableFile(self::allowedUploadExtensions())],
         ]);
 
         $apiKey = config('services.anthropic.key');
@@ -550,7 +579,7 @@ class ChatController extends Controller
         $request->validate([
             'conversation_id' => [$isPrivate ? 'prohibited' : ($isRetry ? 'required' : 'nullable'), 'integer'],
             'project_id' => [$isPrivate ? 'prohibited' : 'nullable', 'integer'],
-            'content' => [($hasFiles || $isRetry) ? 'nullable' : 'required', 'string', 'max:8000'],
+            'content' => [($hasFiles || $isRetry) ? 'nullable' : 'required', 'string', 'max:'.self::maxInputChars()],
             // Only models whose provider has an API key are sendable — locked
             // providers' models 422 here (the picker offers "request access").
             'model' => ['required', 'string', Rule::in(app(ModelCatalog::class)->selectableModelIds())],
@@ -565,7 +594,9 @@ class ChatController extends Controller
             'history.*.role' => ['required_with:history', 'string', Rule::in(['user', 'assistant'])],
             'history.*.content' => ['required_with:history', 'string', 'max:50000'],
             'files' => [($uploads['enabled'] && ! $isPrivate) ? 'nullable' : 'prohibited', 'array', 'max:'.$uploads['maxFiles']],
-            'files.*' => ['file', 'mimes:'.$uploads['mimes'], 'max:'.$uploads['maxSizeKb']],
+            'pasted' => ['nullable', 'array', 'max:'.$uploads['maxFiles']],
+            'pasted.*' => ['nullable', 'boolean'],
+            'files.*' => ['file', 'max:'.$uploads['maxSizeKb'], new UploadableFile(self::allowedUploadExtensions())],
         ]);
 
         $apiKey = config('services.anthropic.key');
@@ -2718,7 +2749,7 @@ class ChatController extends Controller
     /**
      * Persist uploaded files for a conversation and return their metadata.
      *
-     * @return list<array{name: string, mime: string, size: int, path: string}>
+     * @return list<array{name: string, mime: string, size: int, path: string, pasted?: bool, lines?: int, snippet?: string}>
      */
     private function storeAttachments(Request $request, Conversation $conversation, bool $hasFiles): array
     {
@@ -2728,8 +2759,16 @@ class ChatController extends Controller
 
         $stored = [];
         $scanner = app(UploadScanner::class);
+        // Which of these came from a long paste rather than the file picker.
+        // The browser is the only thing that knows, so it tells us — inferring
+        // it from the filename would break the moment someone uploads a file
+        // they happened to name pasted-text-1.txt.
+        $pastedFlags = array_map(
+            static fn ($v): bool => filter_var($v, FILTER_VALIDATE_BOOLEAN),
+            (array) $request->input('pasted', []),
+        );
 
-        foreach ((array) $request->file('files') as $file) {
+        foreach ((array) $request->file('files') as $index => $file) {
             if (! $file instanceof UploadedFile) {
                 continue;
             }
@@ -2766,12 +2805,32 @@ class ChatController extends Controller
                 }
             }
 
-            $stored[] = [
+            $entry = [
                 'name' => $file->getClientOriginalName(),
                 'mime' => $mime,
                 'size' => (int) $file->getSize(),
                 'path' => $path,
             ];
+
+            // Pasted text keeps its identity through to the transcript: the
+            // sent message shows the same PASTED card the composer did, not a
+            // filename the user never chose. Line count is stored now so the
+            // card doesn't have to fetch the file to render.
+            if ($pastedFlags[$index] ?? false) {
+                $body = (string) Storage::get($path);
+                $entry['pasted'] = true;
+                $entry['lines'] = max(1, substr_count($body, "\n") + 1);
+                // A few lines kept alongside the metadata so the card in the
+                // transcript draws the same preview the composer showed,
+                // without fetching the whole file to render a thumbnail.
+                $entry['snippet'] = mb_substr(
+                    implode("\n", array_slice(preg_split('/\r?\n/', $body) ?: [], 0, 5)),
+                    0,
+                    400,
+                );
+            }
+
+            $stored[] = $entry;
         }
 
         return $stored;
@@ -2927,15 +2986,26 @@ class ChatController extends Controller
     {
         $out = [];
 
+        $extractor = app(OfficeTextExtractor::class);
+
         foreach (array_values($m->attachments ?? []) as $i => $att) {
+            $isImage = str_starts_with((string) $att['mime'], 'image/');
+            $isText = $extractor->supports((string) $att['mime']);
+
             $out[] = [
                 'name' => $att['name'],
                 'mime' => $att['mime'],
+                'size' => (int) $att['size'],
+                // Pasted text keeps the PASTED card it had in the composer.
+                'pasted' => (bool) ($att['pasted'] ?? false),
+                'lines' => isset($att['lines']) ? (int) $att['lines'] : null,
+                'snippet' => isset($att['snippet']) ? (string) $att['snippet'] : null,
                 // Images (uploaded or generated) render inline in the chat;
                 // the serving route is owner-only.
-                'url' => str_starts_with($att['mime'], 'image/')
-                    ? route('chat.images.show', [$m->id, $i])
-                    : null,
+                'url' => $isImage ? route('chat.images.show', [$m->id, $i]) : null,
+                // Readable text is openable in the viewer, so a paste can still
+                // be read and copied after it has been sent.
+                'text_url' => $isText ? route('chat.attachments.text', [$m->id, $i]) : null,
             ];
         }
 

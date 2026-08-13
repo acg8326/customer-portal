@@ -127,6 +127,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('chat/images/{message}/{index}', [MediaController::class, 'showImage'])
         ->whereNumber('index')
         ->name('chat.images.show');
+    Route::get('chat/attachments/{message}/{index}/text', [MediaController::class, 'showText'])
+        ->whereNumber('index')
+        ->name('chat.attachments.text');
     Route::post('chat/transcribe', [MediaController::class, 'transcribe'])
         ->middleware('throttle:chat')
         ->name('chat.transcribe');

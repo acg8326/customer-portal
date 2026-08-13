@@ -33,6 +33,8 @@ defineProps<{
         maxFiles: number;
         maxSizeKb: number;
         mimes: string;
+        maxChars: number;
+        pasteToFileChars: number;
     };
     skills: { id: number; name: string; icon: string | null }[];
     mcpEnabled: boolean;

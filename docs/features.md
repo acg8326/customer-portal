@@ -255,7 +255,15 @@ the **Claude API**.
 - **File uploads (images, PDFs + Office files):** attach files with the
   composer paperclip **or paste an image straight into the composer with
   Ctrl/Cmd+V** (a screenshot or copied image becomes an attachment; plain-text
-  pastes are unaffected). **Attached and pasted images preview as thumbnails**
+  pastes are unaffected). **A long text paste** (over
+  `ANTHROPIC_PASTE_TO_FILE_CHARS`, default 4,000) is captured as a
+  `pasted-text-N.txt` attachment shown as a **PASTED** card with a snippet and
+  line count. That card **survives into the sent message** (not a
+  `pasted-text-1.txt` filename), and clicking it opens a viewer with the full
+  text, size, line count and a copy button — served from an owner-only endpoint
+  as `text/plain` with `nosniff`. So pasting a log or CSV doesn't hit the per-message cap
+  (`ANTHROPIC_MAX_INPUT_CHARS`, default 8,000) and the model still gets every
+  character as a labeled text block. **Attached and pasted images preview as thumbnails**
   in the composer (removable with an × on the corner) and appear in the sent
   bubble immediately — no filename-only placeholder waiting on a reload.
   Images/PDFs go to Claude natively; **DOCX / XLSX /
@@ -263,7 +271,11 @@ the **Claude API**.
   ([`OfficeTextExtractor`](../app/Services/OfficeTextExtractor.php) — plain
   `ZipArchive` + XML parsing, no heavy libraries, sheets labeled by name,
   capped at `ANTHROPIC_UPLOADS_EXTRACT_MAX_CHARS`) and sent as labeled text
-  blocks. Content survives; layout/charts don't. Files are **re-sent every
+  blocks. Uploads are validated by **extension** with a consistency check on the
+  sniffed content ([`UploadableFile`](../app/Rules/UploadableFile.php)) — a .txt
+  of code or JSON is sniffed as `text/x-c` / `application/json`, never
+  `text/plain`, so a strict content-type rule rejected exactly the files people
+  attach most; a binary renamed `.txt` is still refused. Content survives; layout/charts don't. Files are **re-sent every
   turn** (stored on the message), so follow-up questions keep the document in
   view. Configurable in `.env` (`ANTHROPIC_UPLOADS_*`).
 - **Automatic memory (like claude.ai):** every `ANTHROPIC_MEMORY_EVERY`
@@ -572,6 +584,12 @@ the **Claude API**.
   totals, and n8n event are all persisted server-side once the stream finishes
   (identical bookkeeping to the non-streaming path, which remains at
   `POST /chat/message`). File uploads stream too.
+- **Stop generating:** while a reply streams the send arrow becomes a **stop
+  square** — pressing it aborts the request and keeps the text that arrived, with
+  no error (you chose it). Works on the post-approval tool run too, which is the
+  slowest turn there is. Note the reply is **not persisted** when stopped: the
+  server saves on completion, so a stopped answer survives on screen but not a
+  reload. Your own message is saved before streaming starts.
 - **Live tool activity:** while the assistant works with tools, the typing
   indicator narrates each phase instead of a generic spinner — *"Choosing
   the right tool…"* (first model round) → *"Querying NetSuite (SuiteQL)…"*

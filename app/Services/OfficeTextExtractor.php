@@ -32,7 +32,7 @@ class OfficeTextExtractor
         $text = match (true) {
             str_contains($mime, 'wordprocessingml') => $this->fromDocx($absolutePath),
             str_contains($mime, 'spreadsheetml') => $this->fromXlsx($absolutePath),
-            in_array($mime, ['text/csv', 'application/csv', 'text/plain', 'text/markdown'], true) => $this->fromPlainText($absolutePath),
+            $this->isPlainText($mime) => $this->fromPlainText($absolutePath),
             default => null,
         };
 
@@ -61,7 +61,32 @@ class OfficeTextExtractor
     {
         return str_contains($mime, 'wordprocessingml')
             || str_contains($mime, 'spreadsheetml')
-            || in_array($mime, ['text/csv', 'application/csv', 'text/plain', 'text/markdown'], true);
+            || $this->isPlainText($mime);
+    }
+
+    /**
+     * Is this sniffed type readable as plain text?
+     *
+     * Matching `text/plain` exactly was the bug: finfo reports a .txt of C as
+     * `text/x-c`, of PHP as `text/x-php`, of JSON as `application/json`. Those
+     * fell through to `default => null`, so the file was stored, listed as an
+     * attachment, and then contributed NO content block — the model silently
+     * never saw it. Code and logs are most of what gets attached as text, so
+     * the common case was the broken one.
+     */
+    private function isPlainText(string $mime): bool
+    {
+        $mime = mb_strtolower($mime);
+
+        return str_starts_with($mime, 'text/')
+            || in_array($mime, [
+                'application/json',
+                'application/xml',
+                'application/javascript',
+                'application/x-httpd-php',
+                'application/csv',
+                'inode/x-empty',
+            ], true);
     }
 
     /**
