@@ -147,6 +147,11 @@ the **Claude API**.
   "Hi, I'm AiMe BOT. Ask me anything." subtitle.
 - **Model switching is live:** changing the model in the header applies to the
   next message (no refresh); you can even switch models mid-conversation.
+- **The composer grows with your message** up to half the viewport height, then
+  scrolls. Dragging the corner grabber overrides that for the session — the
+  browser writes an inline height when you drag, so auto-grow steps aside as
+  soon as that stops matching what it last set. Clearing the draft returns it
+  to one row.
 - **Where the controls live.** Chat modes sit behind a **+** on the composer
   (like claude.ai's), not spread across the header: attachments, image
   generation, web search, extended thinking, private chat, auto-approve, and

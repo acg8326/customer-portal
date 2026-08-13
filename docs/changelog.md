@@ -3,6 +3,22 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Fix: the composer never grew, so a long message was a one-line window
+
+Typing or pasting anything long left you reading it through a single line of
+text with a scrollbar. The box was `rows="1"` with `resize-none` and **nothing
+driving its height** — so it stayed one row however much you typed. `max-h-40`
+was dead code: nothing ever set a height for it to cap.
+
+It now grows with the content up to **50vh**, then scrolls. `resize-y` also
+restores the native grabber, and dragging wins: the browser writes an inline
+height when you drag, so once that stops matching what auto-grow last set, we
+leave the box at your size for the rest of the session. Height resets to one
+row when the draft is cleared.
+
+Measured: 36px empty → 132px at six lines → capped at 400px on an 800px
+viewport, with internal scroll → back to 36px on clear.
+
 ## Fix: truncated names had no way to read the rest
 
 A chat titled "NetSuite API Limitations and SuiteQL Permission Errors" showed as

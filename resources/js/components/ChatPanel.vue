@@ -283,6 +283,48 @@ const conversations = ref<ConversationSummary[]>([...props.conversations]);
 const activeId = ref<number | null>(null);
 const messages = ref<ChatMessage[]>([]);
 const draft = ref('');
+
+// --- Composer height ------------------------------------------------------------
+//
+// The box was `rows="1"` with `resize-none` and nothing driving its height, so
+// it stayed one line however much you typed and scrolled internally — a long
+// message was readable only through a one-line window. (`max-h-40` never even
+// applied: nothing ever set a height for it to cap.)
+//
+// It now grows with the text up to the CSS cap, and `resize-y` restores the
+// native grabber for anyone who wants a different size.
+const composerEl = ref<HTMLTextAreaElement | null>(null);
+const composerResized = ref(false);
+let autoHeight = '';
+
+function growComposer() {
+    const el = composerEl.value;
+
+    if (!el) {
+        return;
+    }
+
+    // Dragging the native grabber writes an inline height. Once that no longer
+    // matches what we last set, the user has picked a size — stop fighting it.
+    if (composerResized.value) {
+        return;
+    }
+
+    if (autoHeight !== '' && el.style.height !== autoHeight) {
+        composerResized.value = true;
+
+        return;
+    }
+
+    // Collapse first so scrollHeight reports the content, not the old box.
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+    autoHeight = el.style.height;
+}
+
+// Covers every way the draft changes — typing, dictation, "Continue", and the
+// reset after a send — not just keystrokes.
+watch(draft, () => nextTick(growComposer));
 const loading = ref(false);
 const streaming = ref(false);
 const streamingTool = ref<string | null>(null);
@@ -3353,6 +3395,7 @@ onMounted(async () => {
                                 />
                             </button>
                             <textarea
+                                ref="composerEl"
                                 v-model="draft"
                                 rows="1"
                                 :placeholder="
@@ -3360,7 +3403,7 @@ onMounted(async () => {
                                         ? 'Describe the image to generate…'
                                         : 'Message AiMe BOT…'
                                 "
-                                class="max-h-40 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
+                                class="max-h-[50vh] min-h-9 flex-1 resize-y bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
                                 @keydown="onKeydown"
                                 @paste="onPaste"
                             />
