@@ -12,6 +12,7 @@ import {
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import AppLogo from '@/components/AppLogo.vue';
 import ChatSearchDialog from '@/components/ChatSearchDialog.vue';
+import NavChats from '@/components/NavChats.vue';
 import NavMain from '@/components/NavMain.vue';
 import NavUser from '@/components/NavUser.vue';
 import {
@@ -115,6 +116,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
             </SidebarGroup>
 
             <NavMain :items="mainNavItems" />
+            <NavChats />
         </SidebarContent>
 
         <SidebarFooter>

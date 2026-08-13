@@ -147,6 +147,15 @@ the **Claude API**.
   "Hi, I'm AiMe BOT. Ask me anything." subtitle.
 - **Model switching is live:** changing the model in the header applies to the
   next message (no refresh); you can even switch models mid-conversation.
+- **Chat history lives in the app sidebar** (claude.ai-style), not a second
+  column beside the chat: **New chat**, a **Starred** group, then **Recents**,
+  with star and delete on row hover and the full title on hover. It's a shared
+  Inertia prop (`recentChats`, capped at 30, non-project chats), so the rail
+  looks the same on every page; older chats come from ⌘K search. Opening one
+  navigates to `/chat?c={id}` — the same route the search dialog uses. Projects
+  keep their own in-panel list, since those chats belong to the project.
+- **The model picker sits in the composer** beside the mic and opens upward; the
+  header carries only the brand and the ⋯ menu.
 - **The composer grows with your message** up to half the viewport height, then
   scrolls. Dragging the corner grabber overrides that for the session — the
   browser writes an inline height when you drag, so auto-grow steps aside as

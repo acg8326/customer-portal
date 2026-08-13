@@ -3,6 +3,37 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## One sidebar, like claude.ai — chat history moves into the app rail
+
+The chat page had **two** left columns: the app nav, then a 16rem column of
+chat history beside it, leaving the conversation squeezed into what was left.
+
+History now lives in the app rail itself ([`NavChats.vue`](../resources/js/components/NavChats.vue)),
+under the Platform nav: **New chat**, a **Starred** group, then **Recents**,
+with star and delete on row hover. The chat page gets the full width back.
+
+- **Shared, not page-scoped.** `recentChats` is an Inertia shared prop, so the
+  rail keeps its shape between pages — a nav that gains and loses a section as
+  you navigate reads as a glitch. Kept cheap: three indexed columns, capped at
+  30, non-project chats only. Older chats are reachable through ⌘K search.
+- **Selecting a chat** goes through `/chat?c={id}`, the same route the search
+  dialog already used, so there's one way into a conversation instead of two.
+  Trade-off: switching chats is now an Inertia visit plus the transcript fetch,
+  where the old in-page list did one fetch. Consistent, and correct on
+  back/forward, at the cost of a round trip.
+- **The list stays live** without a full reload — the chat page pulls
+  `recentChats` back down on its own when a chat is created, renamed, starred
+  or moves position, keyed on the list's actual shape so an ordinary send to
+  the chat already at the top doesn't trigger anything.
+- **Projects keep their own column.** Their chats are scoped to the project and
+  would be wrong in the global nav, so `ChatPanel` keeps its sidebar behind a
+  new `ownSidebar` prop (on by default; off only on the main chat page).
+- **The model picker moved to the composer**, beside the mic, and opens upward.
+  The header is now just the brand and the ⋯ menu.
+
+`readCookie`/`jsonHeaders` were duplicated per-component; the chat code now
+shares [`lib/http.ts`](../resources/js/lib/http.ts) rather than growing a third copy.
+
 ## Fix: the composer never grew, so a long message was a one-line window
 
 Typing or pasting anything long left you reading it through a single line of

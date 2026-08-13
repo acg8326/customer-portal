@@ -75,6 +75,7 @@ import {
 } from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
 import { getInitials } from '@/composables/useInitials';
+import { baseHeaders, jsonHeaders } from '@/lib/http';
 
 type Attachment = {
     name: string;
@@ -183,6 +184,8 @@ const props = withDefaults(
         conversations: ConversationSummary[];
         projectId?: number | null;
         fullBleed?: boolean;
+        /** Render the panel's own chat list. Off when the app rail carries it. */
+        ownSidebar?: boolean;
         uploads?: UploadConfig;
         skills?: SkillOption[];
         mcpEnabled?: boolean;
@@ -196,6 +199,7 @@ const props = withDefaults(
         projectId: null,
         lockedModel: null,
         fullBleed: false,
+        ownSidebar: true,
         uploads: () => ({
             enabled: false,
             maxFiles: 0,
@@ -1309,26 +1313,6 @@ function sendApiRequest() {
     );
 }
 
-function readCookie(name: string): string {
-    const match = document.cookie.match(
-        new RegExp('(^|; )' + name + '=([^;]*)'),
-    );
-
-    return match ? decodeURIComponent(match[2]) : '';
-}
-
-function baseHeaders(): Record<string, string> {
-    return {
-        Accept: 'application/json',
-        'X-Requested-With': 'XMLHttpRequest',
-        'X-XSRF-TOKEN': readCookie('XSRF-TOKEN'),
-    };
-}
-
-function jsonHeaders(): Record<string, string> {
-    return { 'Content-Type': 'application/json', ...baseHeaders() };
-}
-
 async function scrollToBottom() {
     await nextTick();
     const el = scrollRegion.value;
@@ -1426,6 +1410,23 @@ function bumpToTop(id: number, title: string) {
     ];
     sortConversations();
 }
+
+// When the app rail owns the history, it reads a shared Inertia prop that this
+// component's local edits don't touch — a new chat would otherwise not appear
+// there until the next full navigation. Keyed on the list's actual shape, so
+// the reload fires when a chat is created, renamed, starred or moves position,
+// and not on every send to a chat that's already at the top.
+watch(
+    () =>
+        conversations.value
+            .map((c) => `${c.id}:${c.title}:${c.starred ? 1 : 0}`)
+            .join('|'),
+    () => {
+        if (!props.ownSidebar) {
+            router.reload({ only: ['recentChats'] });
+        }
+    },
+);
 
 // Toggle a star optimistically; revert if the server disagrees.
 async function toggleStar(id: number) {
@@ -2088,8 +2089,10 @@ onMounted(async () => {
         class="relative flex h-full w-full overflow-hidden bg-card"
         :class="fullBleed ? 'border-t' : 'rounded-2xl border shadow-sm'"
     >
-        <!-- Sidebar (desktop) -->
-        <aside class="hidden w-64 shrink-0 border-r md:block">
+        <!-- Sidebar (desktop). Off on the main chat page, where the app rail
+         carries the history instead — see NavChats. Projects keep it: their
+         chats are scoped to the project and don't belong in the global nav. -->
+        <aside v-if="ownSidebar" class="hidden w-64 shrink-0 border-r md:block">
             <ChatSidebar
                 :conversations="conversations"
                 :active-id="activeId"
@@ -2101,7 +2104,10 @@ onMounted(async () => {
         </aside>
 
         <!-- Sidebar (mobile drawer) -->
-        <div v-if="sidebarOpen" class="absolute inset-0 z-30 flex md:hidden">
+        <div
+            v-if="ownSidebar && sidebarOpen"
+            class="absolute inset-0 z-30 flex md:hidden"
+        >
             <div
                 class="absolute inset-0 bg-black/40"
                 @click="sidebarOpen = false"
@@ -2134,6 +2140,7 @@ onMounted(async () => {
             >
                 <div class="flex min-w-0 items-center gap-3">
                     <button
+                        v-if="ownSidebar"
                         type="button"
                         class="rounded p-1 text-muted-foreground hover:bg-accent md:hidden"
                         aria-label="Open chats"
@@ -2227,125 +2234,6 @@ onMounted(async () => {
                             </DropdownMenuItem>
                         </DropdownMenuContent>
                     </DropdownMenu>
-
-                    <!-- Grouped model picker: providers left, models right -->
-                    <div class="relative">
-                        <button
-                            type="button"
-                            class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium transition-colors sm:min-w-[160px]"
-                            :class="
-                                modelLocked
-                                    ? 'cursor-default opacity-90'
-                                    : 'hover:bg-accent'
-                            "
-                            :title="
-                                modelLocked
-                                    ? 'Your administrator has set your model — it can\'t be changed here'
-                                    : modelIsClaude
-                                      ? 'Choose a model'
-                                      : 'Plain-chat model — tools, web search, thinking & files need Claude'
-                            "
-                            @click="openModelMenu"
-                        >
-                            <Lock
-                                v-if="modelLocked"
-                                class="size-3 text-muted-foreground"
-                            />
-                            <span class="truncate">{{
-                                currentModelLabel
-                            }}</span>
-                            <ChevronDown
-                                v-if="!modelLocked"
-                                class="ml-auto size-3.5 text-muted-foreground"
-                            />
-                        </button>
-
-                        <template v-if="modelMenuOpen && !modelLocked">
-                            <div
-                                class="fixed inset-0 z-40"
-                                @click="modelMenuOpen = false"
-                            />
-                            <div
-                                class="absolute top-full right-0 z-50 mt-1 flex max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border bg-popover shadow-lg"
-                            >
-                                <!-- Providers -->
-                                <div
-                                    class="w-40 shrink-0 border-r py-1 sm:w-48"
-                                >
-                                    <button
-                                        v-for="p in providers"
-                                        :key="p.key"
-                                        type="button"
-                                        class="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium hover:bg-accent"
-                                        :class="
-                                            menuProviderKey === p.key
-                                                ? 'bg-accent'
-                                                : ''
-                                        "
-                                        @mouseenter="menuProviderKey = p.key"
-                                        @click="menuProviderKey = p.key"
-                                    >
-                                        <span class="min-w-0 flex-1 truncate">
-                                            {{ p.name }}
-                                        </span>
-                                        <Lock
-                                            v-if="!p.available"
-                                            class="size-3 shrink-0 text-muted-foreground"
-                                        />
-                                        <ChevronRight
-                                            v-else
-                                            class="size-3 shrink-0 text-muted-foreground"
-                                        />
-                                    </button>
-                                </div>
-
-                                <!-- Models of the hovered provider -->
-                                <div
-                                    v-if="menuProvider"
-                                    class="max-h-80 w-60 overflow-y-auto py-1 sm:w-72"
-                                >
-                                    <p
-                                        class="border-b px-3 py-2 text-[11px] leading-snug text-muted-foreground"
-                                    >
-                                        {{
-                                            menuProvider.available
-                                                ? menuProvider.blurb
-                                                : 'Not enabled yet — picking a model sends an access request to your admin.'
-                                        }}
-                                    </p>
-                                    <button
-                                        v-for="m in menuProvider.models"
-                                        :key="m.value"
-                                        type="button"
-                                        class="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-accent"
-                                        @click="pickModel(menuProvider, m)"
-                                    >
-                                        <div class="min-w-0 flex-1">
-                                            <p
-                                                class="truncate text-xs font-medium"
-                                            >
-                                                {{ m.label }}
-                                            </p>
-                                            <p
-                                                v-if="m.hint"
-                                                class="truncate text-[11px] text-muted-foreground"
-                                            >
-                                                {{ m.hint }}
-                                            </p>
-                                        </div>
-                                        <Check
-                                            v-if="model === m.value"
-                                            class="mt-0.5 size-3.5 shrink-0 text-brand-gold"
-                                        />
-                                        <Lock
-                                            v-else-if="!menuProvider.available"
-                                            class="mt-0.5 size-3 shrink-0 text-muted-foreground"
-                                        />
-                                    </button>
-                                </div>
-                            </div>
-                        </template>
-                    </div>
                 </div>
             </div>
 
@@ -3407,6 +3295,132 @@ onMounted(async () => {
                                 @keydown="onKeydown"
                                 @paste="onPaste"
                             />
+                            <!-- Model picker, beside the mic like claude.ai's: providers left, models right. -->
+                            <div class="relative shrink-0">
+                                <button
+                                    type="button"
+                                    class="inline-flex h-8 max-w-[8rem] items-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium transition-colors sm:max-w-[12rem]"
+                                    :class="
+                                        modelLocked
+                                            ? 'cursor-default opacity-90'
+                                            : 'hover:bg-accent'
+                                    "
+                                    :title="
+                                        modelLocked
+                                            ? 'Your administrator has set your model — it can\'t be changed here'
+                                            : modelIsClaude
+                                              ? 'Choose a model'
+                                              : 'Plain-chat model — tools, web search, thinking & files need Claude'
+                                    "
+                                    @click="openModelMenu"
+                                >
+                                    <Lock
+                                        v-if="modelLocked"
+                                        class="size-3 text-muted-foreground"
+                                    />
+                                    <span class="truncate">{{
+                                        currentModelLabel
+                                    }}</span>
+                                    <ChevronDown
+                                        v-if="!modelLocked"
+                                        class="ml-auto size-3.5 text-muted-foreground"
+                                    />
+                                </button>
+
+                                <template v-if="modelMenuOpen && !modelLocked">
+                                    <div
+                                        class="fixed inset-0 z-40"
+                                        @click="modelMenuOpen = false"
+                                    />
+                                    <div
+                                        class="absolute right-0 bottom-full z-50 mb-1 flex max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border bg-popover shadow-lg"
+                                    >
+                                        <!-- Providers -->
+                                        <div
+                                            class="w-40 shrink-0 border-r py-1 sm:w-48"
+                                        >
+                                            <button
+                                                v-for="p in providers"
+                                                :key="p.key"
+                                                type="button"
+                                                class="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium hover:bg-accent"
+                                                :class="
+                                                    menuProviderKey === p.key
+                                                        ? 'bg-accent'
+                                                        : ''
+                                                "
+                                                @mouseenter="
+                                                    menuProviderKey = p.key
+                                                "
+                                                @click="menuProviderKey = p.key"
+                                            >
+                                                <span
+                                                    class="min-w-0 flex-1 truncate"
+                                                >
+                                                    {{ p.name }}
+                                                </span>
+                                                <Lock
+                                                    v-if="!p.available"
+                                                    class="size-3 shrink-0 text-muted-foreground"
+                                                />
+                                                <ChevronRight
+                                                    v-else
+                                                    class="size-3 shrink-0 text-muted-foreground"
+                                                />
+                                            </button>
+                                        </div>
+
+                                        <!-- Models of the hovered provider -->
+                                        <div
+                                            v-if="menuProvider"
+                                            class="max-h-80 w-60 overflow-y-auto py-1 sm:w-72"
+                                        >
+                                            <p
+                                                class="border-b px-3 py-2 text-[11px] leading-snug text-muted-foreground"
+                                            >
+                                                {{
+                                                    menuProvider.available
+                                                        ? menuProvider.blurb
+                                                        : 'Not enabled yet — picking a model sends an access request to your admin.'
+                                                }}
+                                            </p>
+                                            <button
+                                                v-for="m in menuProvider.models"
+                                                :key="m.value"
+                                                type="button"
+                                                class="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-accent"
+                                                @click="
+                                                    pickModel(menuProvider, m)
+                                                "
+                                            >
+                                                <div class="min-w-0 flex-1">
+                                                    <p
+                                                        class="truncate text-xs font-medium"
+                                                    >
+                                                        {{ m.label }}
+                                                    </p>
+                                                    <p
+                                                        v-if="m.hint"
+                                                        class="truncate text-[11px] text-muted-foreground"
+                                                    >
+                                                        {{ m.hint }}
+                                                    </p>
+                                                </div>
+                                                <Check
+                                                    v-if="model === m.value"
+                                                    class="mt-0.5 size-3.5 shrink-0 text-brand-gold"
+                                                />
+                                                <Lock
+                                                    v-else-if="
+                                                        !menuProvider.available
+                                                    "
+                                                    class="mt-0.5 size-3 shrink-0 text-muted-foreground"
+                                                />
+                                            </button>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
                             <button
                                 type="button"
                                 class="flex size-9 shrink-0 items-center justify-center rounded-xl transition-colors"

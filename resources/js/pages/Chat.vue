@@ -67,6 +67,7 @@ defineProps<{
             :speech-enabled="speechEnabled"
             :continue-prompt="continuePrompt"
             full-bleed
+            :own-sidebar="false"
         />
     </div>
 </template>

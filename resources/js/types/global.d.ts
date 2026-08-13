@@ -20,6 +20,8 @@ declare module '@inertiajs/core' {
             auth: Auth;
             sidebarOpen: boolean;
             gatewayEnabled: boolean;
+            /** Chat history for the app sidebar; see HandleInertiaRequests. */
+            recentChats: { id: number; title: string; starred?: boolean }[];
             [key: string]: unknown;
         };
     }
