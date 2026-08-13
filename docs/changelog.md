@@ -3,6 +3,25 @@
 This app started as the **Laravel Vue starter kit**. Here's everything we've
 customized so far, newest first.
 
+## Compacting says so in the chat, and pauses sending while it runs
+
+Compact used to live in the header, where its label flipped to "Compacting…"
+— the button *was* the progress indicator. Moving it into the ⋯ menu took that
+away: the menu closes on click, so the only sign anything was happening
+vanished with it.
+
+It now announces itself in the transcript — a spinner row reading *"Compacting
+this chat — summarising the earlier messages. Sending is paused until it's
+done."* — and the view scrolls to it, since on a long chat the end of the
+transcript is below the fold and the click would otherwise look inert.
+
+Sending is genuinely paused, not just discouraged: the composer is disabled
+with a matching placeholder, and `send()` refuses outright. That guard was
+missing before this change too — compaction rewrites the summary and the point
+it covers up to, which is exactly what the next turn replays, so a send landing
+mid-rewrite would build its request from a transcript about to change
+underneath it. Your draft is kept, not cleared.
+
 ## One sidebar, like claude.ai — chat history moves into the app rail
 
 The chat page had **two** left columns: the app nav, then a 16rem column of

@@ -1494,7 +1494,14 @@ async function send(opts: SendOptions = {}) {
             ? []
             : pendingFiles.value;
 
-    if ((!text && files.length === 0 && !isRetry) || loading.value) {
+    // Compaction rewrites what the next turn replays — the summary and the
+    // point it covers up to. A send landing mid-rewrite would build its request
+    // from a transcript that's about to change underneath it.
+    if (
+        (!text && files.length === 0 && !isRetry) ||
+        loading.value ||
+        compacting.value
+    ) {
         return;
     }
 
@@ -2001,6 +2008,9 @@ async function compactConversation() {
 
     compacting.value = true;
     error.value = null;
+    // The status renders at the end of the transcript; on a long chat that's
+    // below the fold, which would leave the click looking like it did nothing.
+    await scrollToBottom();
 
     try {
         const res = await fetch(
@@ -2911,6 +2921,27 @@ onMounted(async () => {
                             <template v-else> AiMe is thinking… </template>
                         </div>
                     </div>
+
+                    <!-- Compaction status. Compact used to sit in the header,
+                         where its "Compacting…" label was its own progress
+                         indicator; behind the ⋯ menu that label disappears with
+                         the menu on click, so the work has to announce itself
+                         here instead. It also asks for the one thing that
+                         matters: don't send until the summary is written. -->
+                    <div v-if="compacting" class="flex items-start gap-3">
+                        <div
+                            class="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-navy to-brand-gold text-white shadow-sm"
+                        >
+                            <FoldVertical class="size-4" />
+                        </div>
+                        <div
+                            class="flex items-center gap-2 rounded-2xl rounded-tl-sm bg-muted px-4 py-3 text-sm text-muted-foreground"
+                        >
+                            <Spinner class="size-4" />
+                            Compacting this chat — summarising the earlier
+                            messages. Sending is paused until it's done.
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -3286,12 +3317,15 @@ onMounted(async () => {
                                 ref="composerEl"
                                 v-model="draft"
                                 rows="1"
+                                :disabled="compacting"
                                 :placeholder="
-                                    imageMode
-                                        ? 'Describe the image to generate…'
-                                        : 'Message AiMe BOT…'
+                                    compacting
+                                        ? 'Compacting this chat — one moment…'
+                                        : imageMode
+                                          ? 'Describe the image to generate…'
+                                          : 'Message AiMe BOT…'
                                 "
-                                class="max-h-[50vh] min-h-9 flex-1 resize-y bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
+                                class="max-h-[50vh] min-h-9 flex-1 resize-y bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
                                 @keydown="onKeydown"
                                 @paste="onPaste"
                             />
@@ -3455,6 +3489,7 @@ onMounted(async () => {
                                 :disabled="
                                     !streamAbort &&
                                     (loading ||
+                                        compacting ||
                                         (draft.trim().length === 0 &&
                                             pendingFiles.length === 0))
                                 "

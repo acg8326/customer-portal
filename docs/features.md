@@ -520,6 +520,12 @@ the **Claude API**.
   again folds newer messages into the summary. Prompt is configurable
   (`ANTHROPIC_COMPACT_PROMPT`, default in `config/services.php`).
   (`POST /chat/conversations/{id}/compact`.)
+  - **While it runs** a spinner row in the transcript says so (and the view
+    scrolls to it), and **sending is paused** — the composer is disabled and
+    `send()` refuses. Compaction rewrites the summary and the point it covers
+    up to, which is what the next turn replays from, so a send landing
+    mid-rewrite would build its request from a transcript about to change. The
+    draft you'd typed is kept.
 - **Auto-compact:** compaction also runs **automatically** (on the queue) once a
   turn's replayed context crosses `ANTHROPIC_AUTO_COMPACT_TOKENS` (default
   100k; 0 disables) — like claude.ai, the user never has to notice degradation.
